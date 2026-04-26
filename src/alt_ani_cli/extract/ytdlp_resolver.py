@@ -1,0 +1,51 @@
+from alt_ani_cli.config import USER_AGENT
+from alt_ani_cli.extract.common import Stream
+
+
+def resolve(embed_url: str, referer: str) -> Stream:
+    from yt_dlp import YoutubeDL  # deferred — yt-dlp startup is slow
+
+    opts: dict = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+        "http_headers": {
+            "Referer": referer,
+            "User-Agent": USER_AGENT,
+        },
+    }
+    try:
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(embed_url, download=False)
+    except Exception as exc:
+        raise ValueError(str(exc)) from exc
+
+    if not info:
+        raise ValueError(f"yt-dlp returned no info for {embed_url!r}")
+
+    qualities: dict[str, str] = {}
+    best_url = ""
+    best_height = 0
+
+    for fmt in info.get("formats") or []:
+        fmt_url = fmt.get("url") or fmt.get("manifest_url", "")
+        height = fmt.get("height") or 0
+        if fmt_url and height:
+            qualities[f"{height}p"] = fmt_url
+            if height > best_height:
+                best_height = height
+                best_url = fmt_url
+
+    if not best_url:
+        best_url = info.get("url") or info.get("manifest_url", "")
+
+    if not best_url:
+        raise ValueError(f"No playable URL in yt-dlp output for {embed_url!r}")
+
+    ext = info.get("ext") or ("m3u8" if "m3u8" in best_url else "mp4")
+    headers = dict(info.get("http_headers") or {})
+    headers.setdefault("Referer", referer)
+    headers.setdefault("User-Agent", USER_AGENT)
+
+    return Stream(url=best_url, headers=headers, qualities=qualities, ext=ext)

@@ -1,0 +1,43 @@
+[project]
+name = "alt-ani-cli-win"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "httpx[http2]>=0.27",
+    "selectolax>=0.3",
+    "inquirerpy>=0.3",
+    "yt-dlp>=2024.1",
+    "platformdirs>=4.0",
+    "rich>=13.0",
+    "colorama>=0.4",
+    "brotli>=1.2.0",
+]
+
+[project.scripts]
+alt-ani-cli = "alt_ani_cli.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/alt_ani_cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-mock>=3.15.1",
+    "respx>=0.23.1",
+    "ruff>=0.15.12",
+    "ty>=0.0.32",
+]
