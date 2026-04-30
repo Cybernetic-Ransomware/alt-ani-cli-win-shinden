@@ -60,9 +60,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("-e", "--episode", metavar="RANGE",
                    help='Numer odcinka lub zakres: "5", "1-5", "-1" (ostatni).')
-    p.add_argument("-q", "--quality", default="best",
+    p.add_argument("-q", "--quality", default=None,
                    metavar="QUALITY",
-                   help='Preferowana jakość: "best" (domyślnie), "worst", "1080p", "720p" …')
+                   help='Preferowana jakość: "best", "worst", "1080p", "720p" … (domyślnie: menu interaktywne lub "best").')
     p.add_argument("-S", "--select-nth", type=int, metavar="N",
                    help="Automatycznie wybierz N-ty wynik wyszukiwania (1-bazowy).")
 
@@ -79,6 +79,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Filtruj po języku audio (lang_audio).")
     p.add_argument("--subs", metavar="{pl,en,none}",
                    help="Filtruj po języku napisów (lang_subs).")
+
+    p.add_argument("--cookies-file", metavar="PATH",
+                   help="Plik ciasteczek w formacie Netscape (eksportuj np. rozszerzeniem 'Get cookies.txt').")
+    p.add_argument("--cookies-browser", metavar="{chrome,firefox,edge,opera,brave}",
+                   help="Czytaj ciasteczka z przeglądarki (wymagane dla treści 18+ na CDA itp.).")
 
     p.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
 
@@ -178,6 +183,9 @@ def _resolve_with_fallback(
     chosen: PlayerEntry,
     auto: bool,
     ep_number: float,
+    *,
+    cookies_file: str | None = None,
+    cookies_browser: str | None = None,
 ):
     """Try chosen player; if it fails and auto-mode is active, walk down the sorted list.
 
@@ -193,16 +201,18 @@ def _resolve_with_fallback(
         try:
             with progress.spinner(f"Czekam na API shinden ({ANTIBOT_LABEL}) …"):
                 embed = shinden_api.resolve_embed(client, candidate.online_id)
-            progress.info(f"Embed: {embed.url}")
-            stream = extract.resolve(embed.url, embed.referer)
+            _url_short = embed.url if len(embed.url) <= 80 else embed.url[:77] + "…"
+            progress.info(f"Embed: {_url_short}")
+            stream = extract.resolve(
+                embed.url, embed.referer,
+                cookies_file=cookies_file,
+                cookies_browser=cookies_browser,
+            )
             return stream, embed
         except (NoStreamError, AntiBotError) as exc:
-            if candidate is not chosen or auto:
-                progress.warn(
-                    f"Player {candidate.player!r} (ep {ep_number:g}) nie zadziałał: {exc}"
-                )
-            else:
-                raise
+            progress.warn(
+                f"Player {candidate.player!r} (ep {ep_number:g}) nie zadziałał: {exc}"
+            )
 
     return None, None
 
@@ -232,9 +242,27 @@ def main() -> None:  # noqa: C901
 
     client = shinden_http.make_client()
     player_kind = "vlc" if args.vlc else "mpv"
+    interactive = sys.stdin.isatty() and not args.select_nth
 
     try:
         # --- resolve series ---------------------------------------------------
+        if not args.query and not args.url and not args.resume:
+            if not interactive:
+                parser.error("Podaj tytuł do wyszukania, URL (--url) lub użyj -c.")
+            all_entries = history.list_all()
+            mode = menus.select_start_mode(
+                has_history=bool(all_entries),
+                history_count=len(all_entries),
+            )
+            if mode == "quit":
+                sys.exit(0)
+            elif mode == "resume":
+                args.resume = True
+            elif mode == "url":
+                args.url = menus.prompt_url()
+            else:
+                args.query = [menus.prompt_search_query()]
+
         if args.resume:
             all_entries = history.list_all()
             if not all_entries:
@@ -245,8 +273,6 @@ def main() -> None:  # noqa: C901
             ref = shinden_series.parse_series_url(args.url)
             last_ep = 0.0
         else:
-            if not args.query:
-                parser.error("Podaj tytuł do wyszukania, URL (--url) lub użyj -c.")
             query = " ".join(args.query)
             progress.info(f"Szukam: {query!r}")
             hits = shinden_search.search_series(client, query)
@@ -298,7 +324,12 @@ def main() -> None:  # noqa: C901
                 episodes, prompt=f"Wybierz odcinek ({ref.title})", multi=True
             )
 
+        if not targets:
+            progress.warn("Nie wybrano żadnych odcinków.")
+            sys.exit(0)
+
         # --- play each episode -----------------------------------------------
+        _episode_action: str | None = None   # set once on first episode, reused for the rest
         for ep in targets:
             progress.info(f"Odcinek {ep.number:g}: {ep.title}")
 
@@ -321,24 +352,60 @@ def main() -> None:  # noqa: C901
             )
 
             _auto = args.select_nth or len(players) == 1 or not sys.stdin.isatty()
-            if _auto:
-                chosen = players[0]
-            else:
-                chosen = menus.select_player(players, prompt=f"Player — ep {ep.number:g}")
+            _failed_ids: set[str] = set()
+            stream, embed, chosen = None, None, players[0]
 
-            stream, embed = _resolve_with_fallback(
-                client, players, chosen, _auto, ep.number
-            )
+            while True:
+                if _auto:
+                    chosen = players[0]
+                else:
+                    if _failed_ids:
+                        progress.warn(
+                            f"Player {chosen.player!r} nie zadziałał — wybierz inny:"
+                        )
+                    chosen = menus.select_player(
+                        players,
+                        prompt=f"Player — ep {ep.number:g}",
+                        failed=_failed_ids,
+                    )
+
+                stream, embed = _resolve_with_fallback(
+                    client, players, chosen, _auto, ep.number,
+                    cookies_file=args.cookies_file,
+                    cookies_browser=args.cookies_browser,
+                )
+
+                if stream is not None or _auto:
+                    break
+                _failed_ids.add(chosen.online_id)
+                if all(p.online_id in _failed_ids for p in players):
+                    break
+
             if stream is None:
                 progress.warn(f"Żaden player nie zadziałał dla odcinka {ep.number:g} — pomijam.")
                 continue
 
+            if args.quality is None:
+                if interactive and stream.qualities:
+                    args.quality = menus.select_quality(stream.qualities)
+                else:
+                    args.quality = "best"
             stream = _pick_quality(stream, args.quality)
             title = f"{ref.title} — Odcinek {ep.number:g}"
 
             if args.download:
-                download.run(stream, ep, ref)
+                _action = "download"
             elif args.debug:
+                _action = "debug"
+            elif interactive and _episode_action is None:
+                _episode_action = menus.select_action()
+                _action = _episode_action
+            else:
+                _action = _episode_action or "play"
+
+            if _action == "download":
+                download.run(stream, ep, ref)
+            elif _action == "debug":
                 _print_debug(stream, embed)
             else:
                 player_runner.play(

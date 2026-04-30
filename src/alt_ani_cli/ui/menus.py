@@ -7,25 +7,16 @@ In that environment we fall back to a simple numbered list + input().
 
 from __future__ import annotations
 
+import re
+from typing import Literal
+from urllib.parse import urlparse
+
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesRef
 
-# ANSI colors for language tags in InquirerPy choice labels.
-# Work in Windows Terminal (VT processing enabled by colorama at startup).
-_LANG_ANSI = {
-    "pl": "\033[92m",   # bright green  — Polish dub
-    "jp": "\033[93m",   # bright yellow — Japanese original
-    "en": "\033[96m",   # bright cyan   — English
-}
-_RESET = "\033[0m"
+_RES_RE = re.compile(r"(\d+)")
 
-
-def _lang_tag(lang: str, *, color: bool = True) -> str:
-    if not lang:
-        return ""
-    if color:
-        c = _LANG_ANSI.get(lang.lower(), "")
-        return f"{c}{lang.upper()}{_RESET}" if c else lang.upper()
-    return lang.upper()
+def _lang_tag(lang: str) -> str:
+    return lang.upper() if lang else ""
 
 
 def _can_use_inquirer() -> bool:
@@ -154,14 +145,18 @@ def select_episodes(
     choices = [Choice(value=i, name=_label(ep)) for i, ep in enumerate(episodes)]
 
     if multi:
+        _name_map = {i: _label(ep) for i, ep in enumerate(episodes)}
         indices = inquirer.checkbox(
             message=f"{prompt}:",
             choices=choices,
+            validate=lambda result: len(result) > 0,
+            invalid_message="Zaznacz co najmniej jeden odcinek — użyj Spacji.",
             long_instruction=(
                 "Wpisz aby filtrować  |  Spacja = zaznacz/odznacz  |  Enter = potwierdź"
             ),
+            transformer=lambda result: ", ".join(_name_map.get(r, str(r)) for r in result),
         ).execute()
-        return [episodes[i] for i in indices] if indices else []
+        return [episodes[i] for i in indices]
 
     idx = inquirer.fuzzy(
         message=f"{prompt}:",
@@ -172,34 +167,32 @@ def select_episodes(
     return [episodes[idx]]
 
 
-def select_player(players: list[PlayerEntry], prompt: str = "Wybierz player") -> PlayerEntry:
-    def _label_plain(p: PlayerEntry) -> str:
-        lang = p.lang_audio.upper()
-        if p.lang_subs:
-            lang += f"+{p.lang_subs.upper()}"
-        res = f" [{p.max_res}]" if p.max_res else ""
-        return f"{p.player}{res}  {lang}"
+def select_player(
+    players: list[PlayerEntry],
+    prompt: str = "Wybierz player",
+    failed: set[str] | None = None,
+) -> PlayerEntry:
+    _failed = failed or set()
 
-    def _label_color(p: PlayerEntry) -> str:
+    def _label(p: PlayerEntry) -> str:
         audio = _lang_tag(p.lang_audio)
         subs = f"+{_lang_tag(p.lang_subs)}" if p.lang_subs else ""
         res = f" [{p.max_res}]" if p.max_res else ""
-        return f"{p.player}{res}  {audio}{subs}"
+        mark = "✗ " if p.online_id in _failed else "  "
+        return f"{mark}{p.player}{res}  {audio}{subs}"
 
     if not _use_inquirer():
-        return _numbered_pick(players, _label_plain, prompt)
+        return _numbered_pick(players, _label, prompt)
 
     from InquirerPy import inquirer
     from InquirerPy.base.control import Choice
-    choices = [Choice(value=i, name=_label_color(p)) for i, p in enumerate(players)]
+    choices = [Choice(value=i, name=_label(p)) for i, p in enumerate(players)]
     idx = inquirer.select(
         message=f"{prompt}:",
         choices=choices,
         long_instruction="↑↓ = nawigacja  |  Enter = wybierz",
     ).execute()
     return players[idx]
-<<<<<<< Updated upstream
-=======
 
 
 def select_start_mode(has_history: bool, history_count: int = 0) -> Literal["search", "resume", "url", "quit"]:
@@ -342,4 +335,3 @@ def select_action() -> Literal["play", "download", "debug"]:
         choices=choices,
         long_instruction="↑↓ = nawigacja  |  Enter = wybierz",
     ).execute()
->>>>>>> Stashed changes

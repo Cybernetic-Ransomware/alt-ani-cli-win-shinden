@@ -27,7 +27,7 @@ packages = ["src/alt_ani_cli"]
 testpaths = ["tests"]
 
 [tool.ruff]
-line-length = 100
+line-length = 128
 
 [tool.mypy]
 python_version = "3.14"

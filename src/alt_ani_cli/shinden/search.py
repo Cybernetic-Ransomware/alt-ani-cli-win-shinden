@@ -8,6 +8,15 @@ from alt_ani_cli.shinden.models import SeriesHit
 
 _SERIES_RE = re.compile(r"/series/(\d+)-([^/?#\s]+)")
 
+# selectolax .text() concatenates child-element texts without spaces,
+# so e.g. "Blue Archive:<span>Beautiful Day Dreamer</span>" →
+# "Blue Archive:BeautifulDayDreamer".  Fix: add space after ":" / "·"
+# when followed by a letter, and split camelCase runs.
+def _normalize_title(t: str) -> str:
+    t = re.sub(r'([:·])([A-Za-z])', r'\1 \2', t)    # space after colon/dot when followed by letter
+    t = re.sub(r'([a-z])([A-Z])', r'\1 \2', t)       # split camelCase
+    return t.strip()
+
 
 def search_series(client: httpx.Client, query: str) -> list[SeriesHit]:
     resp = client.get(f"{SHINDEN_BASE}/series", params={"q": query})
@@ -43,7 +52,7 @@ def _parse_results(html: str) -> list[SeriesHit]:
             continue
         seen.add(m.group(1))
 
-        title = series_node.text(strip=True) or m.group(2).replace("-", " ").title()
+        title = _normalize_title(series_node.text(strip=True)) or m.group(2).replace("-", " ").title()
         slug = m.group(2).split("/")[0]
 
         type_node = row.css_first("li.type-col")

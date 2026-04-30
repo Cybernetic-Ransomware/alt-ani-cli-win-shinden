@@ -2,7 +2,21 @@ from alt_ani_cli.config import USER_AGENT
 from alt_ani_cli.extract.common import Stream
 
 
-def resolve(embed_url: str, referer: str) -> Stream:
+class _SilentLogger:
+    """Suppress all yt-dlp console output — errors are re-raised as exceptions."""
+    def debug(self, msg: str) -> None: pass
+    def info(self, msg: str) -> None: pass
+    def warning(self, msg: str) -> None: pass
+    def error(self, msg: str) -> None: pass
+
+
+def resolve(
+    embed_url: str,
+    referer: str,
+    *,
+    cookies_file: str | None = None,
+    cookies_browser: str | None = None,
+) -> Stream:
     from yt_dlp import YoutubeDL  # deferred — yt-dlp startup is slow
 
     opts: dict = {
@@ -10,11 +24,16 @@ def resolve(embed_url: str, referer: str) -> Stream:
         "no_warnings": True,
         "skip_download": True,
         "noplaylist": True,
+        "logger": _SilentLogger(),
         "http_headers": {
             "Referer": referer,
             "User-Agent": USER_AGENT,
         },
     }
+    if cookies_file:
+        opts["cookiefile"] = cookies_file
+    if cookies_browser:
+        opts["cookiesfrombrowser"] = (cookies_browser,)
     try:
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(embed_url, download=False)

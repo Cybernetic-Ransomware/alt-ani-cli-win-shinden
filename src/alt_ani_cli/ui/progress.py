@@ -38,8 +38,8 @@ def success(msg: str) -> None:
 
 
 def error(msg: str) -> None:
-    _get_err().print(f"[bold red]ERR[/bold red] {msg}")
+    _get_err().print(f"\n[bold red]ERR[/bold red] {msg}")
 
 
 def warn(msg: str) -> None:
-    _get_err().print(f"[bold yellow]WARN[/bold yellow] {msg}")
+    _get_err().print(f"\n[bold yellow]WARN[/bold yellow] {msg}")

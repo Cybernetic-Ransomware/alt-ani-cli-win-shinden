@@ -4,8 +4,25 @@ import httpx
 from selectolax.parser import HTMLParser
 
 from alt_ani_cli.config import SHINDEN_BASE
-from alt_ani_cli.errors import ParseError
+from alt_ani_cli.errors import ParseError, ShindenError
 from alt_ani_cli.shinden.models import EpisodeRow, SeriesRef
+
+# shinden h1.title contains a type label link (<a>Anime</a>) whose text
+# is concatenated without a space into the title by selectolax .text().
+# Strip any known type prefix that runs directly into the real title.
+_TYPE_PREFIX_RE = re.compile(
+    r'^(Anime|Manga|Manhua|Manhwa|Light\s+Novel|Visual\s+Novel|Novel|Music|ONA|OVA|Movie|Special)\s*',
+    re.IGNORECASE,
+)
+
+_AGE_GATE_HINTS = (
+    "musisz mieć ukończone 18",
+    "ukończone 18 lat",
+    "treści dla dorosłych",
+    "adult content",
+    "age verification",
+    "potwierdź wiek",
+)
 
 _SERIES_URL_RE = re.compile(r"shinden\.pl/series/(\d+)-([^/?#\s]+)")
 
@@ -28,11 +45,13 @@ def list_episodes(client: httpx.Client, ref: SeriesRef) -> tuple[SeriesRef, list
     """Returns (updated_ref_with_real_title, episodes_sorted_by_number)."""
     resp = client.get(f"{ref.url}/all-episodes")
     resp.raise_for_status()
+    _check_age_gate(resp.text)
     title, episodes = _parse(resp.text)
 
     if not episodes:
         resp2 = client.get(f"{ref.url}/episodes")
         resp2.raise_for_status()
+        _check_age_gate(resp2.text)
         title, episodes = _parse(resp2.text)
 
     updated = SeriesRef(id=ref.id, slug=ref.slug, title=title or ref.title, url=ref.url)
@@ -46,6 +65,7 @@ def _parse(html: str) -> tuple[str, list[EpisodeRow]]:
     h1 = tree.css_first("h1.title") or tree.css_first("h1")
     if h1:
         title = h1.text(strip=True)
+        title = _TYPE_PREFIX_RE.sub("", title).strip()
     if not title:
         title_tag = tree.css_first("title")
         if title_tag:
@@ -87,3 +107,13 @@ def _parse(html: str) -> tuple[str, list[EpisodeRow]]:
 
     episodes.reverse()
     return title, episodes
+
+
+def _check_age_gate(html: str) -> None:
+    lower = html.lower()
+    if any(hint in lower for hint in _AGE_GATE_HINTS):
+        raise ShindenError(
+            "Shinden wymaga potwierdzenia wieku (18+) dla tej serii.\n"
+            "Zaloguj się na shinden.pl w przeglądarce i potwierdź wiek, "
+            "a następnie skopiuj ciasteczka sesji do pliku cookies lub użyj --url z zalogowaną sesją."
+        )
