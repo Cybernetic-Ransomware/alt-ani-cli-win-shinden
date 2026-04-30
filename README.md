@@ -114,3 +114,21 @@ uv run ruff check src
 
 Native extractors: mp4upload, streamtape, dood, streamwish/filemoon family (JWPlayer), CDA, sibnet, VK.  
 All other hosts fall back to yt-dlp (1500+ supported sites).
+
+## Security notes
+
+**`GUEST_AUTH` token** — the value hardcoded in `config.py` is a public guest token issued by shinden.pl for unauthenticated API access. It is not a secret: it encodes the literal string `_guest_:0,5,21000000,255,4174293644` in Base64. Any visitor to shinden.pl uses the same token. It is safe to commit and share openly.
+
+## Developer tools
+
+Scripts in `tools/` are used during development to inspect the shinden.pl API. They are not required for normal use.
+
+| Script | Purpose |
+|--------|---------|
+| `tools/debug_embed.py <url>` | Scans a player JS bundle for CDN domains and HLS/token patterns — used to reverse-engineer new embed hosts |
+| `tools/dump_search_html.py [query]` | Dumps parsed search result rows from shinden.pl — used to debug the search HTML parser |
+
+```powershell
+uv run python tools/dump_search_html.py "soul eater"
+uv run python tools/debug_embed.py https://example-embed-host.com/e/abc123
+```
