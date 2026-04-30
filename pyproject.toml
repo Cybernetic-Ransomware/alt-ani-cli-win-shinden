@@ -2,8 +2,12 @@
 name = "alt-ani-cli-win"
 version = "0.1.0"
 requires-python = ">=3.14"
+description = "CLI for watching and downloading anime from shinden.pl on Windows"
 license = { text = "EUPL-1.2" }
 authors = [{ name = "Aleksander Marszałkiewicz" }]
+
+[project.urls]
+Repository = "https://github.com/Cybernetic-Ransomware/alt-ani-cli-win"
 dependencies = [
     "httpx[http2]>=0.27",
     "selectolax>=0.3",
