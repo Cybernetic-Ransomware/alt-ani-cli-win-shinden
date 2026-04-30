@@ -37,3 +37,5 @@ dmypy.json
 
 # Claude Code
 .claude/
+# Test artifacts
+tests/result/

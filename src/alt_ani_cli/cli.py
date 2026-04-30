@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 
 from alt_ani_cli import __version__, download, extract, history
@@ -116,10 +117,8 @@ def _parse_range(range_str: str, episodes: list[EpisodeRow]) -> list[EpisodeRow]
     if " " in s:
         targets = set()
         for p in s.split():
-            try:
+            with contextlib.suppress(ValueError):
                 targets.add(float(p))
-            except ValueError:
-                pass
         return [ep for ep in episodes if ep.number in targets]
 
     # Single episode
@@ -218,11 +217,12 @@ def _resolve_with_fallback(
 def _setup_encoding() -> None:
     """Reconfigure stdout/stderr to UTF-8 before first Rich Console use."""
     import sys as _sys
+    from io import TextIOWrapper
 
-    if hasattr(_sys.stdout, "reconfigure"):
-        getattr(_sys.stdout, "reconfigure")(encoding="utf-8", errors="replace")
-    if hasattr(_sys.stderr, "reconfigure"):
-        getattr(_sys.stderr, "reconfigure")(encoding="utf-8", errors="replace")
+    if isinstance(_sys.stdout, TextIOWrapper):
+        _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if isinstance(_sys.stderr, TextIOWrapper):
+        _sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     if _sys.platform == "win32":
         import colorama
 
@@ -434,6 +434,7 @@ def main() -> None:  # noqa: C901
 
 def _print_debug(stream: Stream, embed) -> None:
     from rich.table import Table
+
     from alt_ani_cli.ui.progress import _get
 
     con = _get()

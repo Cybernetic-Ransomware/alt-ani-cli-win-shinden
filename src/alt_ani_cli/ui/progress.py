@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from collections.abc import Generator
+from contextlib import contextmanager
 
 from rich.console import Console
 
@@ -24,7 +24,7 @@ def _get_err() -> Console:
 
 
 @contextmanager
-def spinner(message: str) -> Generator[None, None, None]:
+def spinner(message: str) -> Generator[None]:
     with _get().status(f"[bold green]{message}[/bold green]"):
         yield
 

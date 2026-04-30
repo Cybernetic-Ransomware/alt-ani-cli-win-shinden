@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from alt_ani_cli.config import HISTORY_FILE, STATE_DIR
 from alt_ani_cli.shinden.models import SeriesRef
@@ -29,7 +29,7 @@ def upsert(series: SeriesRef, last_ep: float) -> None:
         "slug": series.slug,
         "url": series.url,
         "last_ep": last_ep,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
     }
     _save(data)
 

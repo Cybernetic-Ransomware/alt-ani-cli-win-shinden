@@ -214,7 +214,7 @@ def select_start_mode(has_history: bool, history_count: int = 0) -> Literal["sea
         keys = [k for k, _ in options_plain]
         while True:
             try:
-                raw = input("Wybór [1-{}]: ".format(len(keys))).strip()
+                raw = input(f"Wybór [1-{len(keys)}]: ").strip()
                 idx = int(raw) - 1
                 if 0 <= idx < len(keys):
                     return keys[idx]  # type: ignore[return-value]

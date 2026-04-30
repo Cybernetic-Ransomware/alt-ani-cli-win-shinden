@@ -21,6 +21,7 @@ dev = [
     "codespell>=2.4.2",
     "pre-commit>=4.6.0",
     "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
     "pytest-mock>=3.15.1",
     "respx>=0.23.1",
     "ruff>=0.15.12",
@@ -42,9 +43,33 @@ packages = ["src/alt_ani_cli"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--cov=src --cov-report=html:tests/result/html --cov-report=term-missing -q"
+markers = [
+    "unit: tests with no external dependencies",
+    "integration: tests requiring network access",
+]
+
+[tool.coverage.run]
+data_file = "tests/result/.coverage"
 
 [tool.ruff]
 line-length = 128
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["E", "F", "UP", "B", "SIM", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["F401", "F841"]
+
+[tool.ty.src]
+exclude = ["tests/*", "tools/*"]
+
+[tool.codespell]
+skip = "./.git,./.github,./tests/*,./temp/*,./tools/*"
+quiet-level = 3
 
 [tool.mypy]
 python_version = "3.14"
