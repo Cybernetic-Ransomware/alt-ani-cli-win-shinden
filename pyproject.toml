@@ -7,7 +7,7 @@ license = { text = "EUPL-1.2" }
 authors = [{ name = "Aleksander Marszałkiewicz" }]
 
 [project.urls]
-Repository = "https://github.com/Cybernetic-Ransomware/alt-ani-cli-win"
+Repository = "https://github.com/Cybernetic-Ransomware/alt-ani-cli-win-shinden"
 dependencies = [
     "httpx[http2]>=0.27",
     "selectolax>=0.3",

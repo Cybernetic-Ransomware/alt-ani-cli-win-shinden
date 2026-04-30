@@ -26,7 +26,7 @@ Python CLI for watching and downloading anime from [shinden.pl](https://shinden.
 ## Installation
 
 ```powershell
-git clone https://github.com/Cybernetic-Ransomware/alt-ani-cli-win
+git clone https://github.com/Cybernetic-Ransomware/alt-ani-cli-win-shinden
 cd alt-ani-cli-win
 uv sync
 ```
