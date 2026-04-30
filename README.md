@@ -1,5 +1,14 @@
 # alt-ani-cli-win
 
+![Python](https://img.shields.io/badge/python-3.14-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![yt-dlp](https://img.shields.io/badge/yt--dlp-FF0000?style=for-the-badge&logo=youtube&logoColor=white)
+![Rich](https://img.shields.io/badge/Rich-FAD000?style=for-the-badge&logo=python&logoColor=black)
+![InquirerPy](https://img.shields.io/badge/InquirerPy-4B8BBE?style=for-the-badge&logo=python&logoColor=white)
+![Ruff](https://img.shields.io/badge/Ruff-FCC21B?style=for-the-badge&logo=ruff&logoColor=black)
+![Pytest](https://img.shields.io/badge/pytest-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
+![UV](https://img.shields.io/badge/UV-DE5FE9?style=for-the-badge&logo=python&logoColor=white)
+![License](https://img.shields.io/badge/license-EUPL--1.2-003399?style=for-the-badge)
+
 Python CLI for watching and downloading anime from [shinden.pl](https://shinden.pl), optimised for Windows (PowerShell / Windows Terminal).
 
 ## Requirements
