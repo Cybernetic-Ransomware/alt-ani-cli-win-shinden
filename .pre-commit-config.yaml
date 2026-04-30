@@ -1,0 +1,41 @@
+default_install_hook_types:
+  - pre-commit
+  - post-merge
+
+repos:
+  - repo: local
+    hooks:
+      - id: uv-lock-check
+        name: uv lock check
+        entry: uv lock --check
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+        files: ^src/
+
+      - id: ruff-check
+        name: ruff lint
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+        files: ^src/
+
+      - id: ty-check
+        name: ty type checker
+        entry: uv run ty check src/
+        language: system
+        types: [python]
+        files: ^src/
+        pass_filenames: false
+
+      - id: codespell
+        name: codespell
+        entry: uv run python -m codespell_lib
+        language: system
+        types_or: [python, markdown, yaml, rst]

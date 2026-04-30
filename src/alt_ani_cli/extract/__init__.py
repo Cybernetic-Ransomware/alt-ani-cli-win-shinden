@@ -17,6 +17,7 @@ def _normalize_url(url: str) -> str:
             return f"https://www.cda.pl/video/{m.group(1)}"
     return url
 
+
 # Hosts that serve a pure JS SPA — no video URL in initial HTML, requires a browser.
 # Fail fast for these instead of wasting 5 s antibot + HTTP roundtrip.
 _JS_ONLY_HOSTS = {
@@ -87,17 +88,13 @@ def resolve(
     _ytdlp_kw = {"cookies_file": cookies_file, "cookies_browser": cookies_browser}
 
     if host in _JS_ONLY_HOSTS:
-        raise NoStreamError(
-            f"{host} requires JavaScript execution (pure SPA — no static video URL)"
-        )
+        raise NoStreamError(f"{host} requires JavaScript execution (pure SPA — no static video URL)")
 
     if host in _YTDLP_HOSTS:
         try:
             return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
         except Exception as exc:
-            raise NoStreamError(
-                f"yt-dlp could not extract stream from {embed_url!r}: {exc}"
-            ) from exc
+            raise NoStreamError(f"yt-dlp could not extract stream from {embed_url!r}: {exc}") from exc
 
     custom_fn = _CUSTOM.get(host)
     if custom_fn:
@@ -107,9 +104,7 @@ def resolve(
             try:
                 return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
             except Exception:
-                raise NoStreamError(
-                    f"All extractors failed for {embed_url!r}"
-                ) from exc
+                raise NoStreamError(f"All extractors failed for {embed_url!r}") from exc
 
     # Unknown host — try JWPlayer first (covers most embed-site patterns),
     # then fall back to yt-dlp (1500+ supported sites).
@@ -121,6 +116,4 @@ def resolve(
     try:
         return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
     except Exception as exc:
-        raise NoStreamError(
-            f"All extractors failed for {embed_url!r}: {exc}"
-        ) from exc
+        raise NoStreamError(f"All extractors failed for {embed_url!r}: {exc}") from exc

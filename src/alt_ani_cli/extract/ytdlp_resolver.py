@@ -4,10 +4,18 @@ from alt_ani_cli.extract.common import Stream
 
 class _SilentLogger:
     """Suppress all yt-dlp console output — errors are re-raised as exceptions."""
-    def debug(self, msg: str) -> None: pass
-    def info(self, msg: str) -> None: pass
-    def warning(self, msg: str) -> None: pass
-    def error(self, msg: str) -> None: pass
+
+    def debug(self, msg: str) -> None:
+        pass
+
+    def info(self, msg: str) -> None:
+        pass
+
+    def warning(self, msg: str) -> None:
+        pass
+
+    def error(self, msg: str) -> None:
+        pass
 
 
 def resolve(

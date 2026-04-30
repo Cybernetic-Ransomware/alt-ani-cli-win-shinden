@@ -8,13 +8,14 @@ from alt_ani_cli.shinden.models import SeriesHit
 
 _SERIES_RE = re.compile(r"/series/(\d+)-([^/?#\s]+)")
 
+
 # selectolax .text() concatenates child-element texts without spaces,
 # so e.g. "Blue Archive:<span>Beautiful Day Dreamer</span>" →
 # "Blue Archive:BeautifulDayDreamer".  Fix: add space after ":" / "·"
 # when followed by a letter, and split camelCase runs.
 def _normalize_title(t: str) -> str:
-    t = re.sub(r'([:·])([A-Za-z])', r'\1 \2', t)    # space after colon/dot when followed by letter
-    t = re.sub(r'([a-z])([A-Z])', r'\1 \2', t)       # split camelCase
+    t = re.sub(r"([:·])([A-Za-z])", r"\1 \2", t)  # space after colon/dot when followed by letter
+    t = re.sub(r"([a-z])([A-Z])", r"\1 \2", t)  # split camelCase
     return t.strip()
 
 
@@ -39,14 +40,14 @@ def _parse_results(html: str) -> list[SeriesHit]:
     for row in tree.css("ul.div-row"):
         series_node = None
         for a in row.css("a[href]"):
-            href = a.attributes.get("href", "")
+            href = a.attributes.get("href") or ""
             if _SERIES_RE.search(href):
                 series_node = a
                 break
         if series_node is None:
             continue
 
-        href = series_node.attributes.get("href", "")
+        href = series_node.attributes.get("href") or ""
         m = _SERIES_RE.search(href)
         if not m or m.group(1) in seen:
             continue
@@ -58,12 +59,14 @@ def _parse_results(html: str) -> list[SeriesHit]:
         type_node = row.css_first("li.type-col")
         series_type = type_node.text(strip=True) if type_node else ""
 
-        results.append(SeriesHit(
-            id=m.group(1),
-            slug=slug,
-            title=title,
-            url=f"{SHINDEN_BASE}/series/{m.group(1)}-{slug}",
-            series_type=series_type,
-        ))
+        results.append(
+            SeriesHit(
+                id=m.group(1),
+                slug=slug,
+                title=title,
+                url=f"{SHINDEN_BASE}/series/{m.group(1)}-{slug}",
+                series_type=series_type,
+            )
+        )
 
     return results

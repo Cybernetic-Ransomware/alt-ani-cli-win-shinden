@@ -41,49 +41,48 @@ def _build_parser() -> argparse.ArgumentParser:
             "  alt-ani-cli --lang jp --subs pl -S 1 -e 1 berserk\n"
             "\n"
             "Filtrowanie jezyka: --lang pl (dubbing PL), --lang jp --subs pl (sub PL)\n"
-            "Zakres odcinkow:    \"5\" (jeden), \"1-5\" (zakres), \"-1\" (ostatni), \"1 5 7\" (lista)\n"
+            'Zakres odcinkow:    "5" (jeden), "1-5" (zakres), "-1" (ostatni), "1 5 7" (lista)\n'
         ),
     )
 
-    p.add_argument("query", nargs="*", metavar="QUERY",
-                   help="Tytuł do wyszukania na shinden.pl (pomijany gdy --url lub -c).")
+    p.add_argument("query", nargs="*", metavar="QUERY", help="Tytuł do wyszukania na shinden.pl (pomijany gdy --url lub -c).")
 
-    p.add_argument("--url", metavar="URL",
-                   help="Bezpośredni URL serii (https://shinden.pl/series/...).")
+    p.add_argument("--url", metavar="URL", help="Bezpośredni URL serii (https://shinden.pl/series/...).")
 
-    p.add_argument("-c", "--continue", dest="resume", action="store_true",
-                   help="Kontynuuj oglądanie z historii.")
-    p.add_argument("-d", "--download", action="store_true",
-                   help="Pobierz odcinek zamiast odtwarzać.")
-    p.add_argument("-D", "--delete-history", action="store_true",
-                   help="Wyczyść historię i wyjdź.")
+    p.add_argument("-c", "--continue", dest="resume", action="store_true", help="Kontynuuj oglądanie z historii.")
+    p.add_argument("-d", "--download", action="store_true", help="Pobierz odcinek zamiast odtwarzać.")
+    p.add_argument("-D", "--delete-history", action="store_true", help="Wyczyść historię i wyjdź.")
 
-    p.add_argument("-e", "--episode", metavar="RANGE",
-                   help='Numer odcinka lub zakres: "5", "1-5", "-1" (ostatni).')
-    p.add_argument("-q", "--quality", default=None,
-                   metavar="QUALITY",
-                   help='Preferowana jakość: "best", "worst", "1080p", "720p" … (domyślnie: menu interaktywne lub "best").')
-    p.add_argument("-S", "--select-nth", type=int, metavar="N",
-                   help="Automatycznie wybierz N-ty wynik wyszukiwania (1-bazowy).")
+    p.add_argument("-e", "--episode", metavar="RANGE", help='Numer odcinka lub zakres: "5", "1-5", "-1" (ostatni).')
+    p.add_argument(
+        "-q",
+        "--quality",
+        default=None,
+        metavar="QUALITY",
+        help='Preferowana jakość: "best", "worst", "1080p", "720p" … (domyślnie: menu interaktywne lub "best").',
+    )
+    p.add_argument(
+        "-S", "--select-nth", type=int, metavar="N", help="Automatycznie wybierz N-ty wynik wyszukiwania (1-bazowy)."
+    )
 
-    p.add_argument("-v", "--vlc", action="store_true",
-                   help="Użyj vlc.exe zamiast mpv.exe.")
-    p.add_argument("--no-detach", action="store_true",
-                   help="Uruchom player na pierwszym planie (blokuje terminal).")
-    p.add_argument("--debug", action="store_true",
-                   help="Wypisz bezpośrednie linki wideo, nie uruchamiaj playera.")
+    p.add_argument("-v", "--vlc", action="store_true", help="Użyj vlc.exe zamiast mpv.exe.")
+    p.add_argument("--no-detach", action="store_true", help="Uruchom player na pierwszym planie (blokuje terminal).")
+    p.add_argument("--debug", action="store_true", help="Wypisz bezpośrednie linki wideo, nie uruchamiaj playera.")
 
-    p.add_argument("--player-name", metavar="NAME",
-                   help='Filtruj po nazwie playera: "CDA", "Mp4upload", "Sibnet" …')
-    p.add_argument("--lang", metavar="{pl,jp,en}",
-                   help="Filtruj po języku audio (lang_audio).")
-    p.add_argument("--subs", metavar="{pl,en,none}",
-                   help="Filtruj po języku napisów (lang_subs).")
+    p.add_argument("--player-name", metavar="NAME", help='Filtruj po nazwie playera: "CDA", "Mp4upload", "Sibnet" …')
+    p.add_argument("--lang", metavar="{pl,jp,en}", help="Filtruj po języku audio (lang_audio).")
+    p.add_argument("--subs", metavar="{pl,en,none}", help="Filtruj po języku napisów (lang_subs).")
 
-    p.add_argument("--cookies-file", metavar="PATH",
-                   help="Plik ciasteczek w formacie Netscape (eksportuj np. rozszerzeniem 'Get cookies.txt').")
-    p.add_argument("--cookies-browser", metavar="{chrome,firefox,edge,opera,brave}",
-                   help="Czytaj ciasteczka z przeglądarki (wymagane dla treści 18+ na CDA itp.).")
+    p.add_argument(
+        "--cookies-file",
+        metavar="PATH",
+        help="Plik ciasteczek w formacie Netscape (eksportuj np. rozszerzeniem 'Get cookies.txt').",
+    )
+    p.add_argument(
+        "--cookies-browser",
+        metavar="{chrome,firefox,edge,opera,brave}",
+        help="Czytaj ciasteczka z przeglądarki (wymagane dla treści 18+ na CDA itp.).",
+    )
 
     p.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
 
@@ -204,15 +203,14 @@ def _resolve_with_fallback(
             _url_short = embed.url if len(embed.url) <= 80 else embed.url[:77] + "…"
             progress.info(f"Embed: {_url_short}")
             stream = extract.resolve(
-                embed.url, embed.referer,
+                embed.url,
+                embed.referer,
                 cookies_file=cookies_file,
                 cookies_browser=cookies_browser,
             )
             return stream, embed
         except (NoStreamError, AntiBotError) as exc:
-            progress.warn(
-                f"Player {candidate.player!r} (ep {ep_number:g}) nie zadziałał: {exc}"
-            )
+            progress.warn(f"Player {candidate.player!r} (ep {ep_number:g}) nie zadziałał: {exc}")
 
     return None, None
 
@@ -220,12 +218,14 @@ def _resolve_with_fallback(
 def _setup_encoding() -> None:
     """Reconfigure stdout/stderr to UTF-8 before first Rich Console use."""
     import sys as _sys
+
     if hasattr(_sys.stdout, "reconfigure"):
-        _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        getattr(_sys.stdout, "reconfigure")(encoding="utf-8", errors="replace")
     if hasattr(_sys.stderr, "reconfigure"):
-        _sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        getattr(_sys.stderr, "reconfigure")(encoding="utf-8", errors="replace")
     if _sys.platform == "win32":
         import colorama
+
         colorama.just_fix_windows_console()
 
 
@@ -314,22 +314,18 @@ def main() -> None:  # noqa: C901
             if not remaining:
                 progress.warn(f"Obejrzałeś już wszystkie odcinki ({ref.title}).")
                 remaining = episodes
-            targets = menus.select_episodes(
-                remaining, prompt=f"Wybierz odcinek ({ref.title})", multi=True
-            )
+            targets = menus.select_episodes(remaining, prompt=f"Wybierz odcinek ({ref.title})", multi=True)
         elif not sys.stdin.isatty():
             targets = [episodes[0]]
         else:
-            targets = menus.select_episodes(
-                episodes, prompt=f"Wybierz odcinek ({ref.title})", multi=True
-            )
+            targets = menus.select_episodes(episodes, prompt=f"Wybierz odcinek ({ref.title})", multi=True)
 
         if not targets:
             progress.warn("Nie wybrano żadnych odcinków.")
             sys.exit(0)
 
         # --- play each episode -----------------------------------------------
-        _episode_action: str | None = None   # set once on first episode, reused for the rest
+        _episode_action: str | None = None  # set once on first episode, reused for the rest
         for ep in targets:
             progress.info(f"Odcinek {ep.number:g}: {ep.title}")
 
@@ -360,9 +356,7 @@ def main() -> None:  # noqa: C901
                     chosen = players[0]
                 else:
                     if _failed_ids:
-                        progress.warn(
-                            f"Player {chosen.player!r} nie zadziałał — wybierz inny:"
-                        )
+                        progress.warn(f"Player {chosen.player!r} nie zadziałał — wybierz inny:")
                     chosen = menus.select_player(
                         players,
                         prompt=f"Player — ep {ep.number:g}",
@@ -370,7 +364,11 @@ def main() -> None:  # noqa: C901
                     )
 
                 stream, embed = _resolve_with_fallback(
-                    client, players, chosen, _auto, ep.number,
+                    client,
+                    players,
+                    chosen,
+                    _auto,
+                    ep.number,
                     cookies_file=args.cookies_file,
                     cookies_browser=args.cookies_browser,
                 )

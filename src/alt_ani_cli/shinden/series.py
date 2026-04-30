@@ -11,7 +11,7 @@ from alt_ani_cli.shinden.models import EpisodeRow, SeriesRef
 # is concatenated without a space into the title by selectolax .text().
 # Strip any known type prefix that runs directly into the real title.
 _TYPE_PREFIX_RE = re.compile(
-    r'^(Anime|Manga|Manhua|Manhwa|Light\s+Novel|Visual\s+Novel|Novel|Music|ONA|OVA|Movie|Special)\s*',
+    r"^(Anime|Manga|Manhua|Manhwa|Light\s+Novel|Visual\s+Novel|Novel|Music|ONA|OVA|Movie|Special)\s*",
     re.IGNORECASE,
 )
 

@@ -10,15 +10,15 @@ from alt_ani_cli.extract.common import Stream
 _WIN_SEARCH_PATHS: list[Path] = []
 if sys.platform == "win32":
     _env = os.environ
-    _appdata  = Path(_env.get("LOCALAPPDATA", ""))
+    _appdata = Path(_env.get("LOCALAPPDATA", ""))
     _progfiles = Path(_env.get("PROGRAMFILES", ""))
     _progfiles86 = Path(_env.get("PROGRAMFILES(X86)", ""))
     _scoop_home = Path(_env.get("SCOOP", Path.home() / "scoop"))
     _WIN_SEARCH_PATHS = [
-        _appdata  / "Programs" / "mpv.net" / "mpvnet.exe",
-        _appdata  / "Programs" / "mpv"     / "mpv.exe",
-        _progfiles  / "mpv.net" / "mpvnet.exe",
-        _progfiles  / "mpv"     / "mpv.exe",
+        _appdata / "Programs" / "mpv.net" / "mpvnet.exe",
+        _appdata / "Programs" / "mpv" / "mpv.exe",
+        _progfiles / "mpv.net" / "mpvnet.exe",
+        _progfiles / "mpv" / "mpv.exe",
         _progfiles86 / "mpv.net" / "mpvnet.exe",
         _scoop_home / "shims" / "mpv.exe",
         _scoop_home / "shims" / "mpvnet.exe",

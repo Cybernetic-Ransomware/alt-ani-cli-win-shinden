@@ -5,9 +5,6 @@ requires-python = ">=3.14"
 description = "CLI for watching and downloading anime from shinden.pl on Windows"
 license = { text = "EUPL-1.2" }
 authors = [{ name = "Aleksander Marszałkiewicz" }]
-
-[project.urls]
-Repository = "https://github.com/Cybernetic-Ransomware/alt-ani-cli-win-shinden"
 dependencies = [
     "httpx[http2]>=0.27",
     "selectolax>=0.3",
@@ -18,6 +15,20 @@ dependencies = [
     "colorama>=0.4",
     "brotli>=1.2.0",
 ]
+
+[dependency-groups]
+dev = [
+    "codespell>=2.4.2",
+    "pre-commit>=4.6.0",
+    "pytest>=9.0.3",
+    "pytest-mock>=3.15.1",
+    "respx>=0.23.1",
+    "ruff>=0.15.12",
+    "ty>=0.0.32",
+]
+
+[project.urls]
+Repository = "https://github.com/Cybernetic-Ransomware/alt-ani-cli-win-shinden"
 
 [project.scripts]
 alt-ani-cli = "alt_ani_cli.cli:main"
@@ -38,12 +49,3 @@ line-length = 128
 [tool.mypy]
 python_version = "3.14"
 strict = true
-
-[dependency-groups]
-dev = [
-    "pytest>=9.0.3",
-    "pytest-mock>=3.15.1",
-    "respx>=0.23.1",
-    "ruff>=0.15.12",
-    "ty>=0.0.32",
-]

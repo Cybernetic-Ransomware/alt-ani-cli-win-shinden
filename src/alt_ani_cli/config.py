@@ -15,11 +15,7 @@ COOKIES_FILE = STATE_DIR / "cookies.json"
 # URL-encoded so it's safe to drop straight into query strings.
 GUEST_AUTH = "X2d1ZXN0XzowLDUsMjEwMDAwMDAsMjU1LDQxNzQyOTM2NDQ%3D"
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36"
-)
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 SHINDEN_BASE = "https://shinden.pl"
 SHINDEN_API_BASE = "https://api4.shinden.pl"

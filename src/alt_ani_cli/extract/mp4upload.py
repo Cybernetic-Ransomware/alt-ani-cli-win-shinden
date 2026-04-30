@@ -6,9 +6,7 @@ import httpx
 from alt_ani_cli.config import USER_AGENT
 from alt_ani_cli.extract.common import Stream
 
-_FILE_RE = re.compile(
-    r'["\']?(?:file|src)["\']?\s*:\s*["\']([^"\']+\.(?:mp4|m3u8)[^"\']*)["\']'
-)
+_FILE_RE = re.compile(r'["\']?(?:file|src)["\']?\s*:\s*["\']([^"\']+\.(?:mp4|m3u8)[^"\']*)["\']')
 _PLAYER_SRC_RE = re.compile(r'player\.src\s*\(\s*["\']([^"\']+\.(?:mp4|m3u8)[^"\']*)["\']')
 
 

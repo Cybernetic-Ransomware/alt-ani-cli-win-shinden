@@ -15,14 +15,15 @@ from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, Serie
 
 _RES_RE = re.compile(r"(\d+)")
 
+
 def _lang_tag(lang: str) -> str:
     return lang.upper() if lang else ""
 
 
 def _can_use_inquirer() -> bool:
     """Return True only when prompt_toolkit can open a real console output."""
-    import os
     import sys
+
     if not sys.stdout.isatty():
         return False
     # git-bash sets TERM=xterm-256color but the Win32 console API is not
@@ -30,6 +31,7 @@ def _can_use_inquirer() -> bool:
     # Detect by trying to import and create a dummy output.
     try:
         from prompt_toolkit.output.defaults import create_output
+
         create_output()
         return True
     except Exception:
@@ -55,7 +57,7 @@ def _numbered_pick(items: list, label_fn, prompt: str):
             idx = int(raw) - 1
             if 0 <= idx < len(items):
                 return items[idx]
-        except (ValueError, KeyboardInterrupt):
+        except ValueError, KeyboardInterrupt:
             pass
         print(f"  Wpisz liczbę 1–{len(items)}.")
 
@@ -63,7 +65,7 @@ def _numbered_pick(items: list, label_fn, prompt: str):
 def _numbered_pick_multi(items: list, label_fn, prompt: str) -> list:
     for i, item in enumerate(items, 1):
         print(f"  {i}. {label_fn(item)}")
-    print(f"  (wpisz numery oddzielone spacją, np. \"1 3 5\", lub zakres \"2-4\")")
+    print('  (wpisz numery oddzielone spacją, np. "1 3 5", lub zakres "2-4")')
     while True:
         try:
             raw = input(f"{prompt} [1-{len(items)}]: ").strip()
@@ -80,7 +82,7 @@ def _numbered_pick_multi(items: list, label_fn, prompt: str) -> list:
             valid = sorted(i for i in indices if 0 <= i < len(items))
             if valid:
                 return [items[i] for i in valid]
-        except (ValueError, KeyboardInterrupt):
+        except ValueError, KeyboardInterrupt:
             pass
         print(f"  Wpisz poprawne numery 1–{len(items)}.")
 
@@ -95,6 +97,7 @@ def select_series(hits: list[SeriesHit], prompt: str = "Wybierz serię") -> Seri
 
     from InquirerPy import inquirer
     from InquirerPy.base.control import Choice
+
     choices = [Choice(value=i, name=_label(h)) for i, h in enumerate(hits)]
     idx = inquirer.fuzzy(
         message=f"{prompt}:",
@@ -117,6 +120,7 @@ def select_series_from_history(
 
     from InquirerPy import inquirer
     from InquirerPy.base.control import Choice
+
     choices = [Choice(value=i, name=_label(e)) for i, e in enumerate(entries)]
     idx = inquirer.fuzzy(
         message=f"{prompt}:",
@@ -142,6 +146,7 @@ def select_episodes(
 
     from InquirerPy import inquirer
     from InquirerPy.base.control import Choice
+
     choices = [Choice(value=i, name=_label(ep)) for i, ep in enumerate(episodes)]
 
     if multi:
@@ -151,9 +156,7 @@ def select_episodes(
             choices=choices,
             validate=lambda result: len(result) > 0,
             invalid_message="Zaznacz co najmniej jeden odcinek — użyj Spacji.",
-            long_instruction=(
-                "Wpisz aby filtrować  |  Spacja = zaznacz/odznacz  |  Enter = potwierdź"
-            ),
+            long_instruction=("Wpisz aby filtrować  |  Spacja = zaznacz/odznacz  |  Enter = potwierdź"),
             transformer=lambda result: ", ".join(_name_map.get(r, str(r)) for r in result),
         ).execute()
         return [episodes[i] for i in indices]
@@ -186,6 +189,7 @@ def select_player(
 
     from InquirerPy import inquirer
     from InquirerPy.base.control import Choice
+
     choices = [Choice(value=i, name=_label(p)) for i, p in enumerate(players)]
     idx = inquirer.select(
         message=f"{prompt}:",
@@ -197,12 +201,12 @@ def select_player(
 
 def select_start_mode(has_history: bool, history_count: int = 0) -> Literal["search", "resume", "url", "quit"]:
     options_plain = []
-    options_plain.append(("search",  "1. Szukaj nowego anime"))
+    options_plain.append(("search", "1. Szukaj nowego anime"))
     if has_history:
         n = f" ({history_count} pozycji)" if history_count else ""
         options_plain.append(("resume", f"2. Kontynuuj z historii{n}"))
-    options_plain.append(("url",   f"{len(options_plain) + 1}. Wklej URL serii"))
-    options_plain.append(("quit",  f"{len(options_plain) + 1}. Wyjdź"))
+    options_plain.append(("url", f"{len(options_plain) + 1}. Wklej URL serii"))
+    options_plain.append(("quit", f"{len(options_plain) + 1}. Wyjdź"))
 
     if not _use_inquirer():
         for _, label in options_plain:
@@ -214,12 +218,13 @@ def select_start_mode(has_history: bool, history_count: int = 0) -> Literal["sea
                 idx = int(raw) - 1
                 if 0 <= idx < len(keys):
                     return keys[idx]  # type: ignore[return-value]
-            except (ValueError, KeyboardInterrupt):
+            except ValueError, KeyboardInterrupt:
                 pass
             print(f"  Wpisz liczbę 1–{len(keys)}.")
 
     from InquirerPy import inquirer
     from InquirerPy.base.control import Choice
+
     choices = [Choice(value=key, name=label.split(". ", 1)[1]) for key, label in options_plain]
     return inquirer.select(
         message="Co chcesz zrobić?",
@@ -236,11 +241,16 @@ def prompt_search_query() -> str:
                 return raw
 
     from InquirerPy import inquirer
-    return inquirer.text(
-        message="Czego szukasz?",
-        validate=lambda s: bool(s.strip()),
-        invalid_message="Wpisz tytuł anime.",
-    ).execute().strip()
+
+    return (
+        inquirer.text(
+            message="Czego szukasz?",
+            validate=lambda s: bool(s.strip()),
+            invalid_message="Wpisz tytuł anime.",
+        )
+        .execute()
+        .strip()
+    )
 
 
 def prompt_url() -> str:
@@ -258,11 +268,16 @@ def prompt_url() -> str:
             print("  Podaj prawidłowy URL z shinden.pl.")
 
     from InquirerPy import inquirer
-    return inquirer.text(
-        message="URL serii (https://shinden.pl/series/...):",
-        validate=_valid,
-        invalid_message="Podaj prawidłowy URL z shinden.pl.",
-    ).execute().strip()
+
+    return (
+        inquirer.text(
+            message="URL serii (https://shinden.pl/series/...):",
+            validate=_valid,
+            invalid_message="Podaj prawidłowy URL z shinden.pl.",
+        )
+        .execute()
+        .strip()
+    )
 
 
 def select_quality(qualities: dict[str, str], prompt: str = "Wybierz jakość") -> str:
@@ -292,12 +307,13 @@ def select_quality(qualities: dict[str, str], prompt: str = "Wybierz jakość") 
                 idx = int(raw) - 1
                 if 0 <= idx < len(all_options):
                     return all_options[idx]
-            except (ValueError, KeyboardInterrupt):
+            except ValueError, KeyboardInterrupt:
                 pass
             print(f"  Wpisz liczbę 1–{len(all_options)}.")
 
     from InquirerPy import inquirer
     from InquirerPy.base.control import Choice
+
     choices = [Choice(value=opt, name=_label(opt)) for opt in all_options]
     return inquirer.select(
         message=f"{prompt}:",
@@ -308,9 +324,9 @@ def select_quality(qualities: dict[str, str], prompt: str = "Wybierz jakość") 
 
 def select_action() -> Literal["play", "download", "debug"]:
     _options: list[tuple[str, str]] = [
-        ("play",     "Oglądaj w mpv/vlc"),
+        ("play", "Oglądaj w mpv/vlc"),
         ("download", "Pobierz na dysk"),
-        ("debug",    "Pokaż linki (debug)"),
+        ("debug", "Pokaż linki (debug)"),
     ]
 
     if not _use_inquirer():
@@ -322,13 +338,14 @@ def select_action() -> Literal["play", "download", "debug"]:
                 raw = input("Akcja [1-3]: ").strip()
                 idx = int(raw) - 1
                 if 0 <= idx < len(keys):
-                    return keys[idx]  # type: ignore[return-value]
-            except (ValueError, KeyboardInterrupt):
+                    return keys[idx]  # type: ignore
+            except ValueError, KeyboardInterrupt:
                 pass
             print("  Wpisz liczbę 1–3.")
 
     from InquirerPy import inquirer
     from InquirerPy.base.control import Choice
+
     choices = [Choice(value=key, name=label) for key, label in _options]
     return inquirer.select(
         message="Co zrobić z tym odcinkiem?",

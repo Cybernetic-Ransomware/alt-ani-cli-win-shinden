@@ -28,7 +28,7 @@ Python CLI for watching and downloading anime from [shinden.pl](https://shinden.
 ```powershell
 git clone https://github.com/Cybernetic-Ransomware/alt-ani-cli-win-shinden
 cd alt-ani-cli-win
-uv sync
+uv sync --no-group dev
 ```
 
 ## Usage
@@ -115,6 +115,7 @@ Files are saved to `%USERPROFILE%\Videos\alt-ani-cli\` by default.
 
 ```powershell
 uv sync
+uv run pre-commit install  # install git hooks
 uv run pytest -v
 uv run ruff check src
 ```

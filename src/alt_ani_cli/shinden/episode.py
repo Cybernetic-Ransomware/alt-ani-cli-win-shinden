@@ -27,7 +27,7 @@ def parse_players(html: str) -> list[PlayerEntry]:
             continue
         try:
             data = json.loads(_html.unescape(raw))
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError, ValueError:
             continue
 
         online_id = str(data.get("online_id", "")).strip()
@@ -39,14 +39,16 @@ def parse_players(html: str) -> list[PlayerEntry]:
 
         date_added = _row_date(node)
 
-        players.append(PlayerEntry(
-            online_id=online_id,
-            player=player_name,
-            lang_audio=str(data.get("lang_audio", "")).strip(),
-            lang_subs=str(data.get("lang_subs", "")).strip(),
-            max_res=max_res_raw or None,
-            date_added=date_added,
-        ))
+        players.append(
+            PlayerEntry(
+                online_id=online_id,
+                player=player_name,
+                lang_audio=str(data.get("lang_audio", "")).strip(),
+                lang_subs=str(data.get("lang_subs", "")).strip(),
+                max_res=max_res_raw or None,
+                date_added=date_added,
+            )
+        )
 
     return players
 
@@ -65,8 +67,8 @@ def _row_date(node: Node) -> str | None:
     return text or None
 
 
-_AUDIO_RANK_WATCH    = {"pl": 3, "jp": 2, "en": 1}   # PL dub first for interactive
-_AUDIO_RANK_DOWNLOAD = {"jp": 3, "en": 2, "pl": 1}   # JP original first for archiving
+_AUDIO_RANK_WATCH = {"pl": 3, "jp": 2, "en": 1}  # PL dub first for interactive
+_AUDIO_RANK_DOWNLOAD = {"jp": 3, "en": 2, "pl": 1}  # JP original first for archiving
 
 
 def _audio_rank(lang: str, download: bool = False) -> int:

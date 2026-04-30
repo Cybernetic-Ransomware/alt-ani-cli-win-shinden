@@ -24,9 +24,7 @@ def play(
         "close_fds": True,
     }
     if sys.platform == "win32":
-        kwargs["creationflags"] = (
-            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-        )
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
     else:
         kwargs["start_new_session"] = True
 

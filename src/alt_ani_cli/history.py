@@ -11,7 +11,7 @@ def _load() -> dict:
         return {"version": 1, "series": {}}
     try:
         return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError, OSError:
         return {"version": 1, "series": {}}
 
 

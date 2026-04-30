@@ -22,9 +22,7 @@ _SOURCES_RE = re.compile(
 )
 
 # file:"url" standalone
-_FILE_RE = re.compile(
-    r'"?file"?\s*:\s*["\']([^"\']{20,}\.(?:mp4|m3u8)[^"\']*)["\']'
-)
+_FILE_RE = re.compile(r'"?file"?\s*:\s*["\']([^"\']{20,}\.(?:mp4|m3u8)[^"\']*)["\']')
 
 # hls:"url"
 _HLS_RE = re.compile(r'"hls"\s*:\s*"([^"]+\.m3u8[^"]*)"')

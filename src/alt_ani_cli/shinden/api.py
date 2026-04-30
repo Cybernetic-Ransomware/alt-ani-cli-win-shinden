@@ -29,10 +29,7 @@ def resolve_embed(
 
     resp_load = client.get(f"{base}/player_load?{auth}")
     if resp_load.status_code == 403:
-        raise AntiBotError(
-            "shinden API returned 403 on player_load — "
-            "GUEST_AUTH in config.py may have expired."
-        )
+        raise AntiBotError("shinden API returned 403 on player_load — GUEST_AUTH in config.py may have expired.")
     resp_load.raise_for_status()
 
     time.sleep(sleep_seconds)
@@ -51,7 +48,9 @@ def resolve_embed(
             f"Try setting ALT_ANI_CLI_ANTIBOT_DELAY=7"
         )
 
-    src = iframe.attributes.get("src", "")
+    src = iframe.attributes.get("src")
+    if not src:
+        raise AntiBotError(f"iframe has no src for online_id={online_id!r}")
     if src.startswith("//"):
         src = "https:" + src
     elif not src.startswith("http"):

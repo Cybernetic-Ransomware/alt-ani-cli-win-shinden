@@ -14,10 +14,7 @@ def make_client() -> httpx.Client:
     """
     headers = {
         "User-Agent": USER_AGENT,
-        "Accept": (
-            "text/html,application/xhtml+xml,application/xml;"
-            "q=0.9,image/avif,image/webp,*/*;q=0.8"
-        ),
+        "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"),
         "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
         "Accept-Encoding": "gzip, deflate, br",
         "Referer": f"{SHINDEN_BASE}/",

@@ -39,7 +39,5 @@ def _find() -> str:
         if sys.platform == "win32" and os.path.isfile(c):
             return c
     raise PlayerNotFoundError(
-        "VLC not found on PATH.\n"
-        "Install via:  winget install VideoLAN.VLC\n"
-        "Or set env:   ANI_CLI_PLAYER=C:\\path\\to\\vlc.exe"
+        "VLC not found on PATH.\nInstall via:  winget install VideoLAN.VLC\nOr set env:   ANI_CLI_PLAYER=C:\\path\\to\\vlc.exe"
     )

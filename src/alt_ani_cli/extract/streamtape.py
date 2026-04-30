@@ -7,9 +7,7 @@ from alt_ani_cli.extract.common import Stream
 
 # Streamtape concatenates two JS strings to form the /get_video token URL.
 # Pattern: robotlink.innerHTML = '/get_video?id=...' + '&expires=...&ip=...'
-_ROBOT_RE = re.compile(
-    r"robotlink[\"']?\)?\.innerHTML\s*=\s*[\"']([^\"']+)[\"']\s*\+\s*[\"']([^\"']+)[\"']"
-)
+_ROBOT_RE = re.compile(r"robotlink[\"']?\)?\.innerHTML\s*=\s*[\"']([^\"']+)[\"']\s*\+\s*[\"']([^\"']+)[\"']")
 _DIRECT_RE = re.compile(r'"(https?://streamtape\.[a-z]+/get_video[^"]+)"')
 
 
