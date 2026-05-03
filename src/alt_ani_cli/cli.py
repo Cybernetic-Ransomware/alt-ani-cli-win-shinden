@@ -22,7 +22,7 @@ from alt_ani_cli.shinden import http as shinden_http
 from alt_ani_cli.shinden import search as shinden_search
 from alt_ani_cli.shinden import series as shinden_series
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesRef
-from alt_ani_cli.ui import menus, progress
+from alt_ani_cli.ui import progress
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -229,207 +229,7 @@ def _setup_encoding() -> None:
         colorama.just_fix_windows_console()
 
 
-def main() -> None:  # noqa: C901
-    _setup_encoding()
-    parser = _build_parser()
-    args = parser.parse_args()
-
-    # --- delete history -------------------------------------------------------
-    if args.delete_history:
-        history.clear()
-        progress.success("Historia wyczyszczona.")
-        sys.exit(0)
-
-    client = shinden_http.make_client()
-    player_kind = "vlc" if args.vlc else "mpv"
-    interactive = sys.stdin.isatty() and not args.select_nth
-
-    try:
-        # --- resolve series ---------------------------------------------------
-        if not args.query and not args.url and not args.resume:
-            if not interactive:
-                parser.error("Podaj tytuł do wyszukania, URL (--url) lub użyj -c.")
-            all_entries = history.list_all()
-            mode = menus.select_start_mode(
-                has_history=bool(all_entries),
-                history_count=len(all_entries),
-            )
-            if mode == "quit":
-                sys.exit(0)
-            elif mode == "resume":
-                args.resume = True
-            elif mode == "url":
-                args.url = menus.prompt_url()
-            else:
-                args.query = [menus.prompt_search_query()]
-
-        if args.resume:
-            all_entries = history.list_all()
-            if not all_entries:
-                progress.error("Historia jest pusta.")
-                sys.exit(1)
-            ref, last_ep = menus.select_series_from_history(all_entries)
-        elif args.url:
-            ref = shinden_series.parse_series_url(args.url)
-            last_ep = 0.0
-        else:
-            query = " ".join(args.query)
-            progress.info(f"Szukam: {query!r}")
-            hits = shinden_search.search_series(client, query)
-            if not hits:
-                progress.error(f"Brak wyników dla: {query!r}")
-                sys.exit(1)
-
-            if args.select_nth or not sys.stdin.isatty():
-                idx = (args.select_nth - 1) if args.select_nth else 0
-                if idx < 0 or idx >= len(hits):
-                    progress.error(f"--select-nth {args.select_nth}: jest tylko {len(hits)} wyników.")
-                    sys.exit(1)
-                ref = shinden_series.parse_series_url(hits[idx].url)
-                ref = SeriesRef(id=ref.id, slug=ref.slug, title=hits[idx].title, url=ref.url)
-            else:
-                hit = menus.select_series(hits)
-                ref = shinden_series.parse_series_url(hit.url)
-                ref = SeriesRef(id=ref.id, slug=ref.slug, title=hit.title, url=ref.url)
-
-            last_ep = 0.0
-
-        # --- episode list -----------------------------------------------------
-        progress.info(f"Pobieram listę odcinków: {ref.title}")
-        ref, episodes = shinden_series.list_episodes(client, ref)
-
-        if not episodes:
-            progress.error("Brak dostępnych odcinków.")
-            sys.exit(1)
-
-        # --- resolve target episodes -----------------------------------------
-        if args.episode:
-            targets = _parse_range(args.episode, episodes)
-            if not targets:
-                progress.error(f"Nie znaleziono odcinków dla zakresu: {args.episode!r}")
-                sys.exit(1)
-        elif args.resume and last_ep > 0:
-            # Start from the first unwatched episode
-            remaining = [ep for ep in episodes if ep.number > last_ep]
-            if not remaining:
-                progress.warn(f"Obejrzałeś już wszystkie odcinki ({ref.title}).")
-                remaining = episodes
-            targets = menus.select_episodes(remaining, prompt=f"Wybierz odcinek ({ref.title})", multi=True)
-        elif not sys.stdin.isatty():
-            targets = [episodes[0]]
-        else:
-            targets = menus.select_episodes(episodes, prompt=f"Wybierz odcinek ({ref.title})", multi=True)
-
-        if not targets:
-            progress.warn("Nie wybrano żadnych odcinków.")
-            sys.exit(0)
-
-        # --- play each episode -----------------------------------------------
-        _episode_action: str | None = None  # set once on first episode, reused for the rest
-        for ep in targets:
-            progress.info(f"Odcinek {ep.number:g}: {ep.title}")
-
-            ep_resp = client.get(ep.url)
-            ep_resp.raise_for_status()
-            players = shinden_episode.sort_players(
-                shinden_episode.parse_players(ep_resp.text),
-                download=args.download,
-            )
-
-            if not players:
-                progress.warn(f"Brak playerów dla odcinka {ep.number:g} — pomijam.")
-                continue
-
-            players = _filter_players(
-                players,
-                lang=args.lang,
-                subs=args.subs,
-                player_name=args.player_name,
-            )
-
-            _auto = args.select_nth or len(players) == 1 or not sys.stdin.isatty()
-            _failed_ids: set[str] = set()
-            stream, embed, chosen = None, None, players[0]
-
-            while True:
-                if _auto:
-                    chosen = players[0]
-                else:
-                    if _failed_ids:
-                        progress.warn(f"Player {chosen.player!r} nie zadziałał — wybierz inny:")
-                    chosen = menus.select_player(
-                        players,
-                        prompt=f"Player — ep {ep.number:g}",
-                        failed=_failed_ids,
-                    )
-
-                stream, embed = _resolve_with_fallback(
-                    client,
-                    players,
-                    chosen,
-                    _auto,
-                    ep.number,
-                    cookies_file=args.cookies_file,
-                    cookies_browser=args.cookies_browser,
-                )
-
-                if stream is not None or _auto:
-                    break
-                _failed_ids.add(chosen.online_id)
-                if all(p.online_id in _failed_ids for p in players):
-                    break
-
-            if stream is None:
-                progress.warn(f"Żaden player nie zadziałał dla odcinka {ep.number:g} — pomijam.")
-                continue
-
-            if args.quality is None:
-                if interactive and stream.qualities:
-                    args.quality = menus.select_quality(stream.qualities)
-                else:
-                    args.quality = "best"
-            stream = _pick_quality(stream, args.quality)
-            title = f"{ref.title} — Odcinek {ep.number:g}"
-
-            if args.download:
-                _action = "download"
-            elif args.debug:
-                _action = "debug"
-            elif interactive and _episode_action is None:
-                _episode_action = menus.select_action()
-                _action = _episode_action
-            else:
-                _action = _episode_action or "play"
-
-            if _action == "download":
-                download.run(stream, ep, ref)
-            elif _action == "debug":
-                _print_debug(stream, embed)
-            else:
-                player_runner.play(
-                    stream,
-                    kind=player_kind,
-                    title=title,
-                    no_detach=args.no_detach,
-                )
-                progress.success(f"Odtwarzam w {player_kind}: {title}")
-
-            history.upsert(ref, last_ep=ep.number)
-
-    except KeyboardInterrupt:
-        progress.warn("Przerwano przez użytkownika.")
-        sys.exit(130)
-    except (AntiBotError, NoStreamError, ParseError) as exc:
-        progress.error(str(exc))
-        sys.exit(1)
-    except PlayerNotFoundError as exc:
-        progress.error(str(exc))
-        sys.exit(1)
-    except ShindenError as exc:
-        progress.error(f"Błąd shinden: {exc}")
-        sys.exit(1)
-    finally:
-        client.close()
+ANTIBOT_LABEL = "5 s antibot delay"
 
 
 def _print_debug(stream: Stream, embed) -> None:
@@ -455,4 +255,169 @@ def _print_debug(stream: Stream, embed) -> None:
         con.print(t)
 
 
-ANTIBOT_LABEL = "5 s antibot delay"
+def _run_noninteractive(args, client) -> None:  # noqa: C901
+    if not args.query and not args.url and not args.resume:
+        import argparse as _ap
+
+        _ap.ArgumentParser(prog="alt-ani-cli").error("Podaj tytuł do wyszukania, URL (--url) lub użyj -c.")
+
+    if args.resume:
+        all_entries = history.list_all()
+        if not all_entries:
+            progress.error("Historia jest pusta.")
+            sys.exit(1)
+        ref, last_ep = all_entries[0]
+    elif args.url:
+        ref = shinden_series.parse_series_url(args.url)
+        last_ep = 0.0
+    else:
+        query = " ".join(args.query)
+        progress.info(f"Szukam: {query!r}")
+        hits = shinden_search.search_series(client, query)
+        if not hits:
+            progress.error(f"Brak wyników dla: {query!r}")
+            sys.exit(1)
+
+        idx = (args.select_nth - 1) if args.select_nth else 0
+        if idx < 0 or idx >= len(hits):
+            progress.error(f"--select-nth {args.select_nth}: jest tylko {len(hits)} wyników.")
+            sys.exit(1)
+        ref = shinden_series.parse_series_url(hits[idx].url)
+        ref = SeriesRef(id=ref.id, slug=ref.slug, title=hits[idx].title, url=ref.url)
+        last_ep = 0.0
+
+    progress.info(f"Pobieram listę odcinków: {ref.title}")
+    ref, episodes = shinden_series.list_episodes(client, ref)
+
+    if not episodes:
+        progress.error("Brak dostępnych odcinków.")
+        sys.exit(1)
+
+    if args.episode:
+        targets = _parse_range(args.episode, episodes)
+        if not targets:
+            progress.error(f"Nie znaleziono odcinków dla zakresu: {args.episode!r}")
+            sys.exit(1)
+    elif args.resume and last_ep > 0:
+        remaining = [ep for ep in episodes if ep.number > last_ep]
+        if not remaining:
+            progress.warn(f"Obejrzałeś już wszystkie odcinki ({ref.title}).")
+            remaining = episodes
+        targets = [remaining[0]]
+    else:
+        targets = [episodes[0]]
+
+    player_kind = "vlc" if args.vlc else "mpv"
+    _episode_action: str | None = None
+
+    for ep in targets:
+        progress.info(f"Odcinek {ep.number:g}: {ep.title}")
+
+        ep_resp = client.get(ep.url)
+        ep_resp.raise_for_status()
+        players = shinden_episode.sort_players(
+            shinden_episode.parse_players(ep_resp.text),
+            download=args.download,
+        )
+
+        if not players:
+            progress.warn(f"Brak playerów dla odcinka {ep.number:g} — pomijam.")
+            continue
+
+        players = _filter_players(
+            players,
+            lang=args.lang,
+            subs=args.subs,
+            player_name=args.player_name,
+        )
+
+        chosen = players[0]
+        stream, embed = _resolve_with_fallback(
+            client,
+            players,
+            chosen,
+            auto=True,
+            ep_number=ep.number,
+            cookies_file=args.cookies_file,
+            cookies_browser=args.cookies_browser,
+        )
+
+        if stream is None:
+            progress.warn(f"Żaden player nie zadziałał dla odcinka {ep.number:g} — pomijam.")
+            continue
+
+        quality = args.quality or "best"
+        stream = _pick_quality(stream, quality)
+        title = f"{ref.title} — Odcinek {ep.number:g}"
+
+        if args.download:
+            _action = "download"
+        elif args.debug:
+            _action = "debug"
+        else:
+            _action = _episode_action or "play"
+
+        if _action == "download":
+            download.run(stream, ep, ref)
+        elif _action == "debug":
+            _print_debug(stream, embed)
+        else:
+            player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
+            progress.success(f"Odtwarzam w {player_kind}: {title}")
+
+        history.upsert(ref, last_ep=ep.number)
+
+
+def _run_interactive(args, client) -> None:
+    from alt_ani_cli.flow.handlers import HANDLERS
+    from alt_ani_cli.flow.state import _VIRTUAL_SCREENS, FlowState, Screen, _BackSentinel
+
+    state = FlowState(args=args, client=client, quality=args.quality)
+
+    history_stack: list[Screen] = []
+    screen: Screen | None = Screen.START_MODE
+
+    while screen is not None:
+        result = HANDLERS[screen](state)
+        if isinstance(result, _BackSentinel):
+            screen = None if not history_stack else history_stack.pop()
+        elif result is None:
+            screen = None
+        else:
+            if screen not in _VIRTUAL_SCREENS:
+                history_stack.append(screen)
+            screen = result
+
+
+def main() -> None:  # noqa: C901
+    _setup_encoding()
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    if args.delete_history:
+        history.clear()
+        progress.success("Historia wyczyszczona.")
+        sys.exit(0)
+
+    client = shinden_http.make_client()
+    interactive = sys.stdin.isatty() and not args.select_nth
+
+    try:
+        if interactive:
+            _run_interactive(args, client)
+        else:
+            _run_noninteractive(args, client)
+    except KeyboardInterrupt:
+        progress.warn("Przerwano przez użytkownika.")
+        sys.exit(130)
+    except (AntiBotError, NoStreamError, ParseError) as exc:
+        progress.error(str(exc))
+        sys.exit(1)
+    except PlayerNotFoundError as exc:
+        progress.error(str(exc))
+        sys.exit(1)
+    except ShindenError as exc:
+        progress.error(f"Błąd shinden: {exc}")
+        sys.exit(1)
+    finally:
+        client.close()

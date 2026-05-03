@@ -2,12 +2,9 @@
 
 from unittest.mock import patch
 
-from alt_ani_cli.ui.menus import select_quality, select_start_mode, select_action
+from alt_ani_cli.shinden.models import EpisodeRow
+from alt_ani_cli.ui.menus import select_action, select_episodes, select_quality, select_start_mode
 
-
-# ---------------------------------------------------------------------------
-# select_quality
-# ---------------------------------------------------------------------------
 
 def test_select_quality_empty_returns_best():
     assert select_quality({}) == "best"
@@ -55,10 +52,6 @@ def test_select_quality_sorted_descending(monkeypatch):
            "1080p" in resolution_lines[0]
 
 
-# ---------------------------------------------------------------------------
-# select_start_mode
-# ---------------------------------------------------------------------------
-
 def test_select_start_mode_no_history_fallback(monkeypatch):
     monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
     with patch("builtins.input", return_value="1"):
@@ -80,10 +73,6 @@ def test_select_start_mode_resume_with_history_fallback(monkeypatch):
     assert result == "resume"
 
 
-# ---------------------------------------------------------------------------
-# select_action
-# ---------------------------------------------------------------------------
-
 def test_select_action_play_fallback(monkeypatch):
     monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
     with patch("builtins.input", return_value="1"):
@@ -100,3 +89,46 @@ def test_select_action_debug_fallback(monkeypatch):
     monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
     with patch("builtins.input", return_value="3"):
         assert select_action() == "debug"
+
+
+def test_select_quality_empty_enter_returns_none(monkeypatch):
+    monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+    with patch("builtins.input", return_value=""):
+        assert select_quality({"1080p": "u1"}) is None
+
+
+def test_select_start_mode_empty_enter_returns_none(monkeypatch):
+    monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+    with patch("builtins.input", return_value=""):
+        assert select_start_mode(has_history=False) is None
+
+
+def test_select_action_empty_enter_returns_none(monkeypatch):
+    monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+    with patch("builtins.input", return_value=""):
+        assert select_action() is None
+
+
+def test_select_episodes_empty_enter_returns_none(monkeypatch):
+    monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+    episodes = [EpisodeRow(number=1, title="Ep 1", url="http://x/1")]
+    with patch("builtins.input", return_value=""):
+        assert select_episodes(episodes) is None
+
+def test_select_episodes_watched_marker_in_label(monkeypatch):
+    monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+    episodes = [
+        EpisodeRow(number=1, title="Ep A", url="http://x/1"),
+        EpisodeRow(number=2, title="Ep B", url="http://x/2"),
+    ]
+    printed_lines: list[str] = []
+
+    def _capture(*args, **kwargs):
+        printed_lines.append(" ".join(str(a) for a in args))
+
+    with patch("builtins.print", side_effect=_capture):
+        with patch("builtins.input", return_value="2"):
+            select_episodes(episodes, watched_numbers={1.0})
+
+    joined = "\n".join(printed_lines)
+    assert "✓" in joined  # watched ep 1 should be marked
