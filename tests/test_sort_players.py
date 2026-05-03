@@ -87,11 +87,6 @@ def test_date_parsed_from_table_row():
     assert len(players) == 1
     assert players[0].date_added == "2024-03-15"
 
-
-# ---------------------------------------------------------------------------
-# Download mode: jp > en > pl > others
-# ---------------------------------------------------------------------------
-
 def test_download_jp_before_pl():
     players = [
         _p("A", "pl", "pl"),

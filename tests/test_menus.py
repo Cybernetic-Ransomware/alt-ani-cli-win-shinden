@@ -6,10 +6,6 @@ from alt_ani_cli.shinden.models import EpisodeRow
 from alt_ani_cli.ui.menus import select_action, select_episodes, select_quality, select_start_mode
 
 
-# ---------------------------------------------------------------------------
-# select_quality
-# ---------------------------------------------------------------------------
-
 def test_select_quality_empty_returns_best():
     assert select_quality({}) == "best"
 
@@ -56,10 +52,6 @@ def test_select_quality_sorted_descending(monkeypatch):
            "1080p" in resolution_lines[0]
 
 
-# ---------------------------------------------------------------------------
-# select_start_mode
-# ---------------------------------------------------------------------------
-
 def test_select_start_mode_no_history_fallback(monkeypatch):
     monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
     with patch("builtins.input", return_value="1"):
@@ -81,10 +73,6 @@ def test_select_start_mode_resume_with_history_fallback(monkeypatch):
     assert result == "resume"
 
 
-# ---------------------------------------------------------------------------
-# select_action
-# ---------------------------------------------------------------------------
-
 def test_select_action_play_fallback(monkeypatch):
     monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
     with patch("builtins.input", return_value="1"):
@@ -101,11 +89,6 @@ def test_select_action_debug_fallback(monkeypatch):
     monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
     with patch("builtins.input", return_value="3"):
         assert select_action() == "debug"
-
-
-# ---------------------------------------------------------------------------
-# ESC / empty-Enter returns None (go-back signal)
-# ---------------------------------------------------------------------------
 
 
 def test_select_quality_empty_enter_returns_none(monkeypatch):
@@ -131,12 +114,6 @@ def test_select_episodes_empty_enter_returns_none(monkeypatch):
     episodes = [EpisodeRow(number=1, title="Ep 1", url="http://x/1")]
     with patch("builtins.input", return_value=""):
         assert select_episodes(episodes) is None
-
-
-# ---------------------------------------------------------------------------
-# watched_numbers marker in select_episodes
-# ---------------------------------------------------------------------------
-
 
 def test_select_episodes_watched_marker_in_label(monkeypatch):
     monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)

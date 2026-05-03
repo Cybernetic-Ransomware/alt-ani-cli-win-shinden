@@ -21,10 +21,6 @@ from alt_ani_cli.shinden import series as shinden_series
 from alt_ani_cli.shinden.models import SeriesRef
 from alt_ani_cli.ui import menus, progress
 
-# ---------------------------------------------------------------------------
-# UI screens
-# ---------------------------------------------------------------------------
-
 
 def handle_start_mode(state: FlowState) -> ScreenResult:
     args = state.args
@@ -108,11 +104,6 @@ def handle_series_pick(state: FlowState) -> ScreenResult:
     return Screen.FETCH_EPISODES
 
 
-# ---------------------------------------------------------------------------
-# Virtual screens (no UI)
-# ---------------------------------------------------------------------------
-
-
 def handle_fetch_episodes(state: FlowState) -> ScreenResult:
     assert state.ref is not None
     progress.info(f"Pobieram listę odcinków: {state.ref.title}")
@@ -126,11 +117,6 @@ def handle_fetch_episodes(state: FlowState) -> ScreenResult:
         progress.error("Brak dostępnych odcinków.")
         return Screen.SERIES_PICK
     return Screen.EPISODES_PICK
-
-
-# ---------------------------------------------------------------------------
-# UI screens (continued)
-# ---------------------------------------------------------------------------
 
 
 def handle_episodes_pick(state: FlowState) -> ScreenResult:
@@ -326,10 +312,6 @@ def handle_run_action(state: FlowState) -> ScreenResult:
     state.embed = None
     return Screen.EPISODE_DISPATCH
 
-
-# ---------------------------------------------------------------------------
-# Dispatch table
-# ---------------------------------------------------------------------------
 
 HANDLERS: dict[Screen, Callable[[FlowState], ScreenResult]] = {
     Screen.START_MODE: handle_start_mode,

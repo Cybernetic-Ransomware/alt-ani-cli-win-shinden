@@ -255,11 +255,6 @@ def _print_debug(stream: Stream, embed) -> None:
         con.print(t)
 
 
-# ---------------------------------------------------------------------------
-# Non-interactive (scripted) flow — original linear logic, unchanged
-# ---------------------------------------------------------------------------
-
-
 def _run_noninteractive(args, client) -> None:  # noqa: C901
     if not args.query and not args.url and not args.resume:
         import argparse as _ap
@@ -373,11 +368,6 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         history.upsert(ref, last_ep=ep.number)
 
 
-# ---------------------------------------------------------------------------
-# Interactive flow — FSM with ESC = go back
-# ---------------------------------------------------------------------------
-
-
 def _run_interactive(args, client) -> None:
     from alt_ani_cli.flow.handlers import HANDLERS
     from alt_ani_cli.flow.state import _VIRTUAL_SCREENS, FlowState, Screen, _BackSentinel
@@ -397,11 +387,6 @@ def _run_interactive(args, client) -> None:
             if screen not in _VIRTUAL_SCREENS:
                 history_stack.append(screen)
             screen = result
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 
 def main() -> None:  # noqa: C901

@@ -17,11 +17,6 @@ from alt_ani_cli.flow.state import BACK, FlowState, Screen, _BackSentinel
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesRef
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _make_args(**overrides):
     defaults = dict(
         query=[],
@@ -59,11 +54,6 @@ _EP2 = EpisodeRow(number=2.0, title="Ep 2", url="http://shinden.pl/ep/2")
 _EP3 = EpisodeRow(number=3.0, title="Ep 3", url="http://shinden.pl/ep/3")
 _PLAYER = PlayerEntry(online_id="pid1", player="Sibnet", lang_audio="jp", lang_subs="pl")
 _PLAYER2 = PlayerEntry(online_id="pid2", player="CDA", lang_audio="jp", lang_subs="pl")
-
-
-# ---------------------------------------------------------------------------
-# Handler unit tests
-# ---------------------------------------------------------------------------
 
 
 class TestHandleStartMode:
@@ -242,11 +232,6 @@ class TestHandleActionPick:
         mock_act.assert_not_called()
         assert result is Screen.RUN_ACTION
         assert state.episode_action == "download"
-
-
-# ---------------------------------------------------------------------------
-# Integration tests via _run_interactive
-# ---------------------------------------------------------------------------
 
 
 def _run_interactive_wrapped(args, client):

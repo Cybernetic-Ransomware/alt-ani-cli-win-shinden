@@ -21,11 +21,6 @@ def _make_packed(sources_url: str) -> str:
         f"('{packed_template}',10,{len(keys)},'{keys_str}'.split('|')))</script>"
     )
 
-
-# ---------------------------------------------------------------------------
-# Tests using real-world packer pattern (simpler, more reliable)
-# ---------------------------------------------------------------------------
-
 _SIMPLE_PACKED = (
     "<script>eval(function(p,a,c,k,e,d){e=function(c){return c};return p}"
     "('0([{3:\"4\"}]);',10,5,'sources|x|y|file|https://cdn.example.com/v.m3u8|'.split('|')))"
