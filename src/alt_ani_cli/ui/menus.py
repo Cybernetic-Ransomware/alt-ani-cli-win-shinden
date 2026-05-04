@@ -54,11 +54,14 @@ def _use_inquirer() -> bool:
     return _USE_INQUIRER
 
 
-# Passed as keybindings= to every InquirerPy prompt so ESC triggers skip
-# (mandatory=False + skip → returns None from execute()).
+# Bind ESC to the "interrupt" action so it returns None without requiring
+# mandatory=False.  "skip" needs mandatory=False which adds an extra Enter
+# handler that races with _handle_enter and causes "Return value already set"
+# on CPython 3.14 + Windows.  "interrupt" with raise_keyboard_interrupt=False
+# exits cleanly with None and has no such side-effect.
 # _keybinding_factory() runs inside __init__, so this must be set at
 # construction time — mutating kb_maps after the fact has no effect.
-_BACK_KB: dict = {"skip": [{"key": "escape"}]}
+_BACK_KB: dict = {"interrupt": [{"key": "escape"}]}
 
 
 def _ask(prompt_obj):
@@ -133,7 +136,6 @@ def select_series(
             choices=choices,
             max_height="40%",
             long_instruction=_M["series"]["instruction"],
-            mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
         )
@@ -161,7 +163,6 @@ def select_series_from_history(
             choices=choices,
             max_height="40%",
             long_instruction=_M["history_resume"]["instruction"],
-            mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
         )
@@ -217,7 +218,6 @@ def select_episodes(
             choices=choices,
             max_height="60%",
             long_instruction=_ep["instruction_single"],
-            mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
         )
@@ -252,7 +252,6 @@ def select_player(
             message=f"{prompt}:",
             choices=choices,
             long_instruction=_pl["instruction"],
-            mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
         )
@@ -297,7 +296,6 @@ def select_start_mode(has_history: bool, history_count: int = 0) -> Literal["sea
             message=_sm["question"],
             choices=choices,
             long_instruction=_sm["instruction"],
-            mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
         )
@@ -322,7 +320,6 @@ def prompt_search_query() -> str | None:
             validate=lambda s: bool(s.strip()),
             invalid_message=_sq["invalid"],
             long_instruction=_sq["instruction"],
-            mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
         )
@@ -356,7 +353,6 @@ def prompt_url() -> str | None:
             validate=_valid,
             invalid_message=_u["invalid"],
             long_instruction=_u["instruction"],
-            mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
         )
@@ -408,7 +404,6 @@ def select_quality(qualities: dict[str, str], prompt: str = _M["quality"]["defau
             message=f"{prompt}:",
             choices=choices,
             long_instruction=_q["instruction"],
-            mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
         )
@@ -449,7 +444,6 @@ def select_action() -> Literal["play", "download", "debug"] | None:
             message=_ac["message"],
             choices=choices,
             long_instruction=_ac["instruction"],
-            mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
         )
