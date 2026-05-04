@@ -10,6 +10,7 @@ import re
 import httpx
 
 from alt_ani_cli.config import USER_AGENT
+from alt_ani_cli.content import EXCEPTIONS
 from alt_ani_cli.extract.common import Stream
 
 # jwplayer("id").setup({...}) or jwplayer().setup({...})
@@ -98,7 +99,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
             ext=_ext(url),
         )
 
-    raise ValueError(f"jwplayer extractor: cannot find video URL in {embed_url!r}")
+    raise ValueError(EXCEPTIONS["jwplayer"]["no_video_url"].format(embed_url=repr(embed_url)))
 
 
 def _ext(url: str) -> str:

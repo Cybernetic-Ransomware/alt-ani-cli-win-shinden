@@ -2,6 +2,7 @@ import shutil
 from pathlib import Path
 
 from alt_ani_cli.config import DOWNLOADS, USER_AGENT
+from alt_ani_cli.content import CONTENT
 from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.shinden.models import EpisodeRow, SeriesRef
 from alt_ani_cli.ui import progress
@@ -67,11 +68,11 @@ def run(
         opts["external_downloader"] = "ffmpeg"
         opts["external_downloader_args"] = {"ffmpeg_i": ["-loglevel", "warning"]}
 
-    progress.info(f"Pobieranie: {safe_title} ep{ep_label} → {dest_dir}")
+    progress.info(CONTENT["download"]["starting"].format(title=safe_title, ep_label=ep_label, dir=dest_dir))
     with YoutubeDL(opts) as ydl:
         ydl.download([stream.url])
 
     # Find the downloaded file and report its path
     candidates = sorted(dest_dir.glob(f"{safe_title} - ep{ep_label}.*"))
     if candidates:
-        progress.success(f"Zapisano: {candidates[-1]}")
+        progress.success(CONTENT["download"]["saved"].format(path=candidates[-1]))

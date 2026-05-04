@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from alt_ani_cli.config import USER_AGENT
+from alt_ani_cli.content import EXCEPTIONS_PL
 from alt_ani_cli.errors import PlayerNotFoundError
 from alt_ani_cli.extract.common import Stream
 
@@ -52,11 +53,4 @@ def _find() -> str:
     for p in _WIN_SEARCH_PATHS:
         if p.is_file():
             return str(p)
-    raise PlayerNotFoundError(
-        "mpv / mpv.net nie znaleziony.\n"
-        "Zainstaluj przez:  winget install mpv.net\n"
-        "  lub:             winget install mpv\n"
-        "  lub:             scoop install mpv\n"
-        "Możesz też wskazać ścieżkę ręcznie:\n"
-        "  $env:ANI_CLI_PLAYER = 'C:\\path\\to\\mpvnet.exe'"
-    )
+    raise PlayerNotFoundError(EXCEPTIONS_PL["player"]["mpv_not_found"])

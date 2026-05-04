@@ -1,0 +1,48 @@
+api:
+  player_load_403: "shinden API zwróciło 403 na player_load — GUEST_AUTH w config.py mógł wygasnąć."
+  player_show_403: "shinden API zwróciło 403 na player_show."
+  no_iframe: "player_show nie zwróciło iframe dla online_id={online_id}. Fragment odpowiedzi: {snippet}. Spróbuj ustawić ALT_ANI_CLI_ANTIBOT_DELAY=7"
+  iframe_no_src: "iframe nie ma atrybutu src dla online_id={online_id}"
+  unexpected_iframe_src: "Nieoczekiwana wartość src iframe: {src} dla online_id={online_id}"
+
+series:
+  parse_error: "Nie można wyodrębnić ID serii z URL: {url}"
+  age_gate: |-
+    Shinden wymaga potwierdzenia wieku (18+) dla tej serii.
+    Zaloguj się na shinden.pl w przeglądarce i potwierdź wiek, a następnie skopiuj ciasteczka sesji do pliku cookies lub użyj --url z zalogowaną sesją.
+
+extract:
+  js_only_host: "{host} wymaga wykonania JavaScript (czyste SPA — brak statycznego URL wideo)"
+  ytdlp_failed: "yt-dlp nie mógł wyodrębnić strumienia z {embed_url}: {exc}"
+  all_failed: "Wszystkie ekstraktory zawiodły dla {embed_url}"
+  all_failed_exc: "Wszystkie ekstraktory zawiodły dla {embed_url}: {exc}"
+
+dood:
+  bad_base_url: "dood: nie można sparsować bazowego URL z {embed_url}"
+  no_pass_md5: "dood: nie znaleziono ścieżki pass_md5 w {embed_url}"
+
+jwplayer:
+  no_video_url: "jwplayer extractor: nie można znaleźć URL wideo w {embed_url}"
+
+mp4upload:
+  no_video_url: "mp4upload: nie można znaleźć URL wideo w {embed_url}"
+
+streamtape:
+  no_token: "streamtape: nie można sparsować tokenu z {embed_url}"
+
+ytdlp:
+  no_info: "yt-dlp nie zwróciło informacji dla {embed_url}"
+  no_url: "Brak URL wideo w wynikach yt-dlp dla {embed_url}"
+
+player:
+  mpv_not_found: |-
+    mpv / mpv.net nie znaleziony.
+    Zainstaluj przez:  winget install mpv.net
+      lub:             winget install mpv
+      lub:             scoop install mpv
+    Możesz też wskazać ścieżkę ręcznie:
+      $env:ANI_CLI_PLAYER = 'C:\path\to\mpvnet.exe'
+  vlc_not_found: |-
+    VLC nie znaleziony w PATH.
+    Zainstaluj przez:  winget install VideoLAN.VLC
+    Lub wskaż ścieżkę:  ANI_CLI_PLAYER=C:\path\to\vlc.exe

@@ -4,6 +4,7 @@ import time
 import httpx
 
 from alt_ani_cli.config import USER_AGENT
+from alt_ani_cli.content import EXCEPTIONS
 from alt_ani_cli.extract.common import Stream
 
 _PASS_MD5_RE = re.compile(r"/pass_md5/([a-zA-Z0-9/_-]+)")
@@ -13,7 +14,7 @@ _TOKEN_RE = re.compile(r"token=([a-zA-Z0-9]+)")
 def resolve(embed_url: str, referer: str) -> Stream:
     m_base = re.match(r"(https?://[^/]+)", embed_url)
     if not m_base:
-        raise ValueError(f"dood: cannot parse base URL from {embed_url!r}")
+        raise ValueError(EXCEPTIONS["dood"]["bad_base_url"].format(embed_url=repr(embed_url)))
     base = m_base.group(1)
 
     with httpx.Client(follow_redirects=True, timeout=30.0) as client:
@@ -23,7 +24,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
 
         m_pass = _PASS_MD5_RE.search(html)
         if not m_pass:
-            raise ValueError(f"dood: no pass_md5 path found in {embed_url!r}")
+            raise ValueError(EXCEPTIONS["dood"]["no_pass_md5"].format(embed_url=repr(embed_url)))
 
         pass_url = f"{base}/pass_md5/{m_pass.group(1)}"
         resp2 = client.get(
