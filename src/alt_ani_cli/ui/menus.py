@@ -14,9 +14,12 @@ import re
 from typing import Literal
 from urllib.parse import urlparse
 
+from alt_ani_cli.content import CONTENT
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesRef
 
 _RES_RE = re.compile(r"(\d+)")
+_M = CONTENT["menu"]
+_FB = _M["fallback"]
 
 
 def _lang_tag(lang: str) -> str:
@@ -72,7 +75,7 @@ def _numbered_pick(items: list, label_fn, prompt: str):
         print(f"  {i}. {label_fn(item)}")
     while True:
         try:
-            raw = input(f"{prompt} [1-{len(items)}, Enter=wstecz]: ").strip()
+            raw = input(_FB["select_prompt"].format(prompt=prompt, n=len(items))).strip()
             if not raw:
                 return None
             idx = int(raw) - 1
@@ -80,17 +83,17 @@ def _numbered_pick(items: list, label_fn, prompt: str):
                 return items[idx]
         except ValueError, KeyboardInterrupt:
             pass
-        print(f"  Wpisz liczbę 1–{len(items)}.")
+        print(_FB["invalid_number"].format(n=len(items)))
 
 
 def _numbered_pick_multi(items: list, label_fn, prompt: str) -> list | None:
     """Multi-pick numbered menu; returns None when user presses empty Enter."""
     for i, item in enumerate(items, 1):
         print(f"  {i}. {label_fn(item)}")
-    print('  (wpisz numery oddzielone spacją, np. "1 3 5", lub zakres "2-4")')
+    print(_FB["multi_hint"])
     while True:
         try:
-            raw = input(f"{prompt} [1-{len(items)}, Enter=wstecz]: ").strip()
+            raw = input(_FB["select_prompt"].format(prompt=prompt, n=len(items))).strip()
             if not raw:
                 return None
             indices: set[int] = set()
@@ -106,10 +109,13 @@ def _numbered_pick_multi(items: list, label_fn, prompt: str) -> list | None:
                 return [items[i] for i in valid]
         except ValueError, KeyboardInterrupt:
             pass
-        print(f"  Wpisz poprawne numery 1–{len(items)}.")
+        print(_FB["invalid_numbers"].format(n=len(items)))
 
 
-def select_series(hits: list[SeriesHit], prompt: str = "Wybierz serię") -> SeriesHit | None:
+def select_series(
+    hits: list[SeriesHit],
+    prompt: str = _M["series"]["default_prompt"],
+) -> SeriesHit | None:
     def _label(h: SeriesHit) -> str:
         t = h.series_type or "?"
         return f"{h.title}  [{t}]  (id:{h.id})"
@@ -126,7 +132,7 @@ def select_series(hits: list[SeriesHit], prompt: str = "Wybierz serię") -> Seri
             message=f"{prompt}:",
             choices=choices,
             max_height="40%",
-            long_instruction="Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz",
+            long_instruction=_M["series"]["instruction"],
             mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
@@ -137,10 +143,10 @@ def select_series(hits: list[SeriesHit], prompt: str = "Wybierz serię") -> Seri
 
 def select_series_from_history(
     entries: list[tuple[SeriesRef, float]],
-    prompt: str = "Kontynuuj oglądanie",
+    prompt: str = _M["history_resume"]["default_prompt"],
 ) -> tuple[SeriesRef, float] | None:
     def _label(e: tuple[SeriesRef, float]) -> str:
-        return f"{e[0].title}  — ostatni ep {e[1]:g}"
+        return _M["history_resume"]["label"].format(title=e[0].title, last_ep=e[1])
 
     if not _use_inquirer():
         return _numbered_pick(entries, _label, prompt)
@@ -154,7 +160,7 @@ def select_series_from_history(
             message=f"{prompt}:",
             choices=choices,
             max_height="40%",
-            long_instruction="Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz",
+            long_instruction=_M["history_resume"]["instruction"],
             mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
@@ -165,15 +171,16 @@ def select_series_from_history(
 
 def select_episodes(
     episodes: list[EpisodeRow],
-    prompt: str = "Wybierz odcinek",
+    prompt: str = _M["episodes"]["default_prompt"],
     multi: bool = False,
     watched_numbers: set[float] | None = None,
 ) -> list[EpisodeRow] | None:
     _watched = watched_numbers or set()
+    _ep = _M["episodes"]
 
     def _label(ep: EpisodeRow) -> str:
-        mark = "✓ " if ep.number in _watched else "  "
-        return f"{mark}{ep.number:g}.  {ep.title}"
+        tmpl = _ep["label_watched"] if ep.number in _watched else _ep["label_unwatched"]
+        return tmpl.format(number=ep.number, title=ep.title)
 
     if not _use_inquirer():
         if multi:
@@ -194,8 +201,8 @@ def select_episodes(
                 message=f"{prompt}:",
                 choices=choices,
                 validate=lambda result: len(result) > 0,
-                invalid_message="Zaznacz co najmniej jeden odcinek — użyj Spacji.",
-                long_instruction=("Wpisz aby filtrować  |  Spacja = zaznacz/odznacz  |  Enter = potwierdź  |  ESC = wstecz"),
+                invalid_message=_ep["invalid_multi"],
+                long_instruction=_ep["instruction_multi"],
                 transformer=lambda result: ", ".join(_name_map.get(r, str(r)) for r in result),
                 mandatory=False,
                 raise_keyboard_interrupt=False,
@@ -209,7 +216,7 @@ def select_episodes(
             message=f"{prompt}:",
             choices=choices,
             max_height="60%",
-            long_instruction="Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz",
+            long_instruction=_ep["instruction_single"],
             mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
@@ -220,17 +227,18 @@ def select_episodes(
 
 def select_player(
     players: list[PlayerEntry],
-    prompt: str = "Wybierz player",
+    prompt: str = _M["player"]["default_prompt"],
     failed: set[str] | None = None,
 ) -> PlayerEntry | None:
     _failed = failed or set()
+    _pl = _M["player"]
 
     def _label(p: PlayerEntry) -> str:
         audio = _lang_tag(p.lang_audio)
         subs = f"+{_lang_tag(p.lang_subs)}" if p.lang_subs else ""
         res = f" [{p.max_res}]" if p.max_res else ""
-        mark = "✗ " if p.online_id in _failed else "  "
-        return f"{mark}{p.player}{res}  {audio}{subs}"
+        tmpl = _pl["label_failed"] if p.online_id in _failed else _pl["label_ok"]
+        return tmpl.format(player=p.player, res=res, audio=audio, subs=subs)
 
     if not _use_inquirer():
         return _numbered_pick(players, _label, prompt)
@@ -243,7 +251,7 @@ def select_player(
         inquirer.select(
             message=f"{prompt}:",
             choices=choices,
-            long_instruction="↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz",
+            long_instruction=_pl["instruction"],
             mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
@@ -253,13 +261,16 @@ def select_player(
 
 
 def select_start_mode(has_history: bool, history_count: int = 0) -> Literal["search", "resume", "url", "quit"] | None:
+    _sm = _M["start_mode"]
+    _opts = _sm["options"]
+
     options_plain = []
-    options_plain.append(("search", "1. Szukaj nowego anime"))
+    options_plain.append(("search", f"1. {_opts['search']}"))
     if has_history:
-        n = f" ({history_count} pozycji)" if history_count else ""
-        options_plain.append(("resume", f"2. Kontynuuj z historii{n}"))
-    options_plain.append(("url", f"{len(options_plain) + 1}. Wklej URL serii"))
-    options_plain.append(("quit", f"{len(options_plain) + 1}. Wyjdź"))
+        resume_label = _opts["resume_with_count"].format(count=history_count) if history_count else _opts["resume"]
+        options_plain.append(("resume", f"2. {resume_label}"))
+    options_plain.append(("url", f"{len(options_plain) + 1}. {_opts['url']}"))
+    options_plain.append(("quit", f"{len(options_plain) + 1}. {_opts['quit']}"))
 
     if not _use_inquirer():
         for _, label in options_plain:
@@ -267,7 +278,7 @@ def select_start_mode(has_history: bool, history_count: int = 0) -> Literal["sea
         keys = [k for k, _ in options_plain]
         while True:
             try:
-                raw = input(f"Wybór [1-{len(keys)}, Enter=wyjście]: ").strip()
+                raw = input(_sm["fallback_prompt"].format(n=len(keys))).strip()
                 if not raw:
                     return None
                 idx = int(raw) - 1
@@ -275,7 +286,7 @@ def select_start_mode(has_history: bool, history_count: int = 0) -> Literal["sea
                     return keys[idx]  # type: ignore[return-value]
             except ValueError, KeyboardInterrupt:
                 pass
-            print(f"  Wpisz liczbę 1–{len(keys)}.")
+            print(_sm["fallback_invalid"].format(n=len(keys)))
 
     from InquirerPy import inquirer
     from InquirerPy.base.control import Choice
@@ -283,9 +294,9 @@ def select_start_mode(has_history: bool, history_count: int = 0) -> Literal["sea
     choices = [Choice(value=key, name=label.split(". ", 1)[1]) for key, label in options_plain]
     return _ask(
         inquirer.select(
-            message="Co chcesz zrobić?",
+            message=_sm["question"],
             choices=choices,
-            long_instruction="↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wyjście",
+            long_instruction=_sm["instruction"],
             mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
@@ -294,9 +305,11 @@ def select_start_mode(has_history: bool, history_count: int = 0) -> Literal["sea
 
 
 def prompt_search_query() -> str | None:
+    _sq = _M["search_query"]
+
     if not _use_inquirer():
         while True:
-            raw = input("Czego szukasz [Enter=wstecz]: ").strip()
+            raw = input(_sq["fallback_prompt"]).strip()
             if not raw:
                 return None
             return raw
@@ -305,10 +318,10 @@ def prompt_search_query() -> str | None:
 
     result = _ask(
         inquirer.text(
-            message="Czego szukasz?",
+            message=_sq["message"],
             validate=lambda s: bool(s.strip()),
-            invalid_message="Wpisz tytuł anime.",
-            long_instruction="Enter = szukaj  |  ESC = wstecz",
+            invalid_message=_sq["invalid"],
+            long_instruction=_sq["instruction"],
             mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
@@ -318,6 +331,8 @@ def prompt_search_query() -> str | None:
 
 
 def prompt_url() -> str | None:
+    _u = _M["url"]
+
     def _valid(s: str) -> bool:
         try:
             return urlparse(s.strip()).netloc.endswith("shinden.pl")
@@ -326,21 +341,21 @@ def prompt_url() -> str | None:
 
     if not _use_inquirer():
         while True:
-            raw = input("URL serii (https://shinden.pl/series/...) [Enter=wstecz]: ").strip()
+            raw = input(_u["fallback_prompt"]).strip()
             if not raw:
                 return None
             if _valid(raw):
                 return raw
-            print("  Podaj prawidłowy URL z shinden.pl.")
+            print(_u["fallback_invalid"])
 
     from InquirerPy import inquirer
 
     result = _ask(
         inquirer.text(
-            message="URL serii (https://shinden.pl/series/...):",
+            message=_u["message"],
             validate=_valid,
-            invalid_message="Podaj prawidłowy URL z shinden.pl.",
-            long_instruction="Enter = potwierdź  |  ESC = wstecz",
+            invalid_message=_u["invalid"],
+            long_instruction=_u["instruction"],
             mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
@@ -349,9 +364,11 @@ def prompt_url() -> str | None:
     return result.strip() if result is not None else None
 
 
-def select_quality(qualities: dict[str, str], prompt: str = "Wybierz jakość") -> str | None:
+def select_quality(qualities: dict[str, str], prompt: str = _M["quality"]["default_prompt"]) -> str | None:
     if not qualities:
         return "best"
+
+    _q = _M["quality"]
 
     def _height(key: str) -> float:
         m = _RES_RE.search(key)
@@ -362,9 +379,9 @@ def select_quality(qualities: dict[str, str], prompt: str = "Wybierz jakość") 
 
     def _label(opt: str) -> str:
         if opt == "best":
-            return f"best  (najwyższa dostępna — {sorted_keys[0]})"
+            return _q["label_best"].format(top=sorted_keys[0])
         if opt == "worst":
-            return f"worst  (najniższa dostępna — {sorted_keys[-1]})"
+            return _q["label_worst"].format(bottom=sorted_keys[-1])
         return opt
 
     if not _use_inquirer():
@@ -372,7 +389,7 @@ def select_quality(qualities: dict[str, str], prompt: str = "Wybierz jakość") 
             print(f"  {i}. {_label(opt)}")
         while True:
             try:
-                raw = input(f"{prompt} [1-{len(all_options)}, Enter=wstecz]: ").strip()
+                raw = input(_FB["select_prompt"].format(prompt=prompt, n=len(all_options))).strip()
                 if not raw:
                     return None
                 idx = int(raw) - 1
@@ -380,7 +397,7 @@ def select_quality(qualities: dict[str, str], prompt: str = "Wybierz jakość") 
                     return all_options[idx]
             except ValueError, KeyboardInterrupt:
                 pass
-            print(f"  Wpisz liczbę 1–{len(all_options)}.")
+            print(_FB["invalid_number"].format(n=len(all_options)))
 
     from InquirerPy import inquirer
     from InquirerPy.base.control import Choice
@@ -390,7 +407,7 @@ def select_quality(qualities: dict[str, str], prompt: str = "Wybierz jakość") 
         inquirer.select(
             message=f"{prompt}:",
             choices=choices,
-            long_instruction="↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz",
+            long_instruction=_q["instruction"],
             mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
@@ -399,10 +416,12 @@ def select_quality(qualities: dict[str, str], prompt: str = "Wybierz jakość") 
 
 
 def select_action() -> Literal["play", "download", "debug"] | None:
+    _ac = _M["action"]
+    _ac_opts = _ac["options"]
     _options: list[tuple[str, str]] = [
-        ("play", "Oglądaj w mpv/vlc"),
-        ("download", "Pobierz na dysk"),
-        ("debug", "Pokaż linki (debug)"),
+        ("play", _ac_opts["play"]),
+        ("download", _ac_opts["download"]),
+        ("debug", _ac_opts["debug"]),
     ]
 
     if not _use_inquirer():
@@ -411,7 +430,7 @@ def select_action() -> Literal["play", "download", "debug"] | None:
         keys = [k for k, _ in _options]
         while True:
             try:
-                raw = input("Akcja [1-3, Enter=wstecz]: ").strip()
+                raw = input(_ac["fallback_prompt"]).strip()
                 if not raw:
                     return None
                 idx = int(raw) - 1
@@ -419,7 +438,7 @@ def select_action() -> Literal["play", "download", "debug"] | None:
                     return keys[idx]  # type: ignore
             except ValueError, KeyboardInterrupt:
                 pass
-            print("  Wpisz liczbę 1–3.")
+            print(_ac["fallback_invalid"])
 
     from InquirerPy import inquirer
     from InquirerPy.base.control import Choice
@@ -427,9 +446,9 @@ def select_action() -> Literal["play", "download", "debug"] | None:
     choices = [Choice(value=key, name=label) for key, label in _options]
     return _ask(
         inquirer.select(
-            message="Co zrobić z tym odcinkiem?",
+            message=_ac["message"],
             choices=choices,
-            long_instruction="↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz",
+            long_instruction=_ac["instruction"],
             mandatory=False,
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,

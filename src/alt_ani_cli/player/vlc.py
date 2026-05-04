@@ -3,6 +3,7 @@ import shutil
 import sys
 
 from alt_ani_cli.config import USER_AGENT
+from alt_ani_cli.content import EXCEPTIONS
 from alt_ani_cli.errors import PlayerNotFoundError
 from alt_ani_cli.extract.common import Stream
 
@@ -38,6 +39,4 @@ def _find() -> str:
             return found
         if sys.platform == "win32" and os.path.isfile(c):
             return c
-    raise PlayerNotFoundError(
-        "VLC not found on PATH.\nInstall via:  winget install VideoLAN.VLC\nOr set env:   ANI_CLI_PLAYER=C:\\path\\to\\vlc.exe"
-    )
+    raise PlayerNotFoundError(EXCEPTIONS["player"]["vlc_not_found"])

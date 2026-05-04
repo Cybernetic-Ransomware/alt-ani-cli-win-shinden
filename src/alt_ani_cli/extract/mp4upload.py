@@ -4,6 +4,7 @@ import re
 import httpx
 
 from alt_ani_cli.config import USER_AGENT
+from alt_ani_cli.content import EXCEPTIONS
 from alt_ani_cli.extract.common import Stream
 
 _FILE_RE = re.compile(r'["\']?(?:file|src)["\']?\s*:\s*["\']([^"\']+\.(?:mp4|m3u8)[^"\']*)["\']')
@@ -46,7 +47,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
         except Exception:
             pass
 
-    raise ValueError(f"mp4upload: cannot find video URL in {embed_url!r}")
+    raise ValueError(EXCEPTIONS["mp4upload"]["no_video_url"].format(embed_url=repr(embed_url)))
 
 
 def _ext(url: str) -> str:
