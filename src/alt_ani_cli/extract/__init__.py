@@ -1,6 +1,7 @@
 import re
 from urllib.parse import urlparse
 
+from alt_ani_cli.content import EXCEPTIONS
 from alt_ani_cli.errors import NoStreamError
 from alt_ani_cli.extract import dood, jwplayer, mp4upload, streamtape, ytdlp_resolver
 from alt_ani_cli.extract.common import Stream
@@ -88,13 +89,13 @@ def resolve(
     _ytdlp_kw = {"cookies_file": cookies_file, "cookies_browser": cookies_browser}
 
     if host in _JS_ONLY_HOSTS:
-        raise NoStreamError(f"{host} requires JavaScript execution (pure SPA — no static video URL)")
+        raise NoStreamError(EXCEPTIONS["extract"]["js_only_host"].format(host=host))
 
     if host in _YTDLP_HOSTS:
         try:
             return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
         except Exception as exc:
-            raise NoStreamError(f"yt-dlp could not extract stream from {embed_url!r}: {exc}") from exc
+            raise NoStreamError(EXCEPTIONS["extract"]["ytdlp_failed"].format(embed_url=repr(embed_url), exc=exc)) from exc
 
     custom_fn = _CUSTOM.get(host)
     if custom_fn:
@@ -104,7 +105,7 @@ def resolve(
             try:
                 return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
             except Exception:
-                raise NoStreamError(f"All extractors failed for {embed_url!r}") from exc
+                raise NoStreamError(EXCEPTIONS["extract"]["all_failed"].format(embed_url=repr(embed_url))) from exc
 
     # Unknown host — try JWPlayer first (covers most embed-site patterns),
     # then fall back to yt-dlp (1500+ supported sites).
@@ -116,4 +117,4 @@ def resolve(
     try:
         return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
     except Exception as exc:
-        raise NoStreamError(f"All extractors failed for {embed_url!r}: {exc}") from exc
+        raise NoStreamError(EXCEPTIONS["extract"]["all_failed_exc"].format(embed_url=repr(embed_url), exc=exc)) from exc

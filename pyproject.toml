@@ -14,6 +14,7 @@ dependencies = [
     "rich>=13.0",
     "colorama>=0.4",
     "brotli>=1.2.0",
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]

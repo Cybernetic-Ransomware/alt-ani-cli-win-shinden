@@ -1,0 +1,125 @@
+cli:
+  description: "Oglądaj anime z shinden.pl bezpośrednio w terminalu."
+  epilog: |
+    Przyklady:
+      alt-ani-cli fate strange fake            interaktywne wyszukiwanie
+      alt-ani-cli -S 1 -e 1-5 fate strange    odcinki 1-5, pierwszy wynik
+      alt-ani-cli -S 1 -e -1 soul eater        ostatni odcinek
+      alt-ani-cli --url https://shinden.pl/series/65137-fate-strange-fake -e 3
+      alt-ani-cli -c                           kontynuuj z historii
+      alt-ani-cli -d -e 3 soul eater           pobierz odcinek 3
+      alt-ani-cli --lang pl -e 1 vinland saga  tylko polskie audio
+      alt-ani-cli --lang jp --subs pl -S 1 -e 1 berserk
+
+    Filtrowanie jezyka: --lang pl (dubbing PL), --lang jp --subs pl (sub PL)
+    Zakres odcinkow:    "5" (jeden), "1-5" (zakres), "-1" (ostatni), "1 5 7" (lista)
+  help:
+    query: "Tytuł do wyszukania na shinden.pl (pomijany gdy --url lub -c)."
+    url: "Bezpośredni URL serii (https://shinden.pl/series/...)."
+    resume: "Kontynuuj oglądanie z historii."
+    download: "Pobierz odcinek zamiast odtwarzać."
+    delete_history: "Wyczyść historię i wyjdź."
+    episode: 'Numer odcinka lub zakres: "5", "1-5", "-1" (ostatni).'
+    quality: 'Preferowana jakość: "best", "worst", "1080p", "720p" … (domyślnie: menu interaktywne lub "best").'
+    select_nth: "Automatycznie wybierz N-ty wynik wyszukiwania (1-bazowy)."
+    vlc: "Użyj vlc.exe zamiast mpv.exe."
+    no_detach: "Uruchom player na pierwszym planie (blokuje terminal)."
+    debug: "Wypisz bezpośrednie linki wideo, nie uruchamiaj playera."
+    player_name: 'Filtruj po nazwie playera: "CDA", "Mp4upload", "Sibnet" …'
+    lang: "Filtruj po języku audio (lang_audio)."
+    subs: "Filtruj po języku napisów (lang_subs)."
+    cookies_file: "Plik ciasteczek w formacie Netscape (eksportuj np. rozszerzeniem 'Get cookies.txt')."
+    cookies_browser: "Czytaj ciasteczka z przeglądarki (wymagane dla treści 18+ na CDA itp.)."
+  errors:
+    missing_input: "Podaj tytuł do wyszukania, URL (--url) lub użyj -c."
+
+progress:
+  searching: "Szukam: {query}"
+  no_results: "Brak wyników dla: {query}"
+  select_nth_invalid: "--select-nth {n}: jest tylko {count} wyników."
+  fetching_episodes: "Pobieram listę odcinków: {title}"
+  no_episodes: "Brak dostępnych odcinków."
+  episode: "Odcinek {number:g}: {title}"
+  no_players: "Brak playerów dla odcinka {number:g} — pomijam."
+  no_episodes_picked: "Nie wybrano żadnych odcinków."
+  range_not_found: "Nie znaleziono odcinków dla zakresu: {range}"
+  range_unrecognized: "Nie rozpoznano formatu zakresu odcinków: {range} — ignoruję."
+  watched_all: "Obejrzałeś już wszystkie odcinki ({title})."
+  player_failed_long: "Player {player} (ep {number:g}) nie zadziałał: {exc}"
+  player_failed_short: "Player {player} nie zadziałał — wybierz inny:"
+  no_player_worked: "Żaden player nie zadziałał dla odcinka {number:g} — pomijam."
+  history_empty: "Historia jest pusta."
+  history_cleared: "Historia wyczyszczona."
+  interrupted: "Przerwano przez użytkownika."
+  shinden_error: "Błąd shinden: {exc}"
+  embed: "Embed: {url}"
+  spinner_api: "Czekam na API shinden ({label}) …"
+  playing: "Odtwarzam w {kind}: {title}"
+
+download:
+  starting: "Pobieranie: {title} ep{ep_label} → {dir}"
+  saved: "Zapisano: {path}"
+
+menu:
+  start_mode:
+    question: "Co chcesz zrobić?"
+    options:
+      search: "Szukaj nowego anime"
+      resume: "Kontynuuj z historii"
+      resume_with_count: "Kontynuuj z historii ({count} pozycji)"
+      url: "Wklej URL serii"
+      quit: "Wyjdź"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wyjście"
+    fallback_prompt: "Wybór [1-{n}, Enter=wyjście]: "
+    fallback_invalid: "  Wpisz liczbę 1–{n}."
+  search_query:
+    message: "Czego szukasz?"
+    invalid: "Wpisz tytuł anime."
+    instruction: "Enter = szukaj  |  ESC = wstecz"
+    fallback_prompt: "Czego szukasz [Enter=wstecz]: "
+  url:
+    message: "URL serii (https://shinden.pl/series/...):"
+    invalid: "Podaj prawidłowy URL z shinden.pl."
+    instruction: "Enter = potwierdź  |  ESC = wstecz"
+    fallback_prompt: "URL serii (https://shinden.pl/series/...) [Enter=wstecz]: "
+    fallback_invalid: "  Podaj prawidłowy URL z shinden.pl."
+  series:
+    default_prompt: "Wybierz serię"
+    instruction: "Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz"
+  history_resume:
+    default_prompt: "Kontynuuj oglądanie"
+    label: "{title}  — ostatni ep {last_ep:g}"
+    instruction: "Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz"
+  episodes:
+    default_prompt: "Wybierz odcinek"
+    label_unwatched: "  {number:g}.  {title}"
+    label_watched: "✓ {number:g}.  {title}"
+    instruction_single: "Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz"
+    instruction_multi: "Wpisz aby filtrować  |  Spacja = zaznacz/odznacz  |  Enter = potwierdź  |  ESC = wstecz"
+    invalid_multi: "Zaznacz co najmniej jeden odcinek — użyj Spacji."
+    prompt_with_title: "Wybierz odcinek ({title})"
+  player:
+    default_prompt: "Wybierz player"
+    label_ok: "  {player}{res}  {audio}{subs}"
+    label_failed: "✗ {player}{res}  {audio}{subs}"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
+    prompt_with_episode: "Player — ep {label}"
+  quality:
+    default_prompt: "Wybierz jakość"
+    label_best: "best  (najwyższa dostępna — {top})"
+    label_worst: "worst  (najniższa dostępna — {bottom})"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
+  action:
+    message: "Co zrobić z tym odcinkiem?"
+    options:
+      play: "Oglądaj w mpv/vlc"
+      download: "Pobierz na dysk"
+      debug: "Pokaż linki (debug)"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
+    fallback_prompt: "Akcja [1-3, Enter=wstecz]: "
+    fallback_invalid: "  Wpisz liczbę 1–3."
+  fallback:
+    select_prompt: "{prompt} [1-{n}, Enter=wstecz]: "
+    invalid_number: "  Wpisz liczbę 1–{n}."
+    invalid_numbers: "  Wpisz poprawne numery 1–{n}."
+    multi_hint: '  (wpisz numery oddzielone spacją, np. "1 3 5", lub zakres "2-4")'

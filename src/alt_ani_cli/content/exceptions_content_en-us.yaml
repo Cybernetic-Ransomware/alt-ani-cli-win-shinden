@@ -1,0 +1,48 @@
+api:
+  player_load_403: "shinden API returned 403 on player_load — GUEST_AUTH in config.py may have expired."
+  player_show_403: "shinden API returned 403 on player_show."
+  no_iframe: "player_show returned no iframe for online_id={online_id}. Response snippet: {snippet}. Try setting ALT_ANI_CLI_ANTIBOT_DELAY=7"
+  iframe_no_src: "iframe has no src for online_id={online_id}"
+  unexpected_iframe_src: "Unexpected iframe src={src} for online_id={online_id}"
+
+series:
+  parse_error: "Cannot extract series ID from URL: {url}"
+  age_gate: |-
+    Shinden requires age verification (18+) for this series.
+    Log in to shinden.pl in your browser and confirm age, then copy the session cookies to a cookies file or use --url with a logged-in session.
+
+extract:
+  js_only_host: "{host} requires JavaScript execution (pure SPA — no static video URL)"
+  ytdlp_failed: "yt-dlp could not extract stream from {embed_url}: {exc}"
+  all_failed: "All extractors failed for {embed_url}"
+  all_failed_exc: "All extractors failed for {embed_url}: {exc}"
+
+dood:
+  bad_base_url: "dood: cannot parse base URL from {embed_url}"
+  no_pass_md5: "dood: no pass_md5 path found in {embed_url}"
+
+jwplayer:
+  no_video_url: "jwplayer extractor: cannot find video URL in {embed_url}"
+
+mp4upload:
+  no_video_url: "mp4upload: cannot find video URL in {embed_url}"
+
+streamtape:
+  no_token: "streamtape: cannot parse token from {embed_url}"
+
+ytdlp:
+  no_info: "yt-dlp returned no info for {embed_url}"
+  no_url: "No playable URL in yt-dlp output for {embed_url}"
+
+player:
+  mpv_not_found: |-
+    mpv / mpv.net not found.
+    Install via:  winget install mpv.net
+      or:         winget install mpv
+      or:         scoop install mpv
+    Or set path manually:
+      $env:ANI_CLI_PLAYER = 'C:\path\to\mpvnet.exe'
+  vlc_not_found: |-
+    VLC not found on PATH.
+    Install via:  winget install VideoLAN.VLC
+    Or set env:   ANI_CLI_PLAYER=C:\path\to\vlc.exe

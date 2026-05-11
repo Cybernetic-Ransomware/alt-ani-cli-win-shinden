@@ -4,6 +4,7 @@ import httpx
 from selectolax.parser import HTMLParser
 
 from alt_ani_cli.config import SHINDEN_BASE
+from alt_ani_cli.content import EXCEPTIONS, EXCEPTIONS_PL
 from alt_ani_cli.errors import ParseError, ShindenError
 from alt_ani_cli.shinden.models import EpisodeRow, SeriesRef
 
@@ -30,7 +31,7 @@ _SERIES_URL_RE = re.compile(r"shinden\.pl/series/(\d+)-([^/?#\s]+)")
 def parse_series_url(url: str) -> SeriesRef:
     m = _SERIES_URL_RE.search(url)
     if not m:
-        raise ParseError(f"Cannot extract series ID from URL: {url!r}")
+        raise ParseError(EXCEPTIONS["series"]["parse_error"].format(url=repr(url)))
     series_id = m.group(1)
     slug = m.group(2).split("/")[0]
     return SeriesRef(
@@ -112,8 +113,4 @@ def _parse(html: str) -> tuple[str, list[EpisodeRow]]:
 def _check_age_gate(html: str) -> None:
     lower = html.lower()
     if any(hint in lower for hint in _AGE_GATE_HINTS):
-        raise ShindenError(
-            "Shinden wymaga potwierdzenia wieku (18+) dla tej serii.\n"
-            "Zaloguj się na shinden.pl w przeglądarce i potwierdź wiek, "
-            "a następnie skopiuj ciasteczka sesji do pliku cookies lub użyj --url z zalogowaną sesją."
-        )
+        raise ShindenError(EXCEPTIONS_PL["series"]["age_gate"])

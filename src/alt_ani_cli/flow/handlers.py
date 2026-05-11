@@ -14,12 +14,15 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from alt_ani_cli import download, history
+from alt_ani_cli.content import CONTENT
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, ScreenResult
 from alt_ani_cli.shinden import episode as shinden_episode
 from alt_ani_cli.shinden import search as shinden_search
 from alt_ani_cli.shinden import series as shinden_series
 from alt_ani_cli.shinden.models import SeriesRef
 from alt_ani_cli.ui import menus, progress
+
+_PROG = CONTENT["progress"]
 
 
 def handle_start_mode(state: FlowState) -> ScreenResult:
@@ -75,7 +78,7 @@ def handle_url_input(state: FlowState) -> ScreenResult:
 def handle_resume_pick(state: FlowState) -> ScreenResult:
     all_entries = history.list_all()
     if not all_entries:
-        progress.error("Historia jest pusta.")
+        progress.error(_PROG["history_empty"])
         return BACK
     result = menus.select_series_from_history(all_entries)
     if result is None:
@@ -88,10 +91,10 @@ def handle_series_pick(state: FlowState) -> ScreenResult:
     if not state.query:
         return Screen.SEARCH_QUERY
 
-    progress.info(f"Szukam: {state.query!r}")
+    progress.info(_PROG["searching"].format(query=repr(state.query)))
     hits = shinden_search.search_series(state.client, state.query)
     if not hits:
-        progress.error(f"Brak wyników dla: {state.query!r}")
+        progress.error(_PROG["no_results"].format(query=repr(state.query)))
         return BACK
 
     state.hits = hits
@@ -106,7 +109,7 @@ def handle_series_pick(state: FlowState) -> ScreenResult:
 
 def handle_fetch_episodes(state: FlowState) -> ScreenResult:
     assert state.ref is not None
-    progress.info(f"Pobieram listę odcinków: {state.ref.title}")
+    progress.info(_PROG["fetching_episodes"].format(title=state.ref.title))
     ref, episodes = shinden_series.list_episodes(state.client, state.ref)
     state.ref = ref
     state.episodes = episodes
@@ -114,7 +117,7 @@ def handle_fetch_episodes(state: FlowState) -> ScreenResult:
     state.targets = []
     state.ep_idx = 0
     if not episodes:
-        progress.error("Brak dostępnych odcinków.")
+        progress.error(_PROG["no_episodes"])
         return Screen.SERIES_PICK
     return Screen.EPISODES_PICK
 
@@ -129,7 +132,7 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
 
         targets = _parse_range(args.episode, state.episodes)
         if not targets:
-            progress.error(f"Nie znaleziono odcinków dla zakresu: {args.episode!r}")
+            progress.error(_PROG["range_not_found"].format(range=repr(args.episode)))
             return BACK
         state.targets = targets
         state.ep_idx = 0
@@ -143,14 +146,14 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
 
     result = menus.select_episodes(
         pool,
-        prompt=f"Wybierz odcinek ({state.ref.title})",
+        prompt=CONTENT["menu"]["episodes"]["prompt_with_title"].format(title=state.ref.title),
         multi=True,
         watched_numbers=state.completed_eps,
     )
     if result is None:
         return BACK
     if not result:
-        progress.warn("Nie wybrano żadnych odcinków.")
+        progress.warn(_PROG["no_episodes_picked"])
         return BACK
     state.targets = result
     state.ep_idx = 0
@@ -162,7 +165,7 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
         return None  # all episodes done
 
     ep = state.targets[state.ep_idx]
-    progress.info(f"Odcinek {ep.number:g}: {ep.title}")
+    progress.info(_PROG["episode"].format(number=ep.number, title=ep.title))
 
     ep_resp = state.client.get(ep.url)
     ep_resp.raise_for_status()
@@ -172,7 +175,7 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
     players = shinden_episode.sort_players(raw_players, download=args.download)
 
     if not players:
-        progress.warn(f"Brak playerów dla odcinka {ep.number:g} — pomijam.")
+        progress.warn(_PROG["no_players"].format(number=ep.number))
         state.ep_idx += 1
         return Screen.EPISODE_DISPATCH
 
@@ -203,11 +206,11 @@ def handle_player_pick(state: FlowState) -> ScreenResult:
     ep_label = f"{ep.number:g}" if ep is not None else "?"
 
     if state.failed_ids:
-        progress.warn(f"Player {state.chosen_player.player!r} nie zadziałał — wybierz inny:")
+        progress.warn(_PROG["player_failed_short"].format(player=repr(state.chosen_player.player)))
 
     chosen = menus.select_player(
         state.players,
-        prompt=f"Player — ep {ep_label}",
+        prompt=CONTENT["menu"]["player"]["prompt_with_episode"].format(label=ep_label),
         failed=state.failed_ids,
     )
     if chosen is None:
@@ -245,7 +248,7 @@ def handle_resolve_stream(state: FlowState) -> ScreenResult:
     if remaining:
         return Screen.PLAYER_PICK  # try another (no history push — stays in same UI level)
 
-    progress.warn(f"Żaden player nie zadziałał dla odcinka {ep.number:g} — pomijam.")
+    progress.warn(_PROG["no_player_worked"].format(number=ep.number))
     state.ep_idx += 1
     return Screen.EPISODE_DISPATCH
 
@@ -303,7 +306,7 @@ def handle_run_action(state: FlowState) -> ScreenResult:
         from alt_ani_cli.player import runner as player_runner
 
         player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
-        progress.success(f"Odtwarzam w {player_kind}: {title}")
+        progress.success(_PROG["playing"].format(kind=player_kind, title=title))
 
     history.upsert(state.ref, last_ep=ep.number)
     state.completed_eps.add(ep.number)

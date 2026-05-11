@@ -7,6 +7,7 @@ import contextlib
 import sys
 
 from alt_ani_cli import __version__, download, extract, history
+from alt_ani_cli.content import CONTENT
 from alt_ani_cli.errors import (
     AntiBotError,
     NoStreamError,
@@ -24,66 +25,42 @@ from alt_ani_cli.shinden import series as shinden_series
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesRef
 from alt_ani_cli.ui import progress
 
+_C = CONTENT
+_CLI = _C["cli"]
+_PROG = _C["progress"]
+
 
 def _build_parser() -> argparse.ArgumentParser:
+    h = _CLI["help"]
     p = argparse.ArgumentParser(
         prog="alt-ani-cli",
-        description="Oglądaj anime z shinden.pl bezpośrednio w terminalu.",
+        description=_CLI["description"],
         formatter_class=argparse.RawTextHelpFormatter,
-        epilog=(
-            "Przyklady:\n"
-            "  alt-ani-cli fate strange fake            interaktywne wyszukiwanie\n"
-            "  alt-ani-cli -S 1 -e 1-5 fate strange    odcinki 1-5, pierwszy wynik\n"
-            "  alt-ani-cli -S 1 -e -1 soul eater        ostatni odcinek\n"
-            "  alt-ani-cli --url https://shinden.pl/series/65137-fate-strange-fake -e 3\n"
-            "  alt-ani-cli -c                           kontynuuj z historii\n"
-            "  alt-ani-cli -d -e 3 soul eater           pobierz odcinek 3\n"
-            "  alt-ani-cli --lang pl -e 1 vinland saga  tylko polskie audio\n"
-            "  alt-ani-cli --lang jp --subs pl -S 1 -e 1 berserk\n"
-            "\n"
-            "Filtrowanie jezyka: --lang pl (dubbing PL), --lang jp --subs pl (sub PL)\n"
-            'Zakres odcinkow:    "5" (jeden), "1-5" (zakres), "-1" (ostatni), "1 5 7" (lista)\n'
-        ),
+        epilog=_CLI["epilog"],
     )
 
-    p.add_argument("query", nargs="*", metavar="QUERY", help="Tytuł do wyszukania na shinden.pl (pomijany gdy --url lub -c).")
+    p.add_argument("query", nargs="*", metavar="QUERY", help=h["query"])
 
-    p.add_argument("--url", metavar="URL", help="Bezpośredni URL serii (https://shinden.pl/series/...).")
+    p.add_argument("--url", metavar="URL", help=h["url"])
 
-    p.add_argument("-c", "--continue", dest="resume", action="store_true", help="Kontynuuj oglądanie z historii.")
-    p.add_argument("-d", "--download", action="store_true", help="Pobierz odcinek zamiast odtwarzać.")
-    p.add_argument("-D", "--delete-history", action="store_true", help="Wyczyść historię i wyjdź.")
+    p.add_argument("-c", "--continue", dest="resume", action="store_true", help=h["resume"])
+    p.add_argument("-d", "--download", action="store_true", help=h["download"])
+    p.add_argument("-D", "--delete-history", action="store_true", help=h["delete_history"])
 
-    p.add_argument("-e", "--episode", metavar="RANGE", help='Numer odcinka lub zakres: "5", "1-5", "-1" (ostatni).')
-    p.add_argument(
-        "-q",
-        "--quality",
-        default=None,
-        metavar="QUALITY",
-        help='Preferowana jakość: "best", "worst", "1080p", "720p" … (domyślnie: menu interaktywne lub "best").',
-    )
-    p.add_argument(
-        "-S", "--select-nth", type=int, metavar="N", help="Automatycznie wybierz N-ty wynik wyszukiwania (1-bazowy)."
-    )
+    p.add_argument("-e", "--episode", metavar="RANGE", help=h["episode"])
+    p.add_argument("-q", "--quality", default=None, metavar="QUALITY", help=h["quality"])
+    p.add_argument("-S", "--select-nth", type=int, metavar="N", help=h["select_nth"])
 
-    p.add_argument("-v", "--vlc", action="store_true", help="Użyj vlc.exe zamiast mpv.exe.")
-    p.add_argument("--no-detach", action="store_true", help="Uruchom player na pierwszym planie (blokuje terminal).")
-    p.add_argument("--debug", action="store_true", help="Wypisz bezpośrednie linki wideo, nie uruchamiaj playera.")
+    p.add_argument("-v", "--vlc", action="store_true", help=h["vlc"])
+    p.add_argument("--no-detach", action="store_true", help=h["no_detach"])
+    p.add_argument("--debug", action="store_true", help=h["debug"])
 
-    p.add_argument("--player-name", metavar="NAME", help='Filtruj po nazwie playera: "CDA", "Mp4upload", "Sibnet" …')
-    p.add_argument("--lang", metavar="{pl,jp,en}", help="Filtruj po języku audio (lang_audio).")
-    p.add_argument("--subs", metavar="{pl,en,none}", help="Filtruj po języku napisów (lang_subs).")
+    p.add_argument("--player-name", metavar="NAME", help=h["player_name"])
+    p.add_argument("--lang", metavar="{pl,jp,en}", help=h["lang"])
+    p.add_argument("--subs", metavar="{pl,en,none}", help=h["subs"])
 
-    p.add_argument(
-        "--cookies-file",
-        metavar="PATH",
-        help="Plik ciasteczek w formacie Netscape (eksportuj np. rozszerzeniem 'Get cookies.txt').",
-    )
-    p.add_argument(
-        "--cookies-browser",
-        metavar="{chrome,firefox,edge,opera,brave}",
-        help="Czytaj ciasteczka z przeglądarki (wymagane dla treści 18+ na CDA itp.).",
-    )
+    p.add_argument("--cookies-file", metavar="PATH", help=h["cookies_file"])
+    p.add_argument("--cookies-browser", metavar="{chrome,firefox,edge,opera,brave}", help=h["cookies_browser"])
 
     p.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
 
@@ -128,7 +105,7 @@ def _parse_range(range_str: str, episodes: list[EpisodeRow]) -> list[EpisodeRow]
     except ValueError:
         pass
 
-    progress.warn(f"Nie rozpoznano formatu zakresu odcinków: {range_str!r} — ignoruję.")
+    progress.warn(_PROG["range_unrecognized"].format(range=repr(range_str)))
     return []
 
 
@@ -197,10 +174,10 @@ def _resolve_with_fallback(
 
     for candidate in candidates:
         try:
-            with progress.spinner(f"Czekam na API shinden ({ANTIBOT_LABEL}) …"):
+            with progress.spinner(_PROG["spinner_api"].format(label=ANTIBOT_LABEL)):
                 embed = shinden_api.resolve_embed(client, candidate.online_id)
             _url_short = embed.url if len(embed.url) <= 80 else embed.url[:77] + "…"
-            progress.info(f"Embed: {_url_short}")
+            progress.info(_PROG["embed"].format(url=_url_short))
             stream = extract.resolve(
                 embed.url,
                 embed.referer,
@@ -209,7 +186,7 @@ def _resolve_with_fallback(
             )
             return stream, embed
         except (NoStreamError, AntiBotError) as exc:
-            progress.warn(f"Player {candidate.player!r} (ep {ep_number:g}) nie zadziałał: {exc}")
+            progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=exc))
 
     return None, None
 
@@ -259,12 +236,12 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
     if not args.query and not args.url and not args.resume:
         import argparse as _ap
 
-        _ap.ArgumentParser(prog="alt-ani-cli").error("Podaj tytuł do wyszukania, URL (--url) lub użyj -c.")
+        _ap.ArgumentParser(prog="alt-ani-cli").error(_CLI["errors"]["missing_input"])
 
     if args.resume:
         all_entries = history.list_all()
         if not all_entries:
-            progress.error("Historia jest pusta.")
+            progress.error(_PROG["history_empty"])
             sys.exit(1)
         ref, last_ep = all_entries[0]
     elif args.url:
@@ -272,36 +249,36 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         last_ep = 0.0
     else:
         query = " ".join(args.query)
-        progress.info(f"Szukam: {query!r}")
+        progress.info(_PROG["searching"].format(query=repr(query)))
         hits = shinden_search.search_series(client, query)
         if not hits:
-            progress.error(f"Brak wyników dla: {query!r}")
+            progress.error(_PROG["no_results"].format(query=repr(query)))
             sys.exit(1)
 
         idx = (args.select_nth - 1) if args.select_nth else 0
         if idx < 0 or idx >= len(hits):
-            progress.error(f"--select-nth {args.select_nth}: jest tylko {len(hits)} wyników.")
+            progress.error(_PROG["select_nth_invalid"].format(n=args.select_nth, count=len(hits)))
             sys.exit(1)
         ref = shinden_series.parse_series_url(hits[idx].url)
         ref = SeriesRef(id=ref.id, slug=ref.slug, title=hits[idx].title, url=ref.url)
         last_ep = 0.0
 
-    progress.info(f"Pobieram listę odcinków: {ref.title}")
+    progress.info(_PROG["fetching_episodes"].format(title=ref.title))
     ref, episodes = shinden_series.list_episodes(client, ref)
 
     if not episodes:
-        progress.error("Brak dostępnych odcinków.")
+        progress.error(_PROG["no_episodes"])
         sys.exit(1)
 
     if args.episode:
         targets = _parse_range(args.episode, episodes)
         if not targets:
-            progress.error(f"Nie znaleziono odcinków dla zakresu: {args.episode!r}")
+            progress.error(_PROG["range_not_found"].format(range=repr(args.episode)))
             sys.exit(1)
     elif args.resume and last_ep > 0:
         remaining = [ep for ep in episodes if ep.number > last_ep]
         if not remaining:
-            progress.warn(f"Obejrzałeś już wszystkie odcinki ({ref.title}).")
+            progress.warn(_PROG["watched_all"].format(title=ref.title))
             remaining = episodes
         targets = [remaining[0]]
     else:
@@ -311,7 +288,7 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
     _episode_action: str | None = None
 
     for ep in targets:
-        progress.info(f"Odcinek {ep.number:g}: {ep.title}")
+        progress.info(_PROG["episode"].format(number=ep.number, title=ep.title))
 
         ep_resp = client.get(ep.url)
         ep_resp.raise_for_status()
@@ -321,7 +298,7 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         )
 
         if not players:
-            progress.warn(f"Brak playerów dla odcinka {ep.number:g} — pomijam.")
+            progress.warn(_PROG["no_players"].format(number=ep.number))
             continue
 
         players = _filter_players(
@@ -343,7 +320,7 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         )
 
         if stream is None:
-            progress.warn(f"Żaden player nie zadziałał dla odcinka {ep.number:g} — pomijam.")
+            progress.warn(_PROG["no_player_worked"].format(number=ep.number))
             continue
 
         quality = args.quality or "best"
@@ -363,7 +340,7 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
             _print_debug(stream, embed)
         else:
             player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
-            progress.success(f"Odtwarzam w {player_kind}: {title}")
+            progress.success(_PROG["playing"].format(kind=player_kind, title=title))
 
         history.upsert(ref, last_ep=ep.number)
 
@@ -396,7 +373,7 @@ def main() -> None:  # noqa: C901
 
     if args.delete_history:
         history.clear()
-        progress.success("Historia wyczyszczona.")
+        progress.success(_PROG["history_cleared"])
         sys.exit(0)
 
     client = shinden_http.make_client()
@@ -408,7 +385,7 @@ def main() -> None:  # noqa: C901
         else:
             _run_noninteractive(args, client)
     except KeyboardInterrupt:
-        progress.warn("Przerwano przez użytkownika.")
+        progress.warn(_PROG["interrupted"])
         sys.exit(130)
     except (AntiBotError, NoStreamError, ParseError) as exc:
         progress.error(str(exc))
@@ -417,7 +394,7 @@ def main() -> None:  # noqa: C901
         progress.error(str(exc))
         sys.exit(1)
     except ShindenError as exc:
-        progress.error(f"Błąd shinden: {exc}")
+        progress.error(_PROG["shinden_error"].format(exc=exc))
         sys.exit(1)
     finally:
         client.close()

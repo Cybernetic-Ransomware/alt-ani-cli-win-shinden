@@ -3,6 +3,7 @@ import re
 import httpx
 
 from alt_ani_cli.config import USER_AGENT
+from alt_ani_cli.content import EXCEPTIONS
 from alt_ani_cli.extract.common import Stream
 
 # Streamtape concatenates two JS strings to form the /get_video token URL.
@@ -46,4 +47,4 @@ def resolve(embed_url: str, referer: str) -> Stream:
             ext="mp4",
         )
 
-    raise ValueError(f"streamtape: cannot parse token from {embed_url!r}")
+    raise ValueError(EXCEPTIONS["streamtape"]["no_token"].format(embed_url=repr(embed_url)))
