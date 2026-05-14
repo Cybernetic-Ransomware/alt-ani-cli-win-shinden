@@ -4,8 +4,6 @@ Unit tests for individual handlers and integration tests via _run_interactive.
 All external I/O (menus, shinden API, history) is mocked.
 """
 
-from __future__ import annotations
-
 import argparse
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -15,8 +13,8 @@ import pytest
 
 from alt_ani_cli.flow.handlers import HANDLERS, _prefetch_series_metadata, _safe_fetch_one
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, _BackSentinel
-from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesRef
 from alt_ani_cli.models import SeriesMetadata
+from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesRef
 
 
 def _make_args(**overrides):
@@ -58,26 +56,33 @@ _PLAYER = PlayerEntry(online_id="pid1", player="Sibnet", lang_audio="jp", lang_s
 _PLAYER2 = PlayerEntry(online_id="pid2", player="CDA", lang_audio="jp", lang_subs="pl")
 
 
+@pytest.mark.unit
 class TestHandleStartMode:
     def test_esc_returns_back(self):
         state = _make_state()
-        with patch("alt_ani_cli.ui.menus.select_start_mode", return_value=None):
-            with patch("alt_ani_cli.history.list_all", return_value=[]):
-                result = HANDLERS[Screen.START_MODE](state)
+        with (
+            patch("alt_ani_cli.ui.menus.select_start_mode", return_value=None),
+            patch("alt_ani_cli.history.list_all", return_value=[]),
+        ):
+            result = HANDLERS[Screen.START_MODE](state)
         assert isinstance(result, _BackSentinel)
 
     def test_quit_returns_none(self):
         state = _make_state()
-        with patch("alt_ani_cli.ui.menus.select_start_mode", return_value="quit"):
-            with patch("alt_ani_cli.history.list_all", return_value=[]):
-                result = HANDLERS[Screen.START_MODE](state)
+        with (
+            patch("alt_ani_cli.ui.menus.select_start_mode", return_value="quit"),
+            patch("alt_ani_cli.history.list_all", return_value=[]),
+        ):
+            result = HANDLERS[Screen.START_MODE](state)
         assert result is None
 
     def test_search_returns_search_query(self):
         state = _make_state()
-        with patch("alt_ani_cli.ui.menus.select_start_mode", return_value="search"):
-            with patch("alt_ani_cli.history.list_all", return_value=[]):
-                result = HANDLERS[Screen.START_MODE](state)
+        with (
+            patch("alt_ani_cli.ui.menus.select_start_mode", return_value="search"),
+            patch("alt_ani_cli.history.list_all", return_value=[]),
+        ):
+            result = HANDLERS[Screen.START_MODE](state)
         assert result is Screen.SEARCH_QUERY
 
     def test_args_resume_skips_menu(self):
@@ -99,6 +104,7 @@ class TestHandleStartMode:
         assert state.query == "fate strange"
 
 
+@pytest.mark.unit
 class TestHandleSearchQuery:
     def test_esc_returns_back(self):
         state = _make_state()
@@ -114,24 +120,30 @@ class TestHandleSearchQuery:
         assert state.query == "fate"
 
 
+@pytest.mark.unit
 class TestHandleSeriesPick:
     def test_esc_returns_back(self):
         state = _make_state(query="fate")
-        with patch("alt_ani_cli.shinden.search.search_series", return_value=[_SERIES_HIT]):
-            with patch("alt_ani_cli.ui.menus.select_series", return_value=None):
-                result = HANDLERS[Screen.SERIES_PICK](state)
+        with (
+            patch("alt_ani_cli.shinden.search.search_series", return_value=[_SERIES_HIT]),
+            patch("alt_ani_cli.ui.menus.select_series", return_value=None),
+        ):
+            result = HANDLERS[Screen.SERIES_PICK](state)
         assert isinstance(result, _BackSentinel)
 
     def test_pick_sets_ref_and_returns_fetch(self):
         state = _make_state(query="fate")
-        with patch("alt_ani_cli.shinden.search.search_series", return_value=[_SERIES_HIT]):
-            with patch("alt_ani_cli.ui.menus.select_series", return_value=_SERIES_HIT):
-                with patch("alt_ani_cli.shinden.series.parse_series_url", return_value=_SERIES_REF):
-                    result = HANDLERS[Screen.SERIES_PICK](state)
+        with (
+            patch("alt_ani_cli.shinden.search.search_series", return_value=[_SERIES_HIT]),
+            patch("alt_ani_cli.ui.menus.select_series", return_value=_SERIES_HIT),
+            patch("alt_ani_cli.shinden.series.parse_series_url", return_value=_SERIES_REF),
+        ):
+            result = HANDLERS[Screen.SERIES_PICK](state)
         assert result is Screen.FETCH_EPISODES
         assert state.ref is not None
 
 
+@pytest.mark.unit
 class TestHandleEpisodesPick:
     def test_esc_returns_back(self):
         state = _make_state(ref=_SERIES_REF, episodes=[_EP1, _EP2])
@@ -167,12 +179,13 @@ class TestHandleEpisodesPick:
         assert state.targets == [_EP1]
 
 
+@pytest.mark.unit
 class TestHandlePlayerPick:
     def test_esc_returns_episodes_pick(self):
         state = _make_state(ref=_SERIES_REF, targets=[_EP1], ep_idx=0, players=[_PLAYER])
         with patch("alt_ani_cli.ui.menus.select_player", return_value=None):
             result = HANDLERS[Screen.PLAYER_PICK](state)
-        assert result is Screen.EPISODES_PICK  # ESC → back to episode list
+        assert result is Screen.EPISODES_PICK
 
     def test_pick_returns_resolve_stream(self):
         state = _make_state(ref=_SERIES_REF, targets=[_EP1], ep_idx=0, players=[_PLAYER])
@@ -182,6 +195,7 @@ class TestHandlePlayerPick:
         assert state.chosen_player is _PLAYER
 
 
+@pytest.mark.unit
 class TestHandleQualityPick:
     def test_esc_returns_player_pick_and_resets_quality(self):
         mock_stream = MagicMock()
@@ -189,7 +203,7 @@ class TestHandleQualityPick:
         state = _make_state(stream=mock_stream, quality="1080p")
         with patch("alt_ani_cli.ui.menus.select_quality", return_value=None):
             result = HANDLERS[Screen.QUALITY_PICK](state)
-        assert result is Screen.PLAYER_PICK  # ESC → back to player
+        assert result is Screen.PLAYER_PICK
         assert state.quality is None
 
     def test_pick_caches_quality(self):
@@ -202,6 +216,7 @@ class TestHandleQualityPick:
         assert state.quality == "720p"
 
 
+@pytest.mark.unit
 class TestHandleActionPick:
     def test_esc_resets_action_and_returns_player_pick(self):
         mock_stream = MagicMock()
@@ -209,7 +224,7 @@ class TestHandleActionPick:
         state = _make_state(stream=mock_stream)
         with patch("alt_ani_cli.ui.menus.select_action", return_value=None):
             result = HANDLERS[Screen.ACTION_PICK](state)
-        assert result is Screen.PLAYER_PICK  # no qualities → back to player
+        assert result is Screen.PLAYER_PICK
         assert state.episode_action is None
 
     def test_esc_returns_quality_pick_when_qualities_present(self):
@@ -218,7 +233,7 @@ class TestHandleActionPick:
         state = _make_state(stream=mock_stream)
         with patch("alt_ani_cli.ui.menus.select_action", return_value=None):
             result = HANDLERS[Screen.ACTION_PICK](state)
-        assert result is Screen.QUALITY_PICK  # has qualities → back to quality
+        assert result is Screen.QUALITY_PICK
 
     def test_cached_action_skips_menu(self):
         state = _make_state(episode_action="play")
@@ -242,14 +257,17 @@ def _run_interactive_wrapped(args, client):
     _run_interactive(args, client)
 
 
+@pytest.mark.unit
 class TestInteractiveFlow:
     def test_esc_from_start_exits_silently(self):
         """ESC at START_MODE (empty history_stack) → loop ends, no sys.exit."""
         args = _make_args()
         client = MagicMock()
-        with patch("alt_ani_cli.history.list_all", return_value=[]):
-            with patch("alt_ani_cli.ui.menus.select_start_mode", return_value=None):
-                _run_interactive_wrapped(args, client)  # must not raise
+        with (
+            patch("alt_ani_cli.history.list_all", return_value=[]),
+            patch("alt_ani_cli.ui.menus.select_start_mode", return_value=None),
+        ):
+            _run_interactive_wrapped(args, client)
 
     def test_esc_from_search_query_returns_to_start(self):
         """flow: START_MODE→search→SEARCH_QUERY→ESC→START_MODE (called twice)."""
@@ -261,12 +279,14 @@ class TestInteractiveFlow:
             call_count["n"] += 1
             if call_count["n"] == 1:
                 return "search"
-            return None  # second call → ESC → exit
+            return None
 
-        with patch("alt_ani_cli.history.list_all", return_value=[]):
-            with patch("alt_ani_cli.ui.menus.select_start_mode", side_effect=_fake_start):
-                with patch("alt_ani_cli.ui.menus.prompt_search_query", return_value=None):
-                    _run_interactive_wrapped(args, client)
+        with (
+            patch("alt_ani_cli.history.list_all", return_value=[]),
+            patch("alt_ani_cli.ui.menus.select_start_mode", side_effect=_fake_start),
+            patch("alt_ani_cli.ui.menus.prompt_search_query", return_value=None),
+        ):
+            _run_interactive_wrapped(args, client)
 
         assert call_count["n"] == 2
 
@@ -281,23 +301,25 @@ class TestInteractiveFlow:
             start_calls["n"] += 1
             if start_calls["n"] == 1:
                 return "search"
-            return None  # second call at START_MODE → ESC → exit
+            return None
 
         def _fake_search_query():
             query_calls["n"] += 1
             if query_calls["n"] == 1:
                 return "fate"
-            return None  # second call → ESC → back to START_MODE
+            return None
 
-        with patch("alt_ani_cli.history.list_all", return_value=[]):
-            with patch("alt_ani_cli.ui.menus.select_start_mode", side_effect=_fake_start):
-                with patch("alt_ani_cli.ui.menus.prompt_search_query", side_effect=_fake_search_query):
-                    with patch("alt_ani_cli.shinden.search.search_series", return_value=[_SERIES_HIT]):
-                        with patch("alt_ani_cli.ui.menus.select_series", return_value=None):
-                            _run_interactive_wrapped(args, client)
+        with (
+            patch("alt_ani_cli.history.list_all", return_value=[]),
+            patch("alt_ani_cli.ui.menus.select_start_mode", side_effect=_fake_start),
+            patch("alt_ani_cli.ui.menus.prompt_search_query", side_effect=_fake_search_query),
+            patch("alt_ani_cli.shinden.search.search_series", return_value=[_SERIES_HIT]),
+            patch("alt_ani_cli.ui.menus.select_series", return_value=None),
+        ):
+            _run_interactive_wrapped(args, client)
 
-        assert query_calls["n"] == 2  # called twice: first returns "fate", second ESC
-        assert start_calls["n"] == 2  # returned to START_MODE after back from SEARCH_QUERY
+        assert query_calls["n"] == 2
+        assert start_calls["n"] == 2
 
     def test_completed_eps_preserved_after_back(self):
         """After ESC from PLAYER_PICK on ep2, completed_eps has ep1 and ep_idx stays at 1.
@@ -324,29 +346,30 @@ class TestInteractiveFlow:
 
         def _fake_player(players, prompt="", failed=None):
             player_calls.append(1)
-            return _PLAYER if len(player_calls) == 1 else None  # ESC on second call
+            return _PLAYER if len(player_calls) == 1 else None
 
-        with patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]):
-            with patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]):
-                with patch("alt_ani_cli.cli._resolve_with_fallback", return_value=(mock_stream, MagicMock())):
-                    with patch("alt_ani_cli.ui.menus.select_player", side_effect=_fake_player):
-                        with patch("alt_ani_cli.ui.menus.select_action", return_value="play"):
-                            with patch("alt_ani_cli.player.runner.play"):
-                                with patch("alt_ani_cli.history.upsert"):
-                                    # Drive handlers manually: ep1 plays, ep2 ESC
-                                    screen = Screen.EPISODE_DISPATCH
-                                    for _ in range(30):  # safety limit against infinite loop
-                                        result = HANDLERS[screen](state)
-                                        if result is Screen.EPISODES_PICK:
-                                            final_screen = Screen.EPISODES_PICK
-                                            break
-                                        screen = result
-                                    else:
-                                        pytest.fail("Handler loop did not return to EPISODES_PICK")
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.cli._resolve_with_fallback", return_value=(mock_stream, MagicMock())),
+            patch("alt_ani_cli.ui.menus.select_player", side_effect=_fake_player),
+            patch("alt_ani_cli.ui.menus.select_action", return_value="play"),
+            patch("alt_ani_cli.player.runner.play"),
+            patch("alt_ani_cli.history.upsert"),
+        ):
+            screen = Screen.EPISODE_DISPATCH
+            for _ in range(30):
+                result = HANDLERS[screen](state)
+                if result is Screen.EPISODES_PICK:
+                    final_screen = Screen.EPISODES_PICK
+                    break
+                screen = result
+            else:
+                pytest.fail("Handler loop did not return to EPISODES_PICK")
 
         assert final_screen is Screen.EPISODES_PICK
-        assert 1.0 in state.completed_eps  # ep1 was completed
-        assert state.ep_idx == 1           # ep2 index preserved (not incremented past)
+        assert 1.0 in state.completed_eps
+        assert state.ep_idx == 1
 
 
 @contextmanager
@@ -357,44 +380,53 @@ def _noop_spinner(msg):
 _EMPTY_META = SeriesMetadata(None, None, "", (), ())
 
 
+@pytest.mark.unit
 class TestSafeFetchOne:
     def test_returns_metadata_from_fetch(self):
         client = MagicMock()
         meta = SeriesMetadata(air_date="01.01.2020", air_date_sort=(2020, 1, 1), description="desc", tags=(), related=())
-        with patch("alt_ani_cli.flow.handlers.parse_series_url", return_value=_SERIES_REF):
-            with patch("alt_ani_cli.flow.handlers.fetch_series_metadata", return_value=meta):
-                result = _safe_fetch_one(client, _SERIES_HIT)
+        with (
+            patch("alt_ani_cli.flow.handlers.parse_series_url", return_value=_SERIES_REF),
+            patch("alt_ani_cli.flow.handlers.fetch_series_metadata", return_value=meta),
+        ):
+            result = _safe_fetch_one(client, _SERIES_HIT)
         assert result is meta
 
     def test_passes_parsed_ref_to_fetch(self):
         client = MagicMock()
-        with patch("alt_ani_cli.flow.handlers.parse_series_url", return_value=_SERIES_REF) as mock_parse:
-            with patch("alt_ani_cli.flow.handlers.fetch_series_metadata", return_value=_EMPTY_META):
-                _safe_fetch_one(client, _SERIES_HIT)
+        with (
+            patch("alt_ani_cli.flow.handlers.parse_series_url", return_value=_SERIES_REF) as mock_parse,
+            patch("alt_ani_cli.flow.handlers.fetch_series_metadata", return_value=_EMPTY_META),
+        ):
+            _safe_fetch_one(client, _SERIES_HIT)
         mock_parse.assert_called_once_with(_SERIES_HIT.url)
 
 
+@pytest.mark.unit
 class TestPrefetchSeriesMetadata:
     def test_returns_metadata_for_all_hits(self):
         client = MagicMock()
         meta = SeriesMetadata(air_date="01.01.2020", air_date_sort=(2020, 1, 1), description="", tags=(), related=())
-        with patch("alt_ani_cli.flow.handlers._safe_fetch_one", return_value=meta):
-            with patch("alt_ani_cli.ui.progress.spinner", _noop_spinner):
-                result = _prefetch_series_metadata(client, [_SERIES_HIT])
+        with (
+            patch("alt_ani_cli.flow.handlers._safe_fetch_one", return_value=meta),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+        ):
+            result = _prefetch_series_metadata(client, [_SERIES_HIT])
         assert result == {_SERIES_HIT.id: meta}
 
     def test_falls_back_to_empty_meta_on_error(self):
         client = MagicMock()
-        with patch("alt_ani_cli.flow.handlers._safe_fetch_one", side_effect=Exception("network error")):
-            with patch("alt_ani_cli.ui.progress.spinner", _noop_spinner):
-                result = _prefetch_series_metadata(client, [_SERIES_HIT])
+        with (
+            patch("alt_ani_cli.flow.handlers._safe_fetch_one", side_effect=Exception("network error")),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+        ):
+            result = _prefetch_series_metadata(client, [_SERIES_HIT])
         assert _SERIES_HIT.id in result
         assert result[_SERIES_HIT.id].air_date is None
 
     def test_empty_hits_returns_empty_dict(self):
         client = MagicMock()
-        result = _prefetch_series_metadata(client, [])
-        assert result == {}
+        assert _prefetch_series_metadata(client, []) == {}
 
     def test_all_hits_have_entry_in_result(self):
         hits = [
@@ -403,14 +435,14 @@ class TestPrefetchSeriesMetadata:
             SeriesHit(id="3", slug="c", title="C", url="http://shinden.pl/series/3-c"),
         ]
         client = MagicMock()
-        with patch("alt_ani_cli.flow.handlers._safe_fetch_one", return_value=_EMPTY_META):
-            with patch("alt_ani_cli.ui.progress.spinner", _noop_spinner):
-                result = _prefetch_series_metadata(client, hits)
+        with (
+            patch("alt_ani_cli.flow.handlers._safe_fetch_one", return_value=_EMPTY_META),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+        ):
+            result = _prefetch_series_metadata(client, hits)
         assert set(result.keys()) == {"1", "2", "3"}
 
     def test_spinner_is_shown(self):
-        from unittest.mock import call
-
         client = MagicMock()
         spinner_calls = []
 
@@ -419,8 +451,9 @@ class TestPrefetchSeriesMetadata:
             spinner_calls.append(msg)
             yield
 
-        with patch("alt_ani_cli.flow.handlers._safe_fetch_one", return_value=_EMPTY_META):
-            with patch("alt_ani_cli.ui.progress.spinner", _recording_spinner):
-                _prefetch_series_metadata(client, [_SERIES_HIT])
+        with (
+            patch("alt_ani_cli.flow.handlers._safe_fetch_one", return_value=_EMPTY_META),
+            patch("alt_ani_cli.ui.progress.spinner", _recording_spinner),
+        ):
+            _prefetch_series_metadata(client, [_SERIES_HIT])
         assert len(spinner_calls) == 1
-

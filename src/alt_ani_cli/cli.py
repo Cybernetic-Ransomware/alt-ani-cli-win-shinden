@@ -1,7 +1,5 @@
 """alt-ani-cli — Pythonowy klient shinden.pl dla Windows PowerShell."""
 
-from __future__ import annotations
-
 import argparse
 import contextlib
 import sys

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import re
 
 from alt_ani_cli.content import EXCEPTIONS_PL

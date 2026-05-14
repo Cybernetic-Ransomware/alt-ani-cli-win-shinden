@@ -9,8 +9,6 @@ concrete next Screen (never BACK — the main loop never pushes them onto the
 history stack).
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 

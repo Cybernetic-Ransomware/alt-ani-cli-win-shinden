@@ -1,4 +1,7 @@
+"""Tests for CLI argument parser and episode range parser."""
+
 import pytest
+
 from alt_ani_cli.cli import _build_parser, _parse_range
 from alt_ani_cli.shinden.models import EpisodeRow
 
@@ -10,6 +13,7 @@ def _ep(n: float) -> EpisodeRow:
 EPS = [_ep(float(i)) for i in range(1, 14)]
 
 
+@pytest.mark.unit
 class TestArgParser:
     def test_url_flag(self):
         p = _build_parser()
@@ -50,6 +54,7 @@ class TestArgParser:
         assert a1.query == a2.query
 
 
+@pytest.mark.unit
 class TestParseRange:
     def test_single(self):
         result = _parse_range("5", EPS)

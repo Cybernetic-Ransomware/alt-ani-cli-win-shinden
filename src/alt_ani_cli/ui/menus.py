@@ -8,8 +8,6 @@ All functions return None when the user presses ESC (InquirerPy) or an empty
 Enter (numbered fallback), signalling "go back".
 """
 
-from __future__ import annotations
-
 import re
 from contextlib import suppress
 from typing import Literal

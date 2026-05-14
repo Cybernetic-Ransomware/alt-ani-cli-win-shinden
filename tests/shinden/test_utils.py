@@ -1,13 +1,12 @@
 """Tests for shinden/utils.py — pure functions, no fixtures needed."""
 
-from __future__ import annotations
-
 import pytest
 
 from alt_ani_cli.errors import ShindenError
 from alt_ani_cli.shinden.utils import _AGE_GATE_HINTS, _check_age_gate, _normalize_title
 
 
+@pytest.mark.unit
 class TestNormalizeTitle:
     def test_adds_space_after_colon_before_letter(self):
         assert _normalize_title("Blue Archive:Beautiful Day") == "Blue Archive: Beautiful Day"
@@ -34,6 +33,7 @@ class TestNormalizeTitle:
         assert "Beautiful" in result
 
 
+@pytest.mark.unit
 class TestCheckAgeGate:
     @pytest.mark.parametrize("hint", _AGE_GATE_HINTS)
     def test_raises_on_each_known_hint(self, hint):
