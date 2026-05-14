@@ -39,3 +39,10 @@ repos:
         entry: uv run python -m codespell_lib
         language: system
         types_or: [python, markdown, yaml, rst]
+
+      - id: bandit
+        name: bandit security check
+        entry: uv run bandit -c pyproject.toml -r
+        language: system
+        types: [python]
+        files: ^src/
