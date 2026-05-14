@@ -6,7 +6,6 @@ from selectolax.parser import HTMLParser
 
 from alt_ani_cli.errors import ShindenError
 from alt_ani_cli.shinden.metadata import (
-    _extract_relation,
     _parse_air_date,
     _parse_description,
     _parse_related,
@@ -55,7 +54,6 @@ class TestParseAirDate:
         assert sort == (2020, 1, 1)
 
     def test_fallback_text_scan(self):
-        # No dt/dd, but date is near the label in plain text.
         tree = _tree("<div>Data emisji: 15.03.2005</div>")
         date, sort = _parse_air_date(tree)
         assert date == "15.03.2005"
@@ -66,50 +64,55 @@ class TestParseAirDate:
 class TestParseDescription:
     def test_joins_paragraphs(self):
         tree = _tree(
-            "<section itemprop='description'>"
+            "<div id='description'>"
             "<p>Pierwsza część.</p>"
             "<p>Druga część.</p>"
-            "</section>"
+            "</div>"
         )
         assert _parse_description(tree) == "Pierwsza część.\n\nDruga część."
 
     def test_single_paragraph(self):
-        tree = _tree(
-            "<section itemprop='description'><p>Jednoakapitowy opis.</p></section>"
-        )
+        tree = _tree("<div id='description'><p>Jednoakapitowy opis.</p></div>")
         assert _parse_description(tree) == "Jednoakapitowy opis."
 
     def test_no_p_uses_text(self):
-        tree = _tree("<div itemprop='description'>Opis bez paragrafów.</div>")
+        tree = _tree("<div id='description'>Opis bez paragrafów.</div>")
         assert _parse_description(tree) == "Opis bez paragrafów."
 
     def test_missing_returns_empty(self):
         tree = _tree("<div class='nothing'></div>")
         assert _parse_description(tree) == ""
 
-    def test_class_description_fallback(self):
-        tree = _tree("<div class='description'><p>Opis przez klasę.</p></div>")
+    def test_class_fallback(self):
+        tree = _tree("<div class='title-full-description'><p>Opis przez klasę.</p></div>")
         assert _parse_description(tree) == "Opis przez klasę."
+
+    def test_empty_div_returns_empty(self):
+        tree = _tree("<div id='description'></div>")
+        assert _parse_description(tree) == ""
+
+
+def _tags_table(*rows: tuple[str, list[str]]) -> str:
+    """Build a minimal data-view-table with given (label, [tag, ...]) rows."""
+    trs = ""
+    for label, tags in rows:
+        lis = "".join(f"<li><a>{t}</a></li>" for t in tags)
+        trs += f"<tr><td>{label}:</td><td><ul class='tags'>{lis}</ul></td></tr>"
+    return f"<table class='data-view-table'><tbody>{trs}</tbody></table>"
 
 
 @pytest.mark.unit
 class TestParseTags:
-    _FULL_HTML = (
-        "<dl>"
-        "<dt>Miejsce i czas:</dt><dd><a>Japonia</a><a>Współczesność</a></dd>"
-        "<dt>Gatunki:</dt><dd><a>Akcja</a><a>Komedia</a></dd>"
-        "<dt>Grupy docelowe:</dt><dd><a>Seinen</a></dd>"
-        "<dt>Pozostałe tagi:</dt><dd><a>Supermoce</a></dd>"
-        "<dt>Rodzaje postaci:</dt><dd><a>Bishoujo</a></dd>"
-        "<dt>Pierwowzór:</dt><dd><a>Manga</a></dd>"
-        "</dl>"
-    )
-
     def test_concatenated_in_yaml_group_order(self):
-        # HTML intentionally has "Miejsce i czas" before "Gatunki" —
-        # result must follow _TAG_GROUP_ORDER regardless of HTML order.
-        tree = _tree(self._FULL_HTML)
-        tags = _parse_tags(tree)
+        html = _tags_table(
+            ("Miejsce i czas", ["Japonia", "Współczesność"]),
+            ("Gatunki", ["Akcja", "Komedia"]),
+            ("Grupy docelowe", ["Seinen"]),
+            ("Pozostałe tagi", ["Supermoce"]),
+            ("Rodzaje postaci", ["Bishoujo"]),
+            ("Pierwowzór", ["Manga"]),
+        )
+        tags = _parse_tags(_tree(html))
         assert list(tags) == [
             "Akcja", "Komedia",
             "Seinen",
@@ -120,58 +123,93 @@ class TestParseTags:
         ]
 
     def test_missing_group_skipped(self):
-        tree = _tree(
-            "<dl>"
-            "<dt>Gatunki:</dt><dd><a>Akcja</a></dd>"
-            "</dl>"
-        )
-        assert list(_parse_tags(tree)) == ["Akcja"]
+        html = _tags_table(("Gatunki", ["Akcja"]))
+        assert list(_parse_tags(_tree(html))) == ["Akcja"]
 
-    def test_empty_page_returns_empty_tuple(self):
+    def test_no_table_returns_empty_tuple(self):
         assert _parse_tags(_tree("<div></div>")) == ()
+
+    def test_unknown_row_label_ignored(self):
+        html = _tags_table(("Gatunki", ["Akcja"]), ("Nieznane", ["X"]))
+        assert list(_parse_tags(_tree(html))) == ["Akcja"]
+
+
+def _related_section(*entries: tuple[str, str, str, str]) -> str:
+    """Build a minimal related-series section.
+
+    entries: (href, title, kind, relation)
+    """
+    lis = ""
+    for href, title, kind, relation in entries:
+        lis += (
+            f"<li class='relation_t2t'><figure>"
+            f"<figcaption><a href='{href}'>{title}</a></figcaption>"
+            f"<figcaption class='figure-type'>{kind}</figcaption>"
+            f"<figcaption class='figure-type'>{relation}</figcaption>"
+            f"</figure></li>"
+        )
+    return (
+        "<section class='box'>"
+        "<h2 class='box-title h4'>Powiązane Serie</h2>"
+        f"<ul class='figure-list'>{lis}</ul>"
+        "</section>"
+    )
 
 
 @pytest.mark.unit
 class TestParseRelated:
-    _MIXED_HTML = (
-        "<dt>Powiązane serie:</dt>"
-        "<dd>"
-        "<ul>"
-        "<li><a href='/series/456-dragon-destiny'>Ikkitousen: Dragon Destiny</a> Anime Sequel</li>"
-        "<li><a href='/series/789-dragon-destiny-manga'>Ikkitousen Manga</a> Manga Adaptacja</li>"
-        "</ul>"
-        "</dd>"
-    )
-
     def test_filters_out_manga(self):
-        tree = _tree(self._MIXED_HTML)
-        related = _parse_related(tree)
+        html = _related_section(
+            ("/series/456-dragon-destiny", "Ikkitousen: Dragon Destiny", "Anime", "Sequel"),
+            ("/manga/789-dragon-destiny-manga", "Ikkitousen Manga", "Manga", "Adaptacja"),
+        )
+        related = _parse_related(_tree(html))
         ids = [r.id for r in related]
         assert "456" in ids
         assert "789" not in ids
 
     def test_extracts_relation_label(self):
-        tree = _tree(self._MIXED_HTML)
-        related = _parse_related(tree)
-        assert len(related) >= 1
+        html = _related_section(
+            ("/series/456-dragon-destiny", "Ikkitousen: Dragon Destiny", "Anime", "Sequel"),
+        )
+        related = _parse_related(_tree(html))
+        assert len(related) == 1
         assert related[0].relation == "Sequel"
 
     def test_extracts_title_and_url(self):
-        tree = _tree(self._MIXED_HTML)
-        r = _parse_related(tree)[0]
+        html = _related_section(
+            ("/series/456-dragon-destiny", "Ikkitousen: Dragon Destiny", "Anime", "Sequel"),
+        )
+        r = _parse_related(_tree(html))[0]
         assert r.title == "Ikkitousen: Dragon Destiny"
         assert "/series/456-dragon-destiny" in r.url
 
-    def test_empty_section_returns_empty_tuple(self):
+    def test_no_related_section_returns_empty_tuple(self):
         assert _parse_related(_tree("<div></div>")) == ()
 
-    def test_no_related_dt_returns_empty_tuple(self):
-        assert _parse_related(_tree("<dl><dt>Gatunki:</dt><dd><a>Akcja</a></dd></dl>")) == ()
+    def test_link_without_series_pattern_is_skipped(self):
+        html = _related_section(
+            ("/episode/999-bad-link", "Bad Link", "Anime", "Sequel"),
+        )
+        assert _parse_related(_tree(html)) == ()
+
+    def test_entry_without_anime_kind_is_skipped(self):
+        html = _related_section(
+            ("/series/10-only-manga", "Only Manga", "Manga", "Adaptacja"),
+        )
+        assert _parse_related(_tree(html)) == ()
+
+    def test_relation_label_preserved_as_is(self):
+        html = _related_section(
+            ("/series/20-test", "Test", "Anime", "Alternatywna Wersja"),
+        )
+        r = _parse_related(_tree(html))[0]
+        assert r.relation == "Alternatywna Wersja"
 
 
 @pytest.mark.unit
 class TestFetchSeriesMetadata:
-    def test_age_gate_raises(self, monkeypatch):
+    def test_age_gate_raises(self):
         class _FakeResp:
             text = "musisz mieć ukończone 18 lat aby obejrzeć tę serię"
             status_code = 200
@@ -186,14 +224,16 @@ class TestFetchSeriesMetadata:
         with pytest.raises(ShindenError):
             fetch_series_metadata(_FakeClient(), _ref())
 
-    def test_returns_metadata_on_valid_page(self, monkeypatch):
+    def test_returns_metadata_on_valid_page(self):
         html = (
             "<html><body>"
-            "<dl>"
+            "<dl class='info-aside-list'>"
             "<dt>Data emisji:</dt><dd>30.07.2003</dd>"
-            "<dt>Gatunki:</dt><dd><a>Akcja</a></dd>"
             "</dl>"
-            "<section itemprop='description'><p>Opis serii.</p></section>"
+            "<table class='data-view-table'><tbody>"
+            "<tr><td>Gatunki:</td><td><ul class='tags'><li><a>Akcja</a></li></ul></td></tr>"
+            "</tbody></table>"
+            "<div id='description'><p>Opis serii.</p></div>"
             "</body></html>"
         )
 
@@ -230,50 +270,3 @@ class TestFetchSeriesMetadata:
 
         with pytest.raises(httpx.HTTPStatusError):
             fetch_series_metadata(_FakeClient(), _ref())
-
-
-@pytest.mark.unit
-class TestExtractRelation:
-    @pytest.mark.parametrize(
-        "label",
-        ["Sequel", "Prequel", "Spin-off", "Adaptacja", "Inna wersja", "Alternatywna wersja", "Inne"],
-    )
-    def test_finds_each_known_label(self, label):
-        assert _extract_relation(f"Ikkitousen Anime {label}", "Ikkitousen") == label
-
-    def test_fallback_strips_title_and_anime(self):
-        result = _extract_relation("Ikkitousen Anime Specjalna wersja", "Ikkitousen")
-        assert "Specjalna wersja" in result
-
-    def test_fallback_returns_dash_when_empty_remainder(self):
-        assert _extract_relation("Ikkitousen Anime Manga", "Ikkitousen") == "—"
-
-
-@pytest.mark.unit
-class TestParseRelatedExtended:
-    def test_entry_without_anime_label_is_skipped(self):
-        html = (
-            "<dt>Powiązane serie:</dt>"
-            "<dd><ul>"
-            "<li><a href='/series/10-only-manga'>Only Manga</a> Manga Adaptacja</li>"
-            "</ul></dd>"
-        )
-        assert _parse_related(_tree(html)) == ()
-
-    def test_link_without_series_pattern_is_skipped(self):
-        html = (
-            "<dt>Powiązane serie:</dt>"
-            "<dd><ul>"
-            "<li><a href='/episode/999-bad-link'>Bad Link</a> Anime Sequel</li>"
-            "</ul></dd>"
-        )
-        assert _parse_related(_tree(html)) == ()
-
-    def test_section_related_fallback_container(self):
-        html = (
-            "<section class='related'>"
-            "<a href='/series/20-test-anime'>Test Anime</a> Anime Prequel"
-            "</section>"
-        )
-        ids = [r.id for r in _parse_related(_tree(html))]
-        assert "20" in ids
