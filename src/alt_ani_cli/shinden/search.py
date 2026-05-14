@@ -4,19 +4,10 @@ import httpx
 from selectolax.parser import HTMLParser
 
 from alt_ani_cli.config import SHINDEN_BASE
-from alt_ani_cli.shinden.models import SeriesHit
+from alt_ani_cli.models import SeriesHit
+from alt_ani_cli.shinden.utils import _normalize_title
 
 _SERIES_RE = re.compile(r"/series/(\d+)-([^/?#\s]+)")
-
-
-# selectolax .text() concatenates child-element texts without spaces,
-# so e.g. "Blue Archive:<span>Beautiful Day Dreamer</span>" →
-# "Blue Archive:BeautifulDayDreamer".  Fix: add space after ":" / "·"
-# when followed by a letter, and split camelCase runs.
-def _normalize_title(t: str) -> str:
-    t = re.sub(r"([:·])([A-Za-z])", r"\1 \2", t)  # space after colon/dot when followed by letter
-    t = re.sub(r"([a-z])([A-Z])", r"\1 \2", t)  # split camelCase
-    return t.strip()
 
 
 def search_series(client: httpx.Client, query: str) -> list[SeriesHit]:

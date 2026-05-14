@@ -3,7 +3,7 @@ import os
 from datetime import UTC, datetime
 
 from alt_ani_cli.config import HISTORY_FILE, STATE_DIR
-from alt_ani_cli.shinden.models import SeriesRef
+from alt_ani_cli.models import SeriesRef
 
 
 def _load() -> dict:

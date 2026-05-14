@@ -4,7 +4,7 @@ from pathlib import Path
 from alt_ani_cli.config import DOWNLOADS, USER_AGENT
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.extract.common import Stream
-from alt_ani_cli.shinden.models import EpisodeRow, SeriesRef
+from alt_ani_cli.models import EpisodeRow, SeriesRef
 from alt_ani_cli.ui import progress
 
 _SUPPRESS_PREFIXES = (
