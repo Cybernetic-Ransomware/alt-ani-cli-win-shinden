@@ -12,17 +12,44 @@ history stack).
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import httpx
 
 from alt_ani_cli import download, history
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, ScreenResult
+from alt_ani_cli.models import SeriesHit, SeriesMetadata, SeriesRef
 from alt_ani_cli.shinden import episode as shinden_episode
 from alt_ani_cli.shinden import search as shinden_search
 from alt_ani_cli.shinden import series as shinden_series
-from alt_ani_cli.shinden.models import SeriesRef
+from alt_ani_cli.shinden.metadata import fetch_series_metadata
+from alt_ani_cli.shinden.series import parse_series_url
 from alt_ani_cli.ui import menus, progress
 
 _PROG = CONTENT["progress"]
+_M = CONTENT["menu"]
+_EMPTY_META = SeriesMetadata(None, None, "", (), ())
+
+
+def _prefetch_series_metadata(client: httpx.Client, hits: list[SeriesHit]) -> dict[str, SeriesMetadata]:
+    if not hits:
+        return {}
+    out: dict[str, SeriesMetadata] = {}
+    with progress.spinner(_M["series"]["loading_metadata"]), ThreadPoolExecutor(max_workers=min(8, len(hits))) as ex:
+        futures = {ex.submit(_safe_fetch_one, client, h): h for h in hits}
+        for fut in as_completed(futures):
+            h = futures[fut]
+            try:
+                out[h.id] = fut.result()
+            except Exception:
+                out[h.id] = _EMPTY_META
+    return out
+
+
+def _safe_fetch_one(client: httpx.Client, hit: SeriesHit) -> SeriesMetadata:
+    ref = parse_series_url(hit.url)
+    return fetch_series_metadata(client, ref)
 
 
 def handle_start_mode(state: FlowState) -> ScreenResult:
@@ -98,7 +125,8 @@ def handle_series_pick(state: FlowState) -> ScreenResult:
         return BACK
 
     state.hits = hits
-    hit = menus.select_series(hits)
+    metadata = _prefetch_series_metadata(state.client, hits)
+    hit = menus.select_series(hits, metadata=metadata)
     if hit is None:
         return BACK
     ref = shinden_series.parse_series_url(hit.url)
@@ -108,7 +136,8 @@ def handle_series_pick(state: FlowState) -> ScreenResult:
 
 
 def handle_fetch_episodes(state: FlowState) -> ScreenResult:
-    assert state.ref is not None
+    if state.ref is None:
+        raise AssertionError
     progress.info(_PROG["fetching_episodes"].format(title=state.ref.title))
     ref, episodes = shinden_series.list_episodes(state.client, state.ref)
     state.ref = ref
@@ -123,7 +152,8 @@ def handle_fetch_episodes(state: FlowState) -> ScreenResult:
 
 
 def handle_episodes_pick(state: FlowState) -> ScreenResult:
-    assert state.ref is not None
+    if state.ref is None:
+        raise AssertionError
     args = state.args
 
     # When --episode was passed from CLI, skip the interactive menu
@@ -221,7 +251,8 @@ def handle_player_pick(state: FlowState) -> ScreenResult:
 
 def handle_resolve_stream(state: FlowState) -> ScreenResult:
     ep = state.current_ep
-    assert ep is not None
+    if ep is None:
+        raise AssertionError
 
     from alt_ani_cli.cli import _resolve_with_fallback
 
@@ -254,7 +285,8 @@ def handle_resolve_stream(state: FlowState) -> ScreenResult:
 
 
 def handle_quality_pick(state: FlowState) -> ScreenResult:
-    assert state.stream is not None
+    if state.stream is None:
+        raise AssertionError
     quality = menus.select_quality(state.stream.qualities)
     if quality is None:
         state.quality = None  # reset cache so we ask again next time
@@ -285,10 +317,13 @@ def handle_action_pick(state: FlowState) -> ScreenResult:
 
 
 def handle_run_action(state: FlowState) -> ScreenResult:
-    assert state.stream is not None
-    assert state.ref is not None
+    if state.stream is None:
+        raise AssertionError
+    if state.ref is None:
+        raise AssertionError
     ep = state.current_ep
-    assert ep is not None
+    if ep is None:
+        raise AssertionError
 
     from alt_ani_cli.cli import _pick_quality, _print_debug
 

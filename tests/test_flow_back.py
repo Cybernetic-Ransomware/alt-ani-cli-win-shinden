@@ -7,14 +7,16 @@ All external I/O (menus, shinden API, history) is mocked.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from alt_ani_cli.flow.handlers import HANDLERS
+from alt_ani_cli.flow.handlers import HANDLERS, _prefetch_series_metadata, _safe_fetch_one
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, _BackSentinel
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesRef
+from alt_ani_cli.models import SeriesMetadata
 
 
 def _make_args(**overrides):
@@ -345,3 +347,80 @@ class TestInteractiveFlow:
         assert final_screen is Screen.EPISODES_PICK
         assert 1.0 in state.completed_eps  # ep1 was completed
         assert state.ep_idx == 1           # ep2 index preserved (not incremented past)
+
+
+@contextmanager
+def _noop_spinner(msg):
+    yield
+
+
+_EMPTY_META = SeriesMetadata(None, None, "", (), ())
+
+
+class TestSafeFetchOne:
+    def test_returns_metadata_from_fetch(self):
+        client = MagicMock()
+        meta = SeriesMetadata(air_date="01.01.2020", air_date_sort=(2020, 1, 1), description="desc", tags=(), related=())
+        with patch("alt_ani_cli.flow.handlers.parse_series_url", return_value=_SERIES_REF):
+            with patch("alt_ani_cli.flow.handlers.fetch_series_metadata", return_value=meta):
+                result = _safe_fetch_one(client, _SERIES_HIT)
+        assert result is meta
+
+    def test_passes_parsed_ref_to_fetch(self):
+        client = MagicMock()
+        with patch("alt_ani_cli.flow.handlers.parse_series_url", return_value=_SERIES_REF) as mock_parse:
+            with patch("alt_ani_cli.flow.handlers.fetch_series_metadata", return_value=_EMPTY_META):
+                _safe_fetch_one(client, _SERIES_HIT)
+        mock_parse.assert_called_once_with(_SERIES_HIT.url)
+
+
+class TestPrefetchSeriesMetadata:
+    def test_returns_metadata_for_all_hits(self):
+        client = MagicMock()
+        meta = SeriesMetadata(air_date="01.01.2020", air_date_sort=(2020, 1, 1), description="", tags=(), related=())
+        with patch("alt_ani_cli.flow.handlers._safe_fetch_one", return_value=meta):
+            with patch("alt_ani_cli.ui.progress.spinner", _noop_spinner):
+                result = _prefetch_series_metadata(client, [_SERIES_HIT])
+        assert result == {_SERIES_HIT.id: meta}
+
+    def test_falls_back_to_empty_meta_on_error(self):
+        client = MagicMock()
+        with patch("alt_ani_cli.flow.handlers._safe_fetch_one", side_effect=Exception("network error")):
+            with patch("alt_ani_cli.ui.progress.spinner", _noop_spinner):
+                result = _prefetch_series_metadata(client, [_SERIES_HIT])
+        assert _SERIES_HIT.id in result
+        assert result[_SERIES_HIT.id].air_date is None
+
+    def test_empty_hits_returns_empty_dict(self):
+        client = MagicMock()
+        result = _prefetch_series_metadata(client, [])
+        assert result == {}
+
+    def test_all_hits_have_entry_in_result(self):
+        hits = [
+            SeriesHit(id="1", slug="a", title="A", url="http://shinden.pl/series/1-a"),
+            SeriesHit(id="2", slug="b", title="B", url="http://shinden.pl/series/2-b"),
+            SeriesHit(id="3", slug="c", title="C", url="http://shinden.pl/series/3-c"),
+        ]
+        client = MagicMock()
+        with patch("alt_ani_cli.flow.handlers._safe_fetch_one", return_value=_EMPTY_META):
+            with patch("alt_ani_cli.ui.progress.spinner", _noop_spinner):
+                result = _prefetch_series_metadata(client, hits)
+        assert set(result.keys()) == {"1", "2", "3"}
+
+    def test_spinner_is_shown(self):
+        from unittest.mock import call
+
+        client = MagicMock()
+        spinner_calls = []
+
+        @contextmanager
+        def _recording_spinner(msg):
+            spinner_calls.append(msg)
+            yield
+
+        with patch("alt_ani_cli.flow.handlers._safe_fetch_one", return_value=_EMPTY_META):
+            with patch("alt_ani_cli.ui.progress.spinner", _recording_spinner):
+                _prefetch_series_metadata(client, [_SERIES_HIT])
+        assert len(spinner_calls) == 1
+

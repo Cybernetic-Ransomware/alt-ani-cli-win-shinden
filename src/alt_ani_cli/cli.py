@@ -6,6 +6,8 @@ import argparse
 import contextlib
 import sys
 
+import httpx
+
 from alt_ani_cli import __version__, download, extract, history
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.errors import (
@@ -16,13 +18,13 @@ from alt_ani_cli.errors import (
     ShindenError,
 )
 from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.models import EpisodeRow, PlayerEntry, SeriesRef
 from alt_ani_cli.player import runner as player_runner
 from alt_ani_cli.shinden import api as shinden_api
 from alt_ani_cli.shinden import episode as shinden_episode
 from alt_ani_cli.shinden import http as shinden_http
 from alt_ani_cli.shinden import search as shinden_search
 from alt_ani_cli.shinden import series as shinden_series
-from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesRef
 from alt_ani_cli.ui import progress
 
 _C = CONTENT
@@ -387,6 +389,9 @@ def main() -> None:  # noqa: C901
     except KeyboardInterrupt:
         progress.warn(_PROG["interrupted"])
         sys.exit(130)
+    except httpx.HTTPStatusError as exc:
+        progress.error(_PROG["http_error"].format(status=exc.response.status_code, url=exc.request.url))
+        sys.exit(1)
     except (AntiBotError, NoStreamError, ParseError) as exc:
         progress.error(str(exc))
         sys.exit(1)
