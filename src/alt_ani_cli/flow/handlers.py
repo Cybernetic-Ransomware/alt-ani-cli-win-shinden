@@ -16,6 +16,7 @@ import httpx
 
 from alt_ani_cli import download, history
 from alt_ani_cli.content import CONTENT
+from alt_ani_cli.errors import ShindenError
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, ScreenResult
 from alt_ani_cli.models import SeriesHit, SeriesMetadata, SeriesRef
 from alt_ani_cli.shinden import episode as shinden_episode
@@ -34,20 +35,35 @@ def _prefetch_series_metadata(client: httpx.Client, hits: list[SeriesHit]) -> di
     if not hits:
         return {}
     out: dict[str, SeriesMetadata] = {}
+    failed_titles: list[str] = []
     with progress.spinner(_M["series"]["loading_metadata"]), ThreadPoolExecutor(max_workers=min(8, len(hits))) as ex:
         futures = {ex.submit(_safe_fetch_one, client, h): h for h in hits}
         for fut in as_completed(futures):
             h = futures[fut]
             try:
                 out[h.id] = fut.result()
-            except Exception:
+            except httpx.HTTPError, ShindenError:
                 out[h.id] = _EMPTY_META
+                failed_titles.append(h.title)
+    if failed_titles:
+        progress.warn(_M["series"]["metadata_fetch_failed"].format(titles=", ".join(failed_titles)))
     return out
 
 
 def _safe_fetch_one(client: httpx.Client, hit: SeriesHit) -> SeriesMetadata:
     ref = parse_series_url(hit.url)
     return fetch_series_metadata(client, ref)
+
+
+def _sorted_by_date_desc(hits: list[SeriesHit], metadata: dict[str, SeriesMetadata]) -> list[SeriesHit]:
+    def key(h: SeriesHit):
+        m = metadata.get(h.id)
+        if m is None or m.air_date_sort is None:
+            return (1, (0, 0, 0))
+        y, mo, d = m.air_date_sort
+        return (0, (-y, -mo, -d))
+
+    return sorted(hits, key=key)
 
 
 def handle_start_mode(state: FlowState) -> ScreenResult:
@@ -124,13 +140,71 @@ def handle_series_pick(state: FlowState) -> ScreenResult:
 
     state.hits = hits
     metadata = _prefetch_series_metadata(state.client, hits)
-    hit = menus.select_series(hits, metadata=metadata)
-    if hit is None:
-        return BACK
-    ref = shinden_series.parse_series_url(hit.url)
-    state.ref = SeriesRef(id=ref.id, slug=ref.slug, title=hit.title, url=ref.url)
-    state.last_ep = 0.0
-    return Screen.FETCH_EPISODES
+
+    original_hits = list(hits)
+    current_hits = list(hits)
+    sort_mode = "original"
+
+    while True:
+        signal = menus.select_series_once(current_hits, metadata=metadata)
+        action = signal[0]
+        payload = signal[1]
+
+        if action == "back":
+            return BACK
+
+        if action == "pick":
+            hit = payload
+            ref = shinden_series.parse_series_url(hit.url)
+            state.ref = SeriesRef(id=ref.id, slug=ref.slug, title=hit.title, url=ref.url)
+            state.last_ep = 0.0
+            return Screen.FETCH_EPISODES
+
+        cursor = payload if payload is not None else 0
+
+        if action == "sort":
+            prev_id = current_hits[cursor].id
+            if sort_mode == "original":
+                current_hits = _sorted_by_date_desc(current_hits, metadata)
+                sort_mode = "date_desc"
+            else:
+                current_hits = list(original_hits)
+                sort_mode = "original"
+            cursor = next((i for i, h in enumerate(current_hits) if h.id == prev_id), 0)
+
+        elif action == "desc":
+            h = current_hits[cursor]
+            m = metadata.get(h.id)
+            menus.show_modal_text(
+                _M["series"]["desc_header"].format(title=h.title),
+                (m.description if m else "") or _M["series"]["desc_empty"],
+            )
+
+        elif action == "tags":
+            h = current_hits[cursor]
+            m = metadata.get(h.id)
+            body = "\n".join(f"• {t}" for t in (m.tags if m else ())) or _M["series"]["tags_empty"]
+            menus.show_modal_text(_M["series"]["tags_header"].format(title=h.title), body)
+
+        elif action == "related":
+            h = current_hits[cursor]
+            m = metadata.get(h.id)
+            picked = menus.pick_related(m.related if m else ())
+            if picked is not None:
+                new_hit = SeriesHit(
+                    id=picked.id,
+                    slug=picked.slug,
+                    title=picked.title,
+                    url=picked.url,
+                    series_type="",
+                )
+                old_id = h.id
+                current_hits[cursor] = new_hit
+                for i, oh in enumerate(original_hits):
+                    if oh.id == old_id:
+                        original_hits[i] = new_hit
+                        break
+                metadata[new_hit.id] = _EMPTY_META
 
 
 def handle_fetch_episodes(state: FlowState) -> ScreenResult:

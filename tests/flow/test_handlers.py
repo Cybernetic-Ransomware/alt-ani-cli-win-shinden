@@ -6,14 +6,15 @@ All external I/O (menus, shinden API, history) is mocked.
 
 import argparse
 from contextlib import contextmanager
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
-from alt_ani_cli.flow.handlers import HANDLERS, _prefetch_series_metadata, _safe_fetch_one
+from alt_ani_cli.errors import ShindenError
+from alt_ani_cli.flow.handlers import HANDLERS, _prefetch_series_metadata, _safe_fetch_one, _sorted_by_date_desc
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, _BackSentinel
-from alt_ani_cli.models import SeriesMetadata
+from alt_ani_cli.models import RelatedSeries, SeriesMetadata
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesRef
 
 
@@ -126,7 +127,8 @@ class TestHandleSeriesPick:
         state = _make_state(query="fate")
         with (
             patch("alt_ani_cli.shinden.search.search_series", return_value=[_SERIES_HIT]),
-            patch("alt_ani_cli.ui.menus.select_series", return_value=None),
+            patch("alt_ani_cli.flow.handlers._prefetch_series_metadata", return_value={}),
+            patch("alt_ani_cli.ui.menus.select_series_once", return_value=("back", None)),
         ):
             result = HANDLERS[Screen.SERIES_PICK](state)
         assert isinstance(result, _BackSentinel)
@@ -135,12 +137,100 @@ class TestHandleSeriesPick:
         state = _make_state(query="fate")
         with (
             patch("alt_ani_cli.shinden.search.search_series", return_value=[_SERIES_HIT]),
-            patch("alt_ani_cli.ui.menus.select_series", return_value=_SERIES_HIT),
+            patch("alt_ani_cli.flow.handlers._prefetch_series_metadata", return_value={}),
+            patch("alt_ani_cli.ui.menus.select_series_once", return_value=("pick", _SERIES_HIT)),
             patch("alt_ani_cli.shinden.series.parse_series_url", return_value=_SERIES_REF),
         ):
             result = HANDLERS[Screen.SERIES_PICK](state)
         assert result is Screen.FETCH_EPISODES
         assert state.ref is not None
+
+    def test_sort_signal_toggles_order(self):
+        hit_a = SeriesHit(id="1", slug="a", title="A", url="http://shinden.pl/series/1-a")
+        hit_b = SeriesHit(id="2", slug="b", title="B", url="http://shinden.pl/series/2-b")
+        meta_a = SeriesMetadata(air_date="01.01.2018", air_date_sort=(2018, 1, 1), description="", tags=(), related=())
+        meta_b = SeriesMetadata(air_date="01.01.2022", air_date_sort=(2022, 1, 1), description="", tags=(), related=())
+
+        received_hits: list[list] = []
+        signals = iter([("sort", 0), ("pick", hit_b)])
+
+        def _once(hits, metadata=None, **kw):
+            received_hits.append(list(hits))
+            return next(signals)
+
+        state = _make_state(query="fate")
+        with (
+            patch("alt_ani_cli.shinden.search.search_series", return_value=[hit_a, hit_b]),
+            patch("alt_ani_cli.flow.handlers._prefetch_series_metadata", return_value={"1": meta_a, "2": meta_b}),
+            patch("alt_ani_cli.ui.menus.select_series_once", side_effect=_once),
+            patch("alt_ani_cli.shinden.series.parse_series_url", return_value=_SERIES_REF),
+        ):
+            result = HANDLERS[Screen.SERIES_PICK](state)
+
+        assert result is Screen.FETCH_EPISODES
+        assert len(received_hits) == 2
+        # After sort, newer series (2022) should come first
+        assert received_hits[1][0].id == "2"
+        assert received_hits[1][1].id == "1"
+
+    def test_desc_signal_calls_show_modal_text(self):
+        meta = SeriesMetadata(air_date=None, air_date_sort=None, description="Great show", tags=(), related=())
+        signals = iter([("desc", 0), ("back", None)])
+
+        state = _make_state(query="fate")
+        with (
+            patch("alt_ani_cli.shinden.search.search_series", return_value=[_SERIES_HIT]),
+            patch("alt_ani_cli.flow.handlers._prefetch_series_metadata", return_value={_SERIES_HIT.id: meta}),
+            patch("alt_ani_cli.ui.menus.select_series_once", side_effect=lambda *a, **kw: next(signals)),
+            patch("alt_ani_cli.ui.menus.show_modal_text") as mock_modal,
+        ):
+            result = HANDLERS[Screen.SERIES_PICK](state)
+
+        mock_modal.assert_called_once()
+        assert isinstance(result, _BackSentinel)
+
+    def test_tags_signal_calls_show_modal_text(self):
+        meta = SeriesMetadata(air_date=None, air_date_sort=None, description="", tags=("Action", "Comedy"), related=())
+        signals = iter([("tags", 0), ("back", None)])
+
+        state = _make_state(query="fate")
+        with (
+            patch("alt_ani_cli.shinden.search.search_series", return_value=[_SERIES_HIT]),
+            patch("alt_ani_cli.flow.handlers._prefetch_series_metadata", return_value={_SERIES_HIT.id: meta}),
+            patch("alt_ani_cli.ui.menus.select_series_once", side_effect=lambda *a, **kw: next(signals)),
+            patch("alt_ani_cli.ui.menus.show_modal_text") as mock_modal,
+        ):
+            result = HANDLERS[Screen.SERIES_PICK](state)
+
+        mock_modal.assert_called_once()
+        assert isinstance(result, _BackSentinel)
+
+    def test_related_signal_substitutes_hit(self):
+        related = RelatedSeries(
+            id="99", slug="zero", title="Fate/Zero", url="http://shinden.pl/series/99-zero", relation="Prequel"
+        )
+        meta = SeriesMetadata(air_date=None, air_date_sort=None, description="", tags=(), related=(related,))
+
+        received_hits: list[list] = []
+        signals = iter([("related", 0), ("back", None)])
+
+        def _once(hits, metadata=None, **kw):
+            received_hits.append(list(hits))
+            return next(signals)
+
+        state = _make_state(query="fate")
+        with (
+            patch("alt_ani_cli.shinden.search.search_series", return_value=[_SERIES_HIT]),
+            patch("alt_ani_cli.flow.handlers._prefetch_series_metadata", return_value={_SERIES_HIT.id: meta}),
+            patch("alt_ani_cli.ui.menus.select_series_once", side_effect=_once),
+            patch("alt_ani_cli.ui.menus.pick_related", return_value=related),
+        ):
+            result = HANDLERS[Screen.SERIES_PICK](state)
+
+        assert isinstance(result, _BackSentinel)
+        assert len(received_hits) == 2
+        # After substitution the second call receives the new hit at position 0
+        assert received_hits[1][0].id == "99"
 
 
 @pytest.mark.unit
@@ -314,7 +404,8 @@ class TestInteractiveFlow:
             patch("alt_ani_cli.ui.menus.select_start_mode", side_effect=_fake_start),
             patch("alt_ani_cli.ui.menus.prompt_search_query", side_effect=_fake_search_query),
             patch("alt_ani_cli.shinden.search.search_series", return_value=[_SERIES_HIT]),
-            patch("alt_ani_cli.ui.menus.select_series", return_value=None),
+            patch("alt_ani_cli.flow.handlers._prefetch_series_metadata", return_value={}),
+            patch("alt_ani_cli.ui.menus.select_series_once", return_value=("back", None)),
         ):
             _run_interactive_wrapped(args, client)
 
@@ -372,6 +463,48 @@ class TestInteractiveFlow:
         assert state.ep_idx == 1
 
 
+@pytest.mark.unit
+class TestSortedByDateDesc:
+    def test_sorts_by_year_descending(self):
+        hit_a = SeriesHit(id="1", slug="a", title="A", url="http://shinden.pl/series/1-a")
+        hit_b = SeriesHit(id="2", slug="b", title="B", url="http://shinden.pl/series/2-b")
+        meta_a = SeriesMetadata(air_date="2018", air_date_sort=(2018, 1, 1), description="", tags=(), related=())
+        meta_b = SeriesMetadata(air_date="2022", air_date_sort=(2022, 6, 15), description="", tags=(), related=())
+
+        result = _sorted_by_date_desc([hit_a, hit_b], {"1": meta_a, "2": meta_b})
+        assert [h.id for h in result] == ["2", "1"]
+
+    def test_no_air_date_sorts_last(self):
+        hit_a = SeriesHit(id="1", slug="a", title="A", url="http://shinden.pl/series/1-a")
+        hit_b = SeriesHit(id="2", slug="b", title="B", url="http://shinden.pl/series/2-b")
+        meta_a = SeriesMetadata(air_date=None, air_date_sort=None, description="", tags=(), related=())
+        meta_b = SeriesMetadata(air_date="2022", air_date_sort=(2022, 6, 15), description="", tags=(), related=())
+
+        result = _sorted_by_date_desc([hit_a, hit_b], {"1": meta_a, "2": meta_b})
+        assert result[0].id == "2"
+        assert result[-1].id == "1"
+
+    def test_missing_metadata_sorts_last(self):
+        hit_a = SeriesHit(id="1", slug="a", title="A", url="http://shinden.pl/series/1-a")
+        hit_b = SeriesHit(id="2", slug="b", title="B", url="http://shinden.pl/series/2-b")
+        meta_b = SeriesMetadata(air_date="2020", air_date_sort=(2020, 3, 1), description="", tags=(), related=())
+
+        result = _sorted_by_date_desc([hit_a, hit_b], {"2": meta_b})
+        assert result[0].id == "2"
+        assert result[-1].id == "1"
+
+    def test_equal_dates_preserve_relative_order(self):
+        hits = [
+            SeriesHit(id=str(i), slug=f"s{i}", title=f"S{i}", url=f"http://shinden.pl/series/{i}-s{i}")
+            for i in range(3)
+        ]
+        same_meta = SeriesMetadata(air_date="2020", air_date_sort=(2020, 1, 1), description="", tags=(), related=())
+        metadata = {str(i): same_meta for i in range(3)}
+
+        result = _sorted_by_date_desc(hits, metadata)
+        assert [h.id for h in result] == ["0", "1", "2"]
+
+
 @contextmanager
 def _noop_spinner(msg):
     yield
@@ -414,15 +547,38 @@ class TestPrefetchSeriesMetadata:
             result = _prefetch_series_metadata(client, [_SERIES_HIT])
         assert result == {_SERIES_HIT.id: meta}
 
-    def test_falls_back_to_empty_meta_on_error(self):
+    def test_http_error_falls_back_and_warns(self):
         client = MagicMock()
         with (
-            patch("alt_ani_cli.flow.handlers._safe_fetch_one", side_effect=Exception("network error")),
+            patch("alt_ani_cli.flow.handlers._safe_fetch_one", side_effect=httpx.HTTPError("timeout")),
             patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
         ):
             result = _prefetch_series_metadata(client, [_SERIES_HIT])
         assert _SERIES_HIT.id in result
         assert result[_SERIES_HIT.id].air_date is None
+        mock_warn.assert_called_once()
+
+    def test_shinden_error_falls_back_and_warns(self):
+        client = MagicMock()
+        with (
+            patch("alt_ani_cli.flow.handlers._safe_fetch_one", side_effect=ShindenError("age gate")),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            result = _prefetch_series_metadata(client, [_SERIES_HIT])
+        assert _SERIES_HIT.id in result
+        assert result[_SERIES_HIT.id].air_date is None
+        mock_warn.assert_called_once()
+
+    def test_unexpected_error_propagates(self):
+        client = MagicMock()
+        with (
+            patch("alt_ani_cli.flow.handlers._safe_fetch_one", side_effect=ValueError("unexpected")),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+        ):
+            with pytest.raises(ValueError, match="unexpected"):
+                _prefetch_series_metadata(client, [_SERIES_HIT])
 
     def test_empty_hits_returns_empty_dict(self):
         client = MagicMock()

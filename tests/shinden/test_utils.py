@@ -46,3 +46,14 @@ class TestCheckAgeGate:
 
     def test_clean_page_does_not_raise(self):
         _check_age_gate("<html><body><h1>Naruto</h1></body></html>")
+
+    def test_hints_contain_expected_polish_tokens(self):
+        """Anchor: parsing tokens must stay in Polish to match shinden.pl HTML.
+
+        _AGE_GATE_HINTS are domain data (HTML fingerprints), not UI strings.
+        If someone translates them to English, shinden.pl age-gated pages will
+        pass through silently. This test breaks intentionally in that case.
+        """
+        assert "musisz mieć ukończone 18" in _AGE_GATE_HINTS
+        assert "treści dla dorosłych" in _AGE_GATE_HINTS
+        assert "potwierdź wiek" in _AGE_GATE_HINTS

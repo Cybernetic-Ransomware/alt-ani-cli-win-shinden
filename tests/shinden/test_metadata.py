@@ -6,6 +6,7 @@ from selectolax.parser import HTMLParser
 
 from alt_ani_cli.errors import ShindenError
 from alt_ani_cli.shinden.metadata import (
+    _TAG_GROUP_ORDER,
     _parse_air_date,
     _parse_description,
     _parse_related,
@@ -58,6 +59,20 @@ class TestParseAirDate:
         date, sort = _parse_air_date(tree)
         assert date == "15.03.2005"
         assert sort == (2005, 3, 15)
+
+    def test_attribute_error_in_parse_is_handled(self):
+        """Exercises the except ValueError, AttributeError branch (PEP 758 syntax).
+
+        Anchor: verifies the bracketless except E1, E2: syntax is valid and that
+        AttributeError from selectolax traversal is caught and returns (None, None).
+        """
+        from unittest.mock import MagicMock
+
+        mock_tree = MagicMock()
+        mock_tree.css.side_effect = AttributeError("triggered by test")
+        date, sort = _parse_air_date(mock_tree)
+        assert date is None
+        assert sort is None
 
 
 @pytest.mark.unit
@@ -270,3 +285,20 @@ class TestFetchSeriesMetadata:
 
         with pytest.raises(httpx.HTTPStatusError):
             fetch_series_metadata(_FakeClient(), _ref())
+
+
+@pytest.mark.unit
+class TestTagGroupOrderAnchor:
+    def test_contains_all_expected_polish_group_names(self):
+        """Anchor: group names must stay in Polish to match shinden.pl HTML structure.
+
+        _TAG_GROUP_ORDER values are HTML parsing tokens (matched against <td> text
+        in data-view-table rows), not UI strings. Translating them breaks tag parsing.
+        """
+        assert "Gatunki" in _TAG_GROUP_ORDER
+        assert "Grupy docelowe" in _TAG_GROUP_ORDER
+        assert "Pozostałe tagi" in _TAG_GROUP_ORDER
+        assert "Rodzaje postaci" in _TAG_GROUP_ORDER
+        assert "Miejsce i czas" in _TAG_GROUP_ORDER
+        assert "Pierwowzór" in _TAG_GROUP_ORDER
+        assert len(_TAG_GROUP_ORDER) == 6

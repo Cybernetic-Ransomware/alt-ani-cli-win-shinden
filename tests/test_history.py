@@ -1,5 +1,6 @@
 """Tests for JSON-backed watch history."""
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -66,3 +67,35 @@ class TestHistory:
             h.upsert(_make_ref(), last_ep=2.0)
             assert hf.exists()
             assert not (tmp_path / "h.tmp").exists()
+
+    def test_list_sorted_by_updated_at_descending(self, tmp_path):
+        hf = tmp_path / "h.json"
+        hf.write_text(json.dumps({
+            "version": 1,
+            "series": {
+                "1": {"title": "Alpha", "slug": "alpha", "url": "http://x/1", "last_ep": 1.0, "updated_at": "2024-01-01T00:00:00+00:00"},
+                "2": {"title": "Beta",  "slug": "beta",  "url": "http://x/2", "last_ep": 1.0, "updated_at": "2024-06-15T00:00:00+00:00"},
+                "3": {"title": "Gamma", "slug": "gamma", "url": "http://x/3", "last_ep": 1.0, "updated_at": "2023-12-31T00:00:00+00:00"},
+            },
+        }), encoding="utf-8")
+        with patch("alt_ani_cli.history.HISTORY_FILE", hf), \
+             patch("alt_ani_cli.history.STATE_DIR", tmp_path):
+            import alt_ani_cli.history as h
+            entries = h.list_all()
+        assert [e[0].id for e in entries] == ["2", "1", "3"]
+
+    def test_list_missing_updated_at_sorts_last(self, tmp_path):
+        hf = tmp_path / "h.json"
+        hf.write_text(json.dumps({
+            "version": 1,
+            "series": {
+                "1": {"title": "WithDate",    "slug": "a", "url": "http://x/1", "last_ep": 1.0, "updated_at": "2024-01-01T00:00:00+00:00"},
+                "2": {"title": "WithoutDate", "slug": "b", "url": "http://x/2", "last_ep": 1.0},
+            },
+        }), encoding="utf-8")
+        with patch("alt_ani_cli.history.HISTORY_FILE", hf), \
+             patch("alt_ani_cli.history.STATE_DIR", tmp_path):
+            import alt_ani_cli.history as h
+            entries = h.list_all()
+        assert entries[0][0].id == "1"
+        assert entries[1][0].id == "2"

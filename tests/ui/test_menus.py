@@ -6,15 +6,14 @@ import pytest
 
 from alt_ani_cli.shinden.models import EpisodeRow, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
 from alt_ani_cli.ui.menus import (
-    _pick_related,
     _run_keyed_picker,
     _run_simple_picker,
-    _sorted_by_date_desc,
+    pick_related,
     select_action,
     select_episodes,
     select_quality,
-    select_series,
     select_series_from_history,
+    select_series_once,
     select_start_mode,
 )
 
@@ -134,13 +133,13 @@ class TestSelectEpisodes:
 
 
 @pytest.mark.unit
-class TestSelectSeries:
-    def test_fallback_no_metadata_shows_label(self, monkeypatch, capsys):
+class TestSelectSeriesOnce:
+    def test_fallback_pick_returns_pick_signal(self, monkeypatch, capsys):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         hits = [SeriesHit(id="1", slug="test", title="Test Anime", url="https://shinden.pl/series/1-test", series_type="TV")]
         with patch("builtins.input", return_value="1"):
-            result = select_series(hits)
-        assert result == hits[0]
+            signal = select_series_once(hits)
+        assert signal == ("pick", hits[0])
         captured = capsys.readouterr()
         assert "Test Anime" in captured.out
         assert "(id:1)" in captured.out
@@ -150,15 +149,16 @@ class TestSelectSeries:
         hits = [SeriesHit(id="234", slug="ikkitousen", title="Ikkitousen", url="https://shinden.pl/series/234-ikkitousen", series_type="TV")]
         meta = {"234": SeriesMetadata(air_date="30.07.2003", air_date_sort=(2003, 7, 30), description="", tags=(), related=())}
         with patch("builtins.input", return_value="1"):
-            result = select_series(hits, metadata=meta)
-        assert result == hits[0]
+            signal = select_series_once(hits, metadata=meta)
+        assert signal[0] == "pick"
+        assert signal[1] == hits[0]
         assert "30.07.2003" in capsys.readouterr().out
 
-    def test_fallback_empty_enter_returns_none(self, monkeypatch):
+    def test_fallback_empty_enter_returns_back_signal(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         hits = [SeriesHit(id="1", slug="test", title="Test", url="https://shinden.pl/series/1-test")]
         with patch("builtins.input", return_value=""):
-            assert select_series(hits) is None
+            assert select_series_once(hits) == ("back", None)
 
     def test_from_history_after_refactor(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
@@ -169,46 +169,23 @@ class TestSelectSeries:
 
 
 @pytest.mark.unit
-class TestSortedByDateDesc:
-    def test_orders_newest_first(self):
-        hits = [
-            SeriesHit(id="1", slug="a", title="A", url="", series_type=""),
-            SeriesHit(id="2", slug="b", title="B", url="", series_type=""),
-            SeriesHit(id="3", slug="c", title="C", url="", series_type=""),
-        ]
-        meta = {
-            "1": SeriesMetadata(air_date="01.01.2020", air_date_sort=(2020, 1, 1), description="", tags=(), related=()),
-            "2": SeriesMetadata(air_date="01.06.2023", air_date_sort=(2023, 6, 1), description="", tags=(), related=()),
-            "3": SeriesMetadata(air_date=None, air_date_sort=None, description="", tags=(), related=()),
-        }
-        assert [h.id for h in _sorted_by_date_desc(hits, meta)] == ["2", "1", "3"]
-
-    def test_no_dates_does_not_crash(self):
-        hits = [
-            SeriesHit(id="1", slug="a", title="A", url="", series_type=""),
-            SeriesHit(id="2", slug="b", title="B", url="", series_type=""),
-        ]
-        assert len(_sorted_by_date_desc(hits, {})) == 2
-
-
-@pytest.mark.unit
 class TestPickRelated:
     def test_empty_returns_none(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("alt_ani_cli.ui.progress.warn"), patch("builtins.input", return_value=""):
-            assert _pick_related(()) is None
+            assert pick_related(()) is None
 
     def test_fallback_picks_item(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         items = (RelatedSeries(id="10", slug="sequel", title="Sequel Anime", url="https://shinden.pl/series/10-sequel", relation="Sequel"),)
         with patch("builtins.input", return_value="1"):
-            assert _pick_related(items) == items[0]
+            assert pick_related(items) == items[0]
 
     def test_fallback_empty_enter_returns_none(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         items = (RelatedSeries(id="10", slug="sequel", title="Sequel", url="https://shinden.pl/series/10-sequel", relation="Sequel"),)
         with patch("builtins.input", return_value=""):
-            assert _pick_related(items) is None
+            assert pick_related(items) is None
 
 
 @pytest.mark.unit

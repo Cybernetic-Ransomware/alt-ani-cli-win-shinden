@@ -216,17 +216,6 @@ def _series_label(h: SeriesHit, meta: SeriesMetadata | None) -> str:
     return _s["label_without_date"].format(title=h.title, type=t, id=h.id)
 
 
-def _sorted_by_date_desc(hits: list[SeriesHit], metadata: dict[str, SeriesMetadata]) -> list[SeriesHit]:
-    def key(h: SeriesHit):
-        m = metadata.get(h.id)
-        if m is None or m.air_date_sort is None:
-            return (1, (0, 0, 0))
-        y, mo, d = m.air_date_sort
-        return (0, (-y, -mo, -d))
-
-    return sorted(hits, key=key)
-
-
 def _register_series_kbs(prompt_obj, signal: dict) -> None:
     def _idx() -> int:
         try:
@@ -255,7 +244,8 @@ def _register_series_kbs(prompt_obj, signal: dict) -> None:
         event.app.exit(result=None)
 
 
-def _modal_text(title: str, body: str) -> None:
+def show_modal_text(title: str, body: str) -> None:
+    """Render a blocking modal panel (description or tags) and wait for Enter."""
     progress.rule(title)
     progress.output(body)
     progress.output(f"\n[dim]{_M['series']['press_any_key']}[/dim]")
@@ -263,7 +253,8 @@ def _modal_text(title: str, body: str) -> None:
         input()
 
 
-def _pick_related(items: tuple[RelatedSeries, ...]) -> RelatedSeries | None:
+def pick_related(items: tuple[RelatedSeries, ...]) -> RelatedSeries | None:
+    """Prompt the user to pick a related series (or return None if empty / ESC)."""
     _s = _M["series"]
     if not items:
         progress.warn(_s["related_empty"])
@@ -293,90 +284,55 @@ def _pick_related(items: tuple[RelatedSeries, ...]) -> RelatedSeries | None:
     return None if idx is None else items[idx]
 
 
-def select_series(
+def select_series_once(
     hits: list[SeriesHit],
     metadata: dict[str, SeriesMetadata] | None = None,
+    *,
     prompt: str = _M["series"]["default_prompt"],
-) -> SeriesHit | None:
+) -> tuple:
+    """Render the series picker once and return a signal tuple.
+
+    Return values:
+      ("pick",    SeriesHit)   — user confirmed a selection
+      ("back",    None)        — ESC or Ctrl-C
+      ("sort",    cursor_idx)  — Ctrl+S: caller should toggle sort order
+      ("desc",    cursor_idx)  — Ctrl+O: caller should show description modal
+      ("tags",    cursor_idx)  — Ctrl+Q: caller should show tags modal
+      ("related", cursor_idx)  — Ctrl+R: caller should show related picker
+
+    cursor_idx is an index into the *hits* list that was passed in.
+    The fallback numbered menu only produces ("pick", ...) or ("back", None).
+    """
     _meta: dict[str, SeriesMetadata] = dict(metadata or {})
 
     if not _use_inquirer():
-        return _numbered_pick(hits, lambda h: _series_label(h, _meta.get(h.id)), prompt)
+        hit = _numbered_pick(hits, lambda h: _series_label(h, _meta.get(h.id)), prompt)
+        return ("back", None) if hit is None else ("pick", hit)
 
     from InquirerPy import inquirer
     from InquirerPy.base.control import Choice
 
-    original_hits = list(hits)
-    current_hits = list(hits)
-    sort_mode = "original"
-    cursor = 0
+    choices = [Choice(value=i, name=_series_label(h, _meta.get(h.id))) for i, h in enumerate(hits)]
+    signal: dict = {"sig": None}
+    prompt_obj = inquirer.fuzzy(
+        message=f"{prompt}:",
+        choices=choices,
+        max_height="40%",
+        long_instruction=_M["series"]["instruction"],
+        raise_keyboard_interrupt=False,
+        keybindings=_BACK_KB,
+    )
+    _register_series_kbs(prompt_obj, signal)
+    try:
+        result = prompt_obj.execute()
+    except KeyboardInterrupt:
+        return ("back", None)
 
-    while True:
-        choices = [Choice(value=i, name=_series_label(h, _meta.get(h.id))) for i, h in enumerate(current_hits)]
-        signal: dict = {"sig": None}
-        prompt_obj = inquirer.fuzzy(
-            message=f"{prompt}:",
-            choices=choices,
-            max_height="40%",
-            long_instruction=_M["series"]["instruction"],
-            raise_keyboard_interrupt=False,
-            keybindings=_BACK_KB,
-        )
-        _register_series_kbs(prompt_obj, signal)
-        try:
-            result = prompt_obj.execute()
-        except KeyboardInterrupt:
-            return None
-
-        if signal["sig"] is None:
-            return None if result is None else current_hits[result]
-
+    if signal["sig"] is not None:
         action, idx = signal["sig"]
-        cursor = idx if idx is not None else 0
+        return (action, idx if idx is not None else 0)
 
-        if action == "sort":
-            prev_id = current_hits[cursor].id
-            if sort_mode == "original":
-                current_hits = _sorted_by_date_desc(current_hits, _meta)
-                sort_mode = "date_desc"
-            else:
-                current_hits = list(original_hits)
-                sort_mode = "original"
-            cursor = next((i for i, h in enumerate(current_hits) if h.id == prev_id), 0)
-
-        elif action == "desc":
-            h = current_hits[cursor]
-            m = _meta.get(h.id)
-            _modal_text(
-                _M["series"]["desc_header"].format(title=h.title),
-                (m.description if m else "") or _M["series"]["desc_empty"],
-            )
-
-        elif action == "tags":
-            h = current_hits[cursor]
-            m = _meta.get(h.id)
-            body = "\n".join(f"• {t}" for t in (m.tags if m else ())) or _M["series"]["tags_empty"]
-            _modal_text(_M["series"]["tags_header"].format(title=h.title), body)
-
-        elif action == "related":
-            h = current_hits[cursor]
-            m = _meta.get(h.id)
-            picked = _pick_related(m.related if m else ())
-            if picked is not None:
-                new_hit = SeriesHit(
-                    id=picked.id,
-                    slug=picked.slug,
-                    title=picked.title,
-                    url=picked.url,
-                    series_type="",
-                )
-                old_id = h.id
-                current_hits[cursor] = new_hit
-                for i, oh in enumerate(original_hits):
-                    if oh.id == old_id:
-                        original_hits[i] = new_hit
-                        break
-                _meta[new_hit.id] = _EMPTY_META
+    return ("back", None) if result is None else ("pick", hits[result])
 
 
 def select_series_from_history(

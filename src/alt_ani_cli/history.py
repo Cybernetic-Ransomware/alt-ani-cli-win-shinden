@@ -45,7 +45,7 @@ def list_all() -> list[tuple[SeriesRef, float]]:
             url=entry.get("url", ""),
         )
         result.append((ref, float(entry.get("last_ep", 0))))
-    result.sort(key=lambda x: x[0].title.lower())
+    result.sort(key=lambda x: data["series"][x[0].id].get("updated_at", ""), reverse=True)
     return result
 
 
