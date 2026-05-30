@@ -113,21 +113,32 @@ Files are saved to `%USERPROFILE%\Videos\alt-ani-cli\` by default.
 
 ## Development
 
+One-time setup:
+
 ```powershell
-uv sync
-uv run pre-commit install  # install git hooks
-uv run pytest -v
-uv run ruff check src
+uv sync                       # install all dependencies
+uv run pre-commit install     # install git hooks
+```
+
+Day-to-day with [just](https://github.com/casey/just):
+
+```powershell
+just test      # run tests
+just lint      # ruff check, ty, codespell, bandit
+just format    # ruff format --check (report only)
 ```
 
 ## Supported video hosts
 
-Native extractors: mp4upload, streamtape, dood, streamwish/filemoon family (JWPlayer), CDA, sibnet, VK.  
+Native extractors: mp4upload, streamtape, dood, streamwish/filemoon family (JWPlayer), CDA, sibnet, VK.
+
 All other hosts fall back to yt-dlp (1500+ supported sites).
 
 ## Security notes
 
-**`GUEST_AUTH` token** — the value hardcoded in `config.py` is a public guest token issued by shinden.pl for unauthenticated API access. It is not a secret: it encodes the literal string `_guest_:0,5,21000000,255,4174293644` in Base64. Any visitor to shinden.pl uses the same token. It is safe to commit and share openly.
+**`GUEST_AUTH` token** — the value hardcoded in `config.py` is a public guest token issued by shinden.pl for unauthenticated API access.
+
+It encodes the literal string `_guest_:0,5,21000000,255,4174293644` in Base64. Any visitor to shinden.pl receives the same token, so it is safe to commit and share openly.
 
 ## Developer tools
 
