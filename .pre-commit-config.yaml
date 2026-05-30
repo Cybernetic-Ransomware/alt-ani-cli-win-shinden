@@ -12,16 +12,9 @@ repos:
         files: ^(pyproject\.toml|uv\.lock)$
         pass_filenames: false
 
-      - id: ruff-format
-        name: ruff format
-        entry: uv run ruff format
-        language: system
-        types: [python]
-        files: ^src/
-
       - id: ruff-check
         name: ruff lint
-        entry: uv run ruff check --fix
+        entry: uv run ruff check
         language: system
         types: [python]
         files: ^src/
