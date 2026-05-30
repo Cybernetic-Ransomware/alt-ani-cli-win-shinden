@@ -223,22 +223,25 @@ def _register_series_kbs(prompt_obj, signal: dict) -> None:
         except Exception:
             return 0
 
-    @prompt_obj.register_kb("c-s")
+    # eager=True is required: the fuzzy prompt's BufferControl has emacs bindings
+    # (e.g. c-r = reverse-i-search) at control level, which beat _kb-level bindings
+    # when KeyProcessor picks matches[-1].  eager overrides the control-level handler.
+    @prompt_obj._kb.add("c-s", eager=True)
     def _(event):
         signal["sig"] = ("sort", _idx())
         event.app.exit(result=None)
 
-    @prompt_obj.register_kb("c-o")
+    @prompt_obj._kb.add("c-o", eager=True)
     def _(event):
         signal["sig"] = ("desc", _idx())
         event.app.exit(result=None)
 
-    @prompt_obj.register_kb("c-q")
+    @prompt_obj._kb.add("c-q", eager=True)
     def _(event):
         signal["sig"] = ("tags", _idx())
         event.app.exit(result=None)
 
-    @prompt_obj.register_kb("c-r")
+    @prompt_obj._kb.add("c-r", eager=True)
     def _(event):
         signal["sig"] = ("related", _idx())
         event.app.exit(result=None)
@@ -276,7 +279,7 @@ def pick_related(items: tuple[RelatedSeries, ...]) -> RelatedSeries | None:
         inquirer.select(
             message=f"{_s['related_pick_prompt']}:",
             choices=choices,
-            long_instruction=_s["instruction"],
+            long_instruction=_s["related_instruction"],
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
         )
