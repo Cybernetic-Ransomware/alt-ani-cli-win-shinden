@@ -19,6 +19,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "bandit>=1.9.4",
     "codespell>=2.4.2",
     "pre-commit>=4.6.0",
     "pytest>=9.0.3",
@@ -63,7 +64,7 @@ docstring-code-format = true
 select = ["E", "F", "UP", "B", "SIM", "I"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["F401", "F841"]
+"tests/**" = ["F401", "F841", "E501"]
 
 [tool.ty.src]
 exclude = ["tests/*", "tools/*"]
@@ -71,6 +72,11 @@ exclude = ["tests/*", "tools/*"]
 [tool.codespell]
 skip = "./.git,./.github,./tests/*,./temp/*,./tools/*"
 quiet-level = 3
+ignore-words-list = "daty,serie"
+
+[tool.bandit]
+skips = ["B404", "B603"]
+exclude_dirs = ["tests", "tools"]
 
 [tool.mypy]
 python_version = "3.14"

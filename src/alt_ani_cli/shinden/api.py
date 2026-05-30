@@ -11,7 +11,7 @@ from alt_ani_cli.config import (
 )
 from alt_ani_cli.content import EXCEPTIONS
 from alt_ani_cli.errors import AntiBotError
-from alt_ani_cli.shinden.models import EmbedURL
+from alt_ani_cli.models import EmbedURL
 
 
 def resolve_embed(

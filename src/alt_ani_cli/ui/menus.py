@@ -8,18 +8,19 @@ All functions return None when the user presses ESC (InquirerPy) or an empty
 Enter (numbered fallback), signalling "go back".
 """
 
-from __future__ import annotations
-
 import re
+from contextlib import suppress
 from typing import Literal
 from urllib.parse import urlparse
 
 from alt_ani_cli.content import CONTENT
-from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesRef
+from alt_ani_cli.models import EpisodeRow, PlayerEntry, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_cli.ui import progress
 
 _RES_RE = re.compile(r"(\d+)")
 _M = CONTENT["menu"]
 _FB = _M["fallback"]
+_EMPTY_META = SeriesMetadata(None, None, "", (), ())
 
 
 def _lang_tag(lang: str) -> str:
@@ -54,14 +55,21 @@ def _use_inquirer() -> bool:
     return _USE_INQUIRER
 
 
-# Bind ESC to the "interrupt" action so it returns None without requiring
-# mandatory=False.  "skip" needs mandatory=False which adds an extra Enter
-# handler that races with _handle_enter and causes "Return value already set"
-# on CPython 3.14 + Windows.  "interrupt" with raise_keyboard_interrupt=False
-# exits cleanly with None and has no such side-effect.
-# _keybinding_factory() runs inside __init__, so this must be set at
+# kb_maps / kb_func_lookup setters MERGE with BaseSimplePrompt._kb_maps, so
+# the base "skip" binding (c-c when raise_keyboard_interrupt=False) is always
+# active unless we explicitly clear it.  With mandatory=True, _handle_skip
+# never exits the prompt — it only renders "Mandatory prompt" in the footer,
+# making Ctrl+C a visible no-op.
+#
+# Fix: set "skip": [] to remove all skip bindings, and route both ESC and
+# Ctrl+C through "interrupt" instead.  _handle_interrupt always calls
+# event.app.exit(INQUIRERPY_KEYBOARD_INTERRUPT), which execute() converts to
+# a KeyboardInterrupt; _ask() catches that and returns None (= go back).
+# No "Mandatory prompt" flash, no double-exit crash on CPython 3.14 + Windows.
+#
+# _keybinding_factory() runs inside __init__, so keybindings= must be set at
 # construction time — mutating kb_maps after the fact has no effect.
-_BACK_KB: dict = {"interrupt": [{"key": "escape"}]}
+_BACK_KB: dict = {"interrupt": [{"key": "escape"}, {"key": "c-c"}], "skip": []}
 
 
 def _ask(prompt_obj):
@@ -70,6 +78,91 @@ def _ask(prompt_obj):
         return prompt_obj.execute()
     except KeyboardInterrupt:
         return None
+
+
+def _run_simple_picker(
+    items: list,
+    label_fn,
+    *,
+    prompt: str,
+    instruction: str,
+    mode: Literal["fuzzy", "select"] = "fuzzy",
+    max_height: str = "40%",
+):
+    """One-shot picker: numbered fallback + InquirerPy fuzzy or select.
+
+    Returns the selected item, or None on ESC / empty Enter.
+    """
+    if not _use_inquirer():
+        return _numbered_pick(items, label_fn, prompt)
+    from InquirerPy import inquirer
+    from InquirerPy.base.control import Choice
+
+    choices = [Choice(value=i, name=label_fn(it)) for i, it in enumerate(items)]
+    if mode == "fuzzy":
+        idx = _ask(
+            inquirer.fuzzy(
+                message=f"{prompt}:",
+                choices=choices,
+                max_height=max_height,
+                long_instruction=instruction,
+                raise_keyboard_interrupt=False,
+                keybindings=_BACK_KB,
+            )
+        )
+    else:
+        idx = _ask(
+            inquirer.select(
+                message=f"{prompt}:",
+                choices=choices,
+                long_instruction=instruction,
+                raise_keyboard_interrupt=False,
+                keybindings=_BACK_KB,
+            )
+        )
+    return None if idx is None else items[idx]
+
+
+def _run_keyed_picker(
+    options: list[tuple[str, str]],
+    *,
+    prompt: str,
+    instruction: str,
+    fallback_invalid: str,
+):
+    """One-shot key-value picker where values are string keys (not list indices).
+
+    options: [(key, display_label), ...]
+    Returns the selected key string, or None on ESC / empty Enter.
+    """
+    if not _use_inquirer():
+        for i, (_, label) in enumerate(options, 1):
+            print(f"  {i}. {label}")
+        keys = [k for k, _ in options]
+        while True:
+            try:
+                raw = input(_FB["select_prompt"].format(prompt=prompt, n=len(keys))).strip()
+                if not raw:
+                    return None
+                idx = int(raw) - 1
+                if 0 <= idx < len(keys):
+                    return keys[idx]
+            except ValueError, KeyboardInterrupt:
+                pass
+            print(fallback_invalid)
+    from InquirerPy import inquirer
+    from InquirerPy.base.control import Choice
+
+    choices = [Choice(value=key, name=label) for key, label in options]
+    return _ask(
+        inquirer.select(
+            message=f"{prompt}:",
+            choices=choices,
+            long_instruction=instruction,
+            raise_keyboard_interrupt=False,
+            keybindings=_BACK_KB,
+        )
+    )
 
 
 def _numbered_pick(items: list, label_fn, prompt: str):
@@ -115,59 +208,147 @@ def _numbered_pick_multi(items: list, label_fn, prompt: str) -> list | None:
         print(_FB["invalid_numbers"].format(n=len(items)))
 
 
-def select_series(
-    hits: list[SeriesHit],
-    prompt: str = _M["series"]["default_prompt"],
-) -> SeriesHit | None:
-    def _label(h: SeriesHit) -> str:
-        t = h.series_type or "?"
-        return f"{h.title}  [{t}]  (id:{h.id})"
+def _series_label(h: SeriesHit, meta: SeriesMetadata | None) -> str:
+    t = h.series_type or "?"
+    _s = _M["series"]
+    if meta and meta.air_date:
+        return _s["label_with_date"].format(title=h.title, type=t, date=meta.air_date, id=h.id)
+    return _s["label_without_date"].format(title=h.title, type=t, id=h.id)
+
+
+def _register_series_kbs(prompt_obj, signal: dict) -> None:
+    def _idx() -> int:
+        try:
+            return prompt_obj.content_control.selection["value"]
+        except Exception:
+            return 0
+
+    # eager=True is required: the fuzzy prompt's BufferControl has emacs bindings
+    # (e.g. c-r = reverse-i-search) at control level, which beat _kb-level bindings
+    # when KeyProcessor picks matches[-1].  eager overrides the control-level handler.
+    @prompt_obj._kb.add("c-s", eager=True)
+    def _(event):
+        signal["sig"] = ("sort", _idx())
+        event.app.exit(result=None)
+
+    @prompt_obj._kb.add("c-o", eager=True)
+    def _(event):
+        signal["sig"] = ("desc", _idx())
+        event.app.exit(result=None)
+
+    @prompt_obj._kb.add("c-q", eager=True)
+    def _(event):
+        signal["sig"] = ("tags", _idx())
+        event.app.exit(result=None)
+
+    @prompt_obj._kb.add("c-r", eager=True)
+    def _(event):
+        signal["sig"] = ("related", _idx())
+        event.app.exit(result=None)
+
+
+def show_modal_text(title: str, body: str) -> None:
+    """Render a blocking modal panel (description or tags) and wait for Enter."""
+    progress.rule(title)
+    progress.output(body)
+    progress.output(f"\n[dim]{_M['series']['press_any_key']}[/dim]")
+    with suppress(EOFError, KeyboardInterrupt):
+        input()
+
+
+def pick_related(items: tuple[RelatedSeries, ...]) -> RelatedSeries | None:
+    """Prompt the user to pick a related series (or return None if empty / ESC)."""
+    _s = _M["series"]
+    if not items:
+        progress.warn(_s["related_empty"])
+        with suppress(EOFError, KeyboardInterrupt):
+            input(_s["press_any_key"] + " ")
+        return None
+
+    def _label(r: RelatedSeries) -> str:
+        return _s["related_label"].format(title=r.title, relation=r.relation)
 
     if not _use_inquirer():
-        return _numbered_pick(hits, _label, prompt)
+        return _numbered_pick(list(items), _label, _s["related_pick_prompt"])
 
     from InquirerPy import inquirer
     from InquirerPy.base.control import Choice
 
-    choices = [Choice(value=i, name=_label(h)) for i, h in enumerate(hits)]
+    choices = [Choice(value=i, name=_label(r)) for i, r in enumerate(items)]
     idx = _ask(
-        inquirer.fuzzy(
-            message=f"{prompt}:",
+        inquirer.select(
+            message=f"{_s['related_pick_prompt']}:",
             choices=choices,
-            max_height="40%",
-            long_instruction=_M["series"]["instruction"],
+            long_instruction=_s["related_instruction"],
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
         )
     )
-    return None if idx is None else hits[idx]
+    return None if idx is None else items[idx]
+
+
+def select_series_once(
+    hits: list[SeriesHit],
+    metadata: dict[str, SeriesMetadata] | None = None,
+    *,
+    prompt: str = _M["series"]["default_prompt"],
+) -> tuple:
+    """Render the series picker once and return a signal tuple.
+
+    Return values:
+      ("pick",    SeriesHit)   — user confirmed a selection
+      ("back",    None)        — ESC or Ctrl-C
+      ("sort",    cursor_idx)  — Ctrl+S: caller should toggle sort order
+      ("desc",    cursor_idx)  — Ctrl+O: caller should show description modal
+      ("tags",    cursor_idx)  — Ctrl+Q: caller should show tags modal
+      ("related", cursor_idx)  — Ctrl+R: caller should show related picker
+
+    cursor_idx is an index into the *hits* list that was passed in.
+    The fallback numbered menu only produces ("pick", ...) or ("back", None).
+    """
+    _meta: dict[str, SeriesMetadata] = dict(metadata or {})
+
+    if not _use_inquirer():
+        hit = _numbered_pick(hits, lambda h: _series_label(h, _meta.get(h.id)), prompt)
+        return ("back", None) if hit is None else ("pick", hit)
+
+    from InquirerPy import inquirer
+    from InquirerPy.base.control import Choice
+
+    choices = [Choice(value=i, name=_series_label(h, _meta.get(h.id))) for i, h in enumerate(hits)]
+    signal: dict = {"sig": None}
+    prompt_obj = inquirer.fuzzy(
+        message=f"{prompt}:",
+        choices=choices,
+        max_height="40%",
+        long_instruction=_M["series"]["instruction"],
+        raise_keyboard_interrupt=False,
+        keybindings=_BACK_KB,
+    )
+    _register_series_kbs(prompt_obj, signal)
+    try:
+        result = prompt_obj.execute()
+    except KeyboardInterrupt:
+        return ("back", None)
+
+    if signal["sig"] is not None:
+        action, idx = signal["sig"]
+        return (action, idx if idx is not None else 0)
+
+    return ("back", None) if result is None else ("pick", hits[result])
 
 
 def select_series_from_history(
     entries: list[tuple[SeriesRef, float]],
     prompt: str = _M["history_resume"]["default_prompt"],
 ) -> tuple[SeriesRef, float] | None:
-    def _label(e: tuple[SeriesRef, float]) -> str:
-        return _M["history_resume"]["label"].format(title=e[0].title, last_ep=e[1])
-
-    if not _use_inquirer():
-        return _numbered_pick(entries, _label, prompt)
-
-    from InquirerPy import inquirer
-    from InquirerPy.base.control import Choice
-
-    choices = [Choice(value=i, name=_label(e)) for i, e in enumerate(entries)]
-    idx = _ask(
-        inquirer.fuzzy(
-            message=f"{prompt}:",
-            choices=choices,
-            max_height="40%",
-            long_instruction=_M["history_resume"]["instruction"],
-            raise_keyboard_interrupt=False,
-            keybindings=_BACK_KB,
-        )
+    _hr = _M["history_resume"]
+    return _run_simple_picker(
+        entries,
+        lambda e: _hr["label"].format(title=e[0].title, last_ep=e[1]),
+        prompt=prompt,
+        instruction=_hr["instruction"],
     )
-    return None if idx is None else entries[idx]
 
 
 def select_episodes(
@@ -185,8 +366,7 @@ def select_episodes(
 
     if not _use_inquirer():
         if multi:
-            result = _numbered_pick_multi(episodes, _label, prompt)
-            return result  # None or list
+            return _numbered_pick_multi(episodes, _label, prompt)
         picked = _numbered_pick(episodes, _label, prompt)
         return None if picked is None else [picked]
 
@@ -212,17 +392,14 @@ def select_episodes(
         )
         return None if indices is None else [episodes[i] for i in indices]
 
-    idx = _ask(
-        inquirer.fuzzy(
-            message=f"{prompt}:",
-            choices=choices,
-            max_height="60%",
-            long_instruction=_ep["instruction_single"],
-            raise_keyboard_interrupt=False,
-            keybindings=_BACK_KB,
-        )
+    ep = _run_simple_picker(
+        episodes,
+        _label,
+        prompt=prompt,
+        instruction=_ep["instruction_single"],
+        max_height="60%",
     )
-    return None if idx is None else [episodes[idx]]
+    return None if ep is None else [ep]
 
 
 def select_player(
@@ -240,65 +417,25 @@ def select_player(
         tmpl = _pl["label_failed"] if p.online_id in _failed else _pl["label_ok"]
         return tmpl.format(player=p.player, res=res, audio=audio, subs=subs)
 
-    if not _use_inquirer():
-        return _numbered_pick(players, _label, prompt)
-
-    from InquirerPy import inquirer
-    from InquirerPy.base.control import Choice
-
-    choices = [Choice(value=i, name=_label(p)) for i, p in enumerate(players)]
-    idx = _ask(
-        inquirer.select(
-            message=f"{prompt}:",
-            choices=choices,
-            long_instruction=_pl["instruction"],
-            raise_keyboard_interrupt=False,
-            keybindings=_BACK_KB,
-        )
-    )
-    return None if idx is None else players[idx]
+    return _run_simple_picker(players, _label, prompt=prompt, instruction=_pl["instruction"], mode="select")
 
 
 def select_start_mode(has_history: bool, history_count: int = 0) -> Literal["search", "resume", "url", "quit"] | None:
     _sm = _M["start_mode"]
     _opts = _sm["options"]
 
-    options_plain = []
-    options_plain.append(("search", f"1. {_opts['search']}"))
+    options_plain: list[tuple[str, str]] = [("search", _opts["search"])]
     if has_history:
         resume_label = _opts["resume_with_count"].format(count=history_count) if history_count else _opts["resume"]
-        options_plain.append(("resume", f"2. {resume_label}"))
-    options_plain.append(("url", f"{len(options_plain) + 1}. {_opts['url']}"))
-    options_plain.append(("quit", f"{len(options_plain) + 1}. {_opts['quit']}"))
+        options_plain.append(("resume", resume_label))
+    options_plain.append(("url", _opts["url"]))
+    options_plain.append(("quit", _opts["quit"]))
 
-    if not _use_inquirer():
-        for _, label in options_plain:
-            print(f"  {label}")
-        keys = [k for k, _ in options_plain]
-        while True:
-            try:
-                raw = input(_sm["fallback_prompt"].format(n=len(keys))).strip()
-                if not raw:
-                    return None
-                idx = int(raw) - 1
-                if 0 <= idx < len(keys):
-                    return keys[idx]  # type: ignore[return-value]
-            except ValueError, KeyboardInterrupt:
-                pass
-            print(_sm["fallback_invalid"].format(n=len(keys)))
-
-    from InquirerPy import inquirer
-    from InquirerPy.base.control import Choice
-
-    choices = [Choice(value=key, name=label.split(". ", 1)[1]) for key, label in options_plain]
-    return _ask(
-        inquirer.select(
-            message=_sm["question"],
-            choices=choices,
-            long_instruction=_sm["instruction"],
-            raise_keyboard_interrupt=False,
-            keybindings=_BACK_KB,
-        )
+    return _run_keyed_picker(  # type: ignore[return-value]
+        options_plain,
+        prompt=_sm["question"],
+        instruction=_sm["instruction"],
+        fallback_invalid=_sm["fallback_invalid"].format(n=len(options_plain)),
     )
 
 
@@ -380,34 +517,7 @@ def select_quality(qualities: dict[str, str], prompt: str = _M["quality"]["defau
             return _q["label_worst"].format(bottom=sorted_keys[-1])
         return opt
 
-    if not _use_inquirer():
-        for i, opt in enumerate(all_options, 1):
-            print(f"  {i}. {_label(opt)}")
-        while True:
-            try:
-                raw = input(_FB["select_prompt"].format(prompt=prompt, n=len(all_options))).strip()
-                if not raw:
-                    return None
-                idx = int(raw) - 1
-                if 0 <= idx < len(all_options):
-                    return all_options[idx]
-            except ValueError, KeyboardInterrupt:
-                pass
-            print(_FB["invalid_number"].format(n=len(all_options)))
-
-    from InquirerPy import inquirer
-    from InquirerPy.base.control import Choice
-
-    choices = [Choice(value=opt, name=_label(opt)) for opt in all_options]
-    return _ask(
-        inquirer.select(
-            message=f"{prompt}:",
-            choices=choices,
-            long_instruction=_q["instruction"],
-            raise_keyboard_interrupt=False,
-            keybindings=_BACK_KB,
-        )
-    )
+    return _run_simple_picker(all_options, _label, prompt=prompt, instruction=_q["instruction"], mode="select")
 
 
 def select_action() -> Literal["play", "download", "debug"] | None:
@@ -418,33 +528,9 @@ def select_action() -> Literal["play", "download", "debug"] | None:
         ("download", _ac_opts["download"]),
         ("debug", _ac_opts["debug"]),
     ]
-
-    if not _use_inquirer():
-        for i, (_, label) in enumerate(_options, 1):
-            print(f"  {i}. {label}")
-        keys = [k for k, _ in _options]
-        while True:
-            try:
-                raw = input(_ac["fallback_prompt"]).strip()
-                if not raw:
-                    return None
-                idx = int(raw) - 1
-                if 0 <= idx < len(keys):
-                    return keys[idx]  # type: ignore
-            except ValueError, KeyboardInterrupt:
-                pass
-            print(_ac["fallback_invalid"])
-
-    from InquirerPy import inquirer
-    from InquirerPy.base.control import Choice
-
-    choices = [Choice(value=key, name=label) for key, label in _options]
-    return _ask(
-        inquirer.select(
-            message=_ac["message"],
-            choices=choices,
-            long_instruction=_ac["instruction"],
-            raise_keyboard_interrupt=False,
-            keybindings=_BACK_KB,
-        )
+    return _run_keyed_picker(  # type: ignore[return-value]
+        _options,
+        prompt=_ac["message"],
+        instruction=_ac["instruction"],
+        fallback_invalid=_ac["fallback_invalid"],
     )

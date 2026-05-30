@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import Generator
 from contextlib import contextmanager
 
@@ -43,3 +41,11 @@ def error(msg: str) -> None:
 
 def warn(msg: str) -> None:
     _get_err().print(f"\n[bold yellow]WARN[/bold yellow] {msg}")
+
+
+def rule(title: str) -> None:
+    _get().rule(title)
+
+
+def output(msg: str) -> None:
+    _get().print(msg)

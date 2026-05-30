@@ -44,7 +44,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
                     headers={"Referer": embed_url, "User-Agent": USER_AGENT},
                     ext=_ext(decoded),
                 )
-        except Exception:
+        except Exception:  # nosec B110
             pass
 
     raise ValueError(EXCEPTIONS["mp4upload"]["no_video_url"].format(embed_url=repr(embed_url)))

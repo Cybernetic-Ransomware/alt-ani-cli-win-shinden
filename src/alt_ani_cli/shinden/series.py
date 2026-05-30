@@ -4,9 +4,10 @@ import httpx
 from selectolax.parser import HTMLParser
 
 from alt_ani_cli.config import SHINDEN_BASE
-from alt_ani_cli.content import EXCEPTIONS, EXCEPTIONS_PL
-from alt_ani_cli.errors import ParseError, ShindenError
-from alt_ani_cli.shinden.models import EpisodeRow, SeriesRef
+from alt_ani_cli.content import EXCEPTIONS
+from alt_ani_cli.errors import ParseError
+from alt_ani_cli.models import EpisodeRow, SeriesRef
+from alt_ani_cli.shinden.utils import _check_age_gate
 
 # shinden h1.title contains a type label link (<a>Anime</a>) whose text
 # is concatenated without a space into the title by selectolax .text().
@@ -14,15 +15,6 @@ from alt_ani_cli.shinden.models import EpisodeRow, SeriesRef
 _TYPE_PREFIX_RE = re.compile(
     r"^(Anime|Manga|Manhua|Manhwa|Light\s+Novel|Visual\s+Novel|Novel|Music|ONA|OVA|Movie|Special)\s*",
     re.IGNORECASE,
-)
-
-_AGE_GATE_HINTS = (
-    "musisz mieć ukończone 18",
-    "ukończone 18 lat",
-    "treści dla dorosłych",
-    "adult content",
-    "age verification",
-    "potwierdź wiek",
 )
 
 _SERIES_URL_RE = re.compile(r"shinden\.pl/series/(\d+)-([^/?#\s]+)")
@@ -108,9 +100,3 @@ def _parse(html: str) -> tuple[str, list[EpisodeRow]]:
 
     episodes.reverse()
     return title, episodes
-
-
-def _check_age_gate(html: str) -> None:
-    lower = html.lower()
-    if any(hint in lower for hint in _AGE_GATE_HINTS):
-        raise ShindenError(EXCEPTIONS_PL["series"]["age_gate"])

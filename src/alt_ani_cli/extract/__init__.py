@@ -111,7 +111,7 @@ def resolve(
     # then fall back to yt-dlp (1500+ supported sites).
     try:
         return jwplayer.resolve(embed_url, referer)
-    except Exception:
+    except Exception:  # nosec B110
         pass
 
     try:

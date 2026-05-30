@@ -2,13 +2,6 @@ import pytest
 
 
 @pytest.fixture
-def series_episodes_html():
-    p = __file__.replace("conftest.py", "") + "fixtures/series_episodes.html"
-    with open(p, encoding="utf-8") as f:
-        return f.read()
-
-
-@pytest.fixture
 def player_show_html():
     return '<html><body><iframe src="//video.sibnet.ru/shell.php?videoid=1234567"></iframe></body></html>'
 

@@ -4,7 +4,7 @@ import re
 
 from selectolax.parser import HTMLParser, Node
 
-from alt_ani_cli.shinden.models import PlayerEntry
+from alt_ani_cli.models import PlayerEntry
 
 _RES_RE = re.compile(r"(\d+)")
 
