@@ -21,6 +21,7 @@ dependencies = [
 dev = [
     "bandit>=1.9.4",
     "codespell>=2.4.2",
+    "commitizen>=4.13.9",
     "pre-commit>=4.6.0",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
@@ -44,7 +45,7 @@ packages = ["src/alt_ani_cli"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=src --cov-report=html:tests/result/html --cov-report=term-missing -q"
+addopts = "--cov=src --cov-report=html:tests/result/html --cov-report=term-missing -q -m 'not integration' --junitxml=tests/result/pytest_result.xml"
 markers = [
     "unit: tests with no external dependencies",
     "integration: tests requiring network access",
@@ -58,18 +59,21 @@ line-length = 128
 
 [tool.ruff.format]
 docstring-code-format = true
+docstring-code-line-length = 128
 
 [tool.ruff.lint]
 select = ["E", "F", "UP", "B", "SIM", "I"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["F401", "F841", "E501"]
+"test_*.py" = ["F401", "F841"]
 
 [tool.ty.src]
 exclude = ["tests/*", "tools/*"]
 
 [tool.codespell]
 skip = "./.git,./.github,./tests/*,./temp/*,./tools/*"
+builtin = "clear"
 quiet-level = 3
 ignore-words-list = "daty,serie"
 
@@ -77,6 +81,40 @@ ignore-words-list = "daty,serie"
 skips = ["B404", "B603"]
 exclude_dirs = ["tests", "tools"]
 
-[tool.mypy]
-python_version = "3.14"
-strict = true
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+tag_format = "v$version"
+version_files = [
+    "pyproject.toml:version",
+]
+change_type_order = ["feat", "fix", "hotfix", "chore", "docs", "refactor", "test"]
+schema_pattern = "(build|chore|ci|docs|feature|feat|fix|hotfix|perf|refactor|style|test|config)(\\(.+\\))?!?: .+"
+
+[tool.commitizen.schema_mapping]
+feature = "feat"
+hotfix = "fix"
+config = "chore"
+
+[[tool.commitizen.customize.questions]]
+type = "list"
+name = "type"
+message = "Commit type?"
+choices = [
+    { value = "feat", name = "feature" },
+    { value = "fix", name = "hotfix" },
+    { value = "chore", name = "config" },
+    { value = "refactor", name = "refactor" },
+    { value = "docs", name = "docs" },
+    { value = "test", name = "tests" },
+    { value = "chore", name = "chore/other" },
+]
+
+[tool.commitizen.change_type_map]
+feat = "Features"
+fix = "Bug Fixes"
+hotfix = "Hotfixes"
+chore = "Chores"
+docs = "Documentation"
+refactor = "Refactors"
+test = "Tests"

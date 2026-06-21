@@ -3,10 +3,15 @@
 
 set shell := ["powershell", "-Command"]
 
-# Run pre-commit on staged files
+# Run pre-commit on staged files, then open Commitizen
 # Stage your changes first: git add <files>
 commit:
     uv run pre-commit run
+    uv run cz commit
+
+# Bump version on release branches (auto-tags vX.Y.Z, updates pyproject.toml)
+bump:
+    uv run cz bump
 
 # Check formatting (report only — apply with: uv run ruff format src/)
 format:

@@ -28,12 +28,14 @@ env/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+.ruff_cache/
 
 # Project-specific
 /temp
 
 # IDE
 .idea/
+.vscode/
 
 # Claude Code
 .claude/
