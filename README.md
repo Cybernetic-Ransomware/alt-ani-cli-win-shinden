@@ -22,6 +22,34 @@ Python CLI for watching and downloading anime from [shinden.pl](https://shinden.
   ```powershell
   winget install ffmpeg    # or: scoop install ffmpeg
   ```
+- [Docker](https://www.docker.com/) — required to run FlareSolverr (see below)
+
+## Cloudflare bypass setup
+
+Shinden.pl is protected by Cloudflare bot detection. The app uses
+[FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) — a headless Chrome proxy — to
+solve the JS challenge and obtain a `cf_clearance` cookie.
+
+**Option A — FlareSolverr on the local machine:**
+
+```powershell
+docker run -d --name flaresolverr --restart unless-stopped -p 8191:8191 ghcr.io/flaresolverr/flaresolverr
+
+[System.Environment]::SetEnvironmentVariable("ALT_ANI_CLI_FLARESOLVERR_URL", "http://localhost:8191", "User")
+```
+
+**Option B — FlareSolverr on a home server (no Docker on the PC):**
+
+```powershell
+# Deploy once on the server
+ssh user@192.168.0.x "docker run -d --name flaresolverr --restart unless-stopped -p 8191:8191 ghcr.io/flaresolverr/flaresolverr"
+
+# Point the app to it (permanent, survives reboots)
+[System.Environment]::SetEnvironmentVariable("ALT_ANI_CLI_FLARESOLVERR_URL", "http://192.168.0.x:8191", "User")
+```
+
+The `cf_clearance` cookie is cached locally and reused until it expires (~1-2 hours).
+Only the first request after expiry is slow (~20 s); all subsequent ones are instant.
 
 ## Installation
 
@@ -104,6 +132,7 @@ Failed players are marked with `✗` and can be retried interactively.
 
 | Variable | Description |
 |----------|-------------|
+| `ALT_ANI_CLI_FLARESOLVERR_URL` | FlareSolverr URL for Cloudflare bypass (e.g. `http://localhost:8191`) |
 | `ANI_CLI_PLAYER` | Full path to mpv/mpvnet executable |
 | `ALT_ANI_CLI_ANTIBOT_DELAY` | Seconds to wait between API calls (default: `5.0`) |
 
@@ -146,10 +175,12 @@ Scripts in `tools/` are used during development to inspect the shinden.pl API. T
 
 | Script | Purpose |
 |--------|---------|
+| `tools/spike_curl_cffi.py` | Verifies the Cloudflare bypass chain: curl_cffi TLS → FlareSolverr |
 | `tools/debug_embed.py <url>` | Scans a player JS bundle for CDN domains and HLS/token patterns — used to reverse-engineer new embed hosts |
 | `tools/dump_search_html.py [query]` | Dumps parsed search result rows from shinden.pl — used to debug the search HTML parser |
 
 ```powershell
+uv run python tools/spike_curl_cffi.py
 uv run python tools/dump_search_html.py "soul eater"
 uv run python tools/debug_embed.py https://example-embed-host.com/e/abc123
 ```

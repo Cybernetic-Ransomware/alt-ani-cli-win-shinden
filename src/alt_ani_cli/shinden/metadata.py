@@ -1,6 +1,6 @@
 import re
 
-import httpx
+from curl_cffi import requests as cffi_requests
 from selectolax.parser import HTMLParser
 
 from alt_ani_cli.config import SHINDEN_BASE
@@ -20,7 +20,7 @@ _TAG_GROUP_ORDER = (
 )
 
 
-def fetch_series_metadata(client: httpx.Client, ref: SeriesRef) -> SeriesMetadata:
+def fetch_series_metadata(client: cffi_requests.Session, ref: SeriesRef) -> SeriesMetadata:
     resp = client.get(ref.url)
     resp.raise_for_status()
     _check_age_gate(resp.text)

@@ -1,12 +1,13 @@
-"""alt-ani-cli — Pythonowy klient shinden.pl dla Windows PowerShell."""
+"""alt-ani-cli — CLI client for shinden.pl, optimised for Windows PowerShell."""
 
 import argparse
 import contextlib
 import sys
 
-import httpx
+from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
 
 from alt_ani_cli import __version__, download, extract, history
+from alt_ani_cli.config import FLARESOLVERR_URL, SHINDEN_BASE
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.errors import (
     AntiBotError,
@@ -387,8 +388,18 @@ def main() -> None:  # noqa: C901
     except KeyboardInterrupt:
         progress.warn(_PROG["interrupted"])
         sys.exit(130)
-    except httpx.HTTPStatusError as exc:
-        progress.error(_PROG["http_error"].format(status=exc.response.status_code, url=exc.request.url))
+    except CurlHTTPError as exc:
+        if exc.response is not None:
+            status = exc.response.status_code
+            url = str(exc.response.url)
+            progress.error(_PROG["http_error"].format(status=status, url=url))
+            if status == 403 and SHINDEN_BASE in url:
+                if FLARESOLVERR_URL:
+                    progress.warn(_PROG["flaresolverr_unreachable"].format(url=FLARESOLVERR_URL))
+                else:
+                    progress.warn(_PROG["cloudflare_hint"])
+        else:
+            progress.error(str(exc))
         sys.exit(1)
     except (AntiBotError, NoStreamError, ParseError) as exc:
         progress.error(str(exc))

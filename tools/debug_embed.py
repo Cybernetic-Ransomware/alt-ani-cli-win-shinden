@@ -1,8 +1,9 @@
 """Find CDN domain and HLS token pattern in Byse bundle."""
-import sys, re
+import re
+import sys
 sys.path.insert(0, "src")
 
-import httpx
+from curl_cffi import requests as cffi_requests
 from alt_ani_cli.config import USER_AGENT
 
 embed_url = sys.argv[1]
@@ -11,7 +12,7 @@ file_id = embed_url.rstrip("/").split("/")[-1]
 
 headers = {"Referer": "https://shinden.pl/", "User-Agent": USER_AGENT, "Accept": "*/*"}
 
-with httpx.Client(follow_redirects=True, timeout=60.0) as client:
+with cffi_requests.Session(impersonate="chrome", timeout=60.0, allow_redirects=True) as client:
     shell = client.get(embed_url, headers=headers)
     bundle_url = re.search(r'src="(/assets/index-[^"]+\.js)"', shell.text).group(1)
     js = client.get(base + bundle_url, headers=headers).text

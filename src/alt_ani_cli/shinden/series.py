@@ -1,6 +1,6 @@
 import re
 
-import httpx
+from curl_cffi import requests as cffi_requests
 from selectolax.parser import HTMLParser
 
 from alt_ani_cli.config import SHINDEN_BASE
@@ -34,7 +34,7 @@ def parse_series_url(url: str) -> SeriesRef:
     )
 
 
-def list_episodes(client: httpx.Client, ref: SeriesRef) -> tuple[SeriesRef, list[EpisodeRow]]:
+def list_episodes(client: cffi_requests.Session, ref: SeriesRef) -> tuple[SeriesRef, list[EpisodeRow]]:
     """Returns (updated_ref_with_real_title, episodes_sorted_by_number)."""
     resp = client.get(f"{ref.url}/all-episodes")
     resp.raise_for_status()

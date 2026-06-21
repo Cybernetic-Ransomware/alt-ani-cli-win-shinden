@@ -8,8 +8,8 @@ import argparse
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
-import httpx
 import pytest
+from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from alt_ani_cli.errors import ShindenError
 from alt_ani_cli.flow.handlers import HANDLERS, _prefetch_series_metadata, _safe_fetch_one, _sorted_by_date_desc
@@ -550,7 +550,7 @@ class TestPrefetchSeriesMetadata:
     def test_http_error_falls_back_and_warns(self):
         client = MagicMock()
         with (
-            patch("alt_ani_cli.flow.handlers._safe_fetch_one", side_effect=httpx.HTTPError("timeout")),
+            patch("alt_ani_cli.flow.handlers._safe_fetch_one", side_effect=CurlRequestException("timeout")),
             patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
             patch("alt_ani_cli.ui.progress.warn") as mock_warn,
         ):

@@ -1,6 +1,6 @@
 import re
 
-import httpx
+from curl_cffi import requests as cffi_requests
 from selectolax.parser import HTMLParser
 
 from alt_ani_cli.config import SHINDEN_BASE
@@ -10,7 +10,7 @@ from alt_ani_cli.shinden.utils import _normalize_title
 _SERIES_RE = re.compile(r"/series/(\d+)-([^/?#\s]+)")
 
 
-def search_series(client: httpx.Client, query: str) -> list[SeriesHit]:
+def search_series(client: cffi_requests.Session, query: str) -> list[SeriesHit]:
     resp = client.get(f"{SHINDEN_BASE}/series", params={"q": query})
     resp.raise_for_status()
     return _parse_results(resp.text)

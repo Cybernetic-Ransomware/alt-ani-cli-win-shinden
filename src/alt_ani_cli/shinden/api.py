@@ -1,6 +1,6 @@
 import time
 
-import httpx
+from curl_cffi import requests as cffi_requests
 from selectolax.parser import HTMLParser
 
 from alt_ani_cli.config import (
@@ -15,7 +15,7 @@ from alt_ani_cli.models import EmbedURL
 
 
 def resolve_embed(
-    client: httpx.Client,
+    client: cffi_requests.Session,
     online_id: str,
     *,
     sleep_seconds: float = ANTIBOT_DELAY_SEC,

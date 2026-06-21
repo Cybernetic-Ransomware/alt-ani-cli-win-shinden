@@ -12,7 +12,8 @@ history stack).
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import httpx
+from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from alt_ani_cli import download, history
 from alt_ani_cli.content import CONTENT
@@ -31,7 +32,7 @@ _M = CONTENT["menu"]
 _EMPTY_META = SeriesMetadata(None, None, "", (), ())
 
 
-def _prefetch_series_metadata(client: httpx.Client, hits: list[SeriesHit]) -> dict[str, SeriesMetadata]:
+def _prefetch_series_metadata(client: cffi_requests.Session, hits: list[SeriesHit]) -> dict[str, SeriesMetadata]:
     if not hits:
         return {}
     out: dict[str, SeriesMetadata] = {}
@@ -42,7 +43,7 @@ def _prefetch_series_metadata(client: httpx.Client, hits: list[SeriesHit]) -> di
             h = futures[fut]
             try:
                 out[h.id] = fut.result()
-            except httpx.HTTPError, ShindenError:
+            except CurlRequestException, ShindenError:
                 out[h.id] = _EMPTY_META
                 failed_titles.append(h.title)
     if failed_titles:
@@ -50,7 +51,7 @@ def _prefetch_series_metadata(client: httpx.Client, hits: list[SeriesHit]) -> di
     return out
 
 
-def _safe_fetch_one(client: httpx.Client, hit: SeriesHit) -> SeriesMetadata:
+def _safe_fetch_one(client: cffi_requests.Session, hit: SeriesHit) -> SeriesMetadata:
     ref = parse_series_url(hit.url)
     return fetch_series_metadata(client, ref)
 

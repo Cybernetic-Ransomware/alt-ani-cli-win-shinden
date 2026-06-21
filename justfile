@@ -17,7 +17,7 @@ lint:
     uv run ruff check src/
     uv run ty check src/
     uv run python -m codespell_lib src/
-    uv run bandit -c pyproject.toml -r src/
+    uv run bandit -c pyproject.toml -r src/ -q
 
 # Run tests
 test:
