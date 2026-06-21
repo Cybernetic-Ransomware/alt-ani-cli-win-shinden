@@ -1,7 +1,7 @@
 import re
 import time
 
-import httpx
+from curl_cffi import requests as cffi_requests
 
 from alt_ani_cli.config import USER_AGENT
 from alt_ani_cli.content import EXCEPTIONS
@@ -17,7 +17,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
         raise ValueError(EXCEPTIONS["dood"]["bad_base_url"].format(embed_url=repr(embed_url)))
     base = m_base.group(1)
 
-    with httpx.Client(follow_redirects=True, timeout=30.0) as client:
+    with cffi_requests.Session(impersonate="chrome", timeout=30.0, allow_redirects=True) as client:
         resp = client.get(embed_url, headers={"Referer": referer, "User-Agent": USER_AGENT})
         resp.raise_for_status()
         html = resp.text

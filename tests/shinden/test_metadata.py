@@ -1,7 +1,7 @@
 """Tests for shinden/metadata.py — parser functions use inline HTML fixtures."""
 
-import httpx
 import pytest
+from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
 from selectolax.parser import HTMLParser
 
 from alt_ani_cli.errors import ShindenError
@@ -273,17 +273,16 @@ class TestFetchSeriesMetadata:
         class _FakeResp:
             status_code = 404
             text = ""
+            url = "https://shinden.pl/series/1-test"
 
             def raise_for_status(self):
-                request = httpx.Request("GET", "https://shinden.pl/series/1-test")
-                response = httpx.Response(404, request=request)
-                raise httpx.HTTPStatusError("404", request=request, response=response)
+                raise CurlHTTPError("404", response=self)
 
         class _FakeClient:
             def get(self, url):
                 return _FakeResp()
 
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(CurlHTTPError):
             fetch_series_metadata(_FakeClient(), _ref())
 
 

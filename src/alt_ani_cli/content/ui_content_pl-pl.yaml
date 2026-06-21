@@ -52,6 +52,8 @@ progress:
   history_cleared: "Historia wyczyszczona."
   interrupted: "Przerwano przez użytkownika."
   http_error: "Błąd HTTP {status} — {url}"
+  cloudflare_hint: "Shinden jest chroniony przez Cloudflare. Uruchom FlareSolverr i ustaw ALT_ANI_CLI_FLARESOLVERR_URL=http://localhost:8191"
+  flaresolverr_unreachable: "FlareSolverr skonfigurowany ({url}), ale niedostępny — żądania mogą być blokowane przez Cloudflare."
   shinden_error: "Błąd shinden: {exc}"
   embed: "Embed: {url}"
   spinner_api: "Czekam na API shinden ({label}) …"

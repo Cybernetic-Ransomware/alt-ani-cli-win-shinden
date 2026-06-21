@@ -22,3 +22,7 @@ SHINDEN_API_BASE = "https://api4.shinden.pl"
 
 # Increase via env var if player_show keeps returning empty responses.
 ANTIBOT_DELAY_SEC = float(os.getenv("ALT_ANI_CLI_ANTIBOT_DELAY", "5.0"))
+
+# FlareSolverr proxy for Cloudflare JS challenge resolution.
+# Set to e.g. http://localhost:8191 when running FlareSolverr locally.
+FLARESOLVERR_URL: str = os.getenv("ALT_ANI_CLI_FLARESOLVERR_URL", "")

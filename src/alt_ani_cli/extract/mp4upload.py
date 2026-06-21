@@ -1,7 +1,7 @@
 import base64
 import re
 
-import httpx
+from curl_cffi import requests as cffi_requests
 
 from alt_ani_cli.config import USER_AGENT
 from alt_ani_cli.content import EXCEPTIONS
@@ -12,7 +12,7 @@ _PLAYER_SRC_RE = re.compile(r'player\.src\s*\(\s*["\']([^"\']+\.(?:mp4|m3u8)[^"\
 
 
 def resolve(embed_url: str, referer: str) -> Stream:
-    with httpx.Client(follow_redirects=True, timeout=30.0) as client:
+    with cffi_requests.Session(impersonate="chrome", timeout=30.0, allow_redirects=True) as client:
         resp = client.get(
             embed_url,
             headers={
