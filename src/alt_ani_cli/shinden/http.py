@@ -44,9 +44,7 @@ def _fetch_via_flaresolverr() -> tuple[str, str] | None:
     unnecessary and stdlib is sufficient.
     """
     try:
-        payload = json.dumps(
-            {"cmd": "request.get", "url": f"{SHINDEN_BASE}/", "maxTimeout": 60000}
-        ).encode()
+        payload = json.dumps({"cmd": "request.get", "url": f"{SHINDEN_BASE}/", "maxTimeout": 60000}).encode()
         req = urllib.request.Request(
             f"{FLARESOLVERR_URL}/v1",
             data=payload,

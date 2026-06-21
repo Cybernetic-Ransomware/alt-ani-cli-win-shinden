@@ -13,9 +13,9 @@ commit:
 bump:
     uv run cz bump
 
-# Check formatting (report only — apply with: uv run ruff format src/)
+# Apply ruff formatting to src/
 format:
-    uv run ruff format --check src/
+    uv run ruff format src/
 
 # Run the full linting suite
 lint:

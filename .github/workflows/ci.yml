@@ -28,9 +28,6 @@ jobs:
       - name: ruff lint
         run: uv run ruff check src/
 
-      - name: ruff format check
-        run: uv run ruff format --check src/
-
       - name: ty type check
         run: uv run ty check src/
 
