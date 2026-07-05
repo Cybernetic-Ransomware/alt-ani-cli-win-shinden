@@ -6,7 +6,7 @@ from alt_ani_cli.errors import NoStreamError
 from alt_ani_cli.extract import dood, jwplayer, mp4upload, streamtape, ytdlp_resolver
 from alt_ani_cli.extract.common import Stream
 
-# ebd.cda.pl/800x450/{id} → yt-dlp only understands player.cda.pl/play/{id}
+# ebd.cda.pl/800x450/{id} → yt-dlp does not understand the embed URL; rewrite to www.cda.pl/video/{id}
 _EBD_CDA_RE = re.compile(r"/\d+x\d+/([0-9a-z]+)$", re.IGNORECASE)
 
 
