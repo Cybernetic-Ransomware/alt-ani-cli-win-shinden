@@ -55,7 +55,7 @@ Only the first request after expiry is slow (~20 s); all subsequent ones are ins
 
 ```powershell
 git clone https://github.com/Cybernetic-Ransomware/alt-ani-cli-win-shinden
-cd alt-ani-cli-win
+cd alt-ani-cli-win-shinden
 uv sync --no-group dev
 ```
 
