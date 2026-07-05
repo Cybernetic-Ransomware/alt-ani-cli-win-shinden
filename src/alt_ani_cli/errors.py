@@ -16,3 +16,7 @@ class PlayerNotFoundError(ShindenError):
 
 class ParseError(ShindenError):
     """HTML parsing produced unexpected structure."""
+
+
+class FilterMismatchError(ShindenError):
+    """--lang/--subs/--player-name matched no players and --allow-fallback was not set."""

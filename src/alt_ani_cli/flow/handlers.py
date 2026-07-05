@@ -4,9 +4,10 @@ Each handler receives FlowState, mutates it as needed, and returns the next
 Screen, BACK (go one step back in history), or None (exit the application).
 
 Handlers for virtual screens (FETCH_EPISODES, EPISODE_DISPATCH, RESOLVE_STREAM,
-RUN_ACTION) contain no UI; they perform I/O or computation and always return a
-concrete next Screen (never BACK — the main loop never pushes them onto the
-history stack).
+RUN_ACTION) perform I/O or computation and always return a concrete next Screen
+(never BACK — the main loop never pushes them onto the history stack). They
+contain no UI, with one exception: EPISODE_DISPATCH shows a confirm prompt when
+player filters match nothing.
 """
 
 from collections.abc import Callable
@@ -284,12 +285,22 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
 
     from alt_ani_cli.cli import _filter_players
 
-    players = _filter_players(
+    filtered, unmatched = _filter_players(
         players,
         lang=args.lang,
         subs=args.subs,
         player_name=args.player_name,
     )
+    if unmatched:
+        filters = ", ".join(unmatched)
+        if args.allow_fallback:
+            progress.warn(_PROG["filter_fallback"].format(filters=filters))
+        else:
+            use_full = menus.confirm(_M["filter_confirm"]["question"].format(filters=filters))
+            if not use_full:  # False or None (ESC) → back to episode selection
+                return Screen.EPISODES_PICK
+    else:
+        players = filtered
 
     state.players = players
     state.chosen_player = None

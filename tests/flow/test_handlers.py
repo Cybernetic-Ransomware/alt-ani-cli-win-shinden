@@ -34,6 +34,7 @@ def _make_args(**overrides):
         player_name=None,
         lang=None,
         subs=None,
+        allow_fallback=False,
         cookies_file=None,
         cookies_browser=None,
     )
@@ -503,6 +504,81 @@ class TestSortedByDateDesc:
 
         result = _sorted_by_date_desc(hits, metadata)
         assert [h.id for h in result] == ["0", "1", "2"]
+
+
+def _make_ep_dispatch_state(lang=None, subs=None, player_name=None, allow_fallback=False):
+    """Build a FlowState ready for EPISODE_DISPATCH with two players."""
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.text = ""
+    client = MagicMock()
+    client.get.return_value = mock_resp
+    state = FlowState(
+        args=_make_args(lang=lang, subs=subs, player_name=player_name, allow_fallback=allow_fallback),
+        client=client,
+    )
+    state.targets = [_EP1]
+    state.ep_idx = 0
+    return state
+
+
+@pytest.mark.unit
+class TestEpisodeDispatchFilterMiss:
+    def test_filters_match_proceeds_without_confirm(self):
+        state = _make_ep_dispatch_state(lang="jp")
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.ui.menus.confirm") as mock_confirm,
+        ):
+            result = HANDLERS[Screen.EPISODE_DISPATCH](state)
+        mock_confirm.assert_not_called()
+        assert result in (Screen.PLAYER_PICK, Screen.RESOLVE_STREAM)
+        assert state.players == [_PLAYER, _PLAYER2]
+
+    def test_filter_miss_confirm_true_uses_full_list(self):
+        state = _make_ep_dispatch_state(lang="xx")
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.ui.menus.confirm", return_value=True),
+        ):
+            result = HANDLERS[Screen.EPISODE_DISPATCH](state)
+        assert result in (Screen.PLAYER_PICK, Screen.RESOLVE_STREAM)
+        assert state.players == [_PLAYER, _PLAYER2]
+
+    def test_filter_miss_confirm_false_returns_episodes_pick(self):
+        state = _make_ep_dispatch_state(lang="xx")
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.ui.menus.confirm", return_value=False),
+        ):
+            result = HANDLERS[Screen.EPISODE_DISPATCH](state)
+        assert result is Screen.EPISODES_PICK
+
+    def test_filter_miss_confirm_none_esc_returns_episodes_pick(self):
+        state = _make_ep_dispatch_state(lang="xx")
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.ui.menus.confirm", return_value=None),
+        ):
+            result = HANDLERS[Screen.EPISODE_DISPATCH](state)
+        assert result is Screen.EPISODES_PICK
+
+    def test_allow_fallback_skips_confirm_and_warns(self):
+        state = _make_ep_dispatch_state(lang="xx", allow_fallback=True)
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.ui.menus.confirm") as mock_confirm,
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            result = HANDLERS[Screen.EPISODE_DISPATCH](state)
+        mock_confirm.assert_not_called()
+        mock_warn.assert_called_once()
+        assert result in (Screen.PLAYER_PICK, Screen.RESOLVE_STREAM)
 
 
 @contextmanager

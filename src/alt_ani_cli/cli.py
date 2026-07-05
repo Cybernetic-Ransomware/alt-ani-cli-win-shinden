@@ -8,9 +8,10 @@ from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
 
 from alt_ani_cli import __version__, download, extract, history
 from alt_ani_cli.config import FLARESOLVERR_URL, SHINDEN_BASE
-from alt_ani_cli.content import CONTENT
+from alt_ani_cli.content import CONTENT, EXCEPTIONS
 from alt_ani_cli.errors import (
     AntiBotError,
+    FilterMismatchError,
     NoStreamError,
     ParseError,
     PlayerNotFoundError,
@@ -59,6 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--player-name", metavar="NAME", help=h["player_name"])
     p.add_argument("--lang", metavar="{pl,jp,en}", help=h["lang"])
     p.add_argument("--subs", metavar="{pl,en,none}", help=h["subs"])
+    p.add_argument("--allow-fallback", action="store_true", help=h["allow_fallback"])
 
     p.add_argument("--cookies-file", metavar="PATH", help=h["cookies_file"])
     p.add_argument("--cookies-browser", metavar="{chrome,firefox,edge,opera,brave}", help=h["cookies_browser"])
@@ -116,21 +118,35 @@ def _filter_players(
     lang: str | None,
     subs: str | None,
     player_name: str | None,
-) -> list[PlayerEntry]:
+) -> tuple[list[PlayerEntry], list[str]]:
+    """Strict AND filter. Returns (filtered, unmatched).
+
+    unmatched lists CLI criteria (e.g. "--lang=pl") that eliminated all candidates;
+    when non-empty, filtered is [] and the caller decides whether to fall back.
+    A criterion that matches nothing does not narrow the pool, so the remaining
+    criteria stay individually diagnosable (reporting is order-dependent).
+    """
     result = players[:]
+    unmatched: list[str] = []
     if player_name:
         filtered = [p for p in result if p.player.lower() == player_name.lower()]
         if filtered:
             result = filtered
+        else:
+            unmatched.append(f"--player-name={player_name}")
     if lang:
         filtered = [p for p in result if p.lang_audio == lang]
         if filtered:
             result = filtered
+        else:
+            unmatched.append(f"--lang={lang}")
     if subs:
         filtered = [p for p in result if p.lang_subs == subs]
         if filtered:
             result = filtered
-    return result or players  # fallback to full list if no match
+        else:
+            unmatched.append(f"--subs={subs}")
+    return (result, []) if not unmatched else ([], unmatched)
 
 
 def _pick_quality(stream: Stream, quality: str) -> Stream:
@@ -302,12 +318,19 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
             progress.warn(_PROG["no_players"].format(number=ep.number))
             continue
 
-        players = _filter_players(
+        filtered, unmatched = _filter_players(
             players,
             lang=args.lang,
             subs=args.subs,
             player_name=args.player_name,
         )
+        if unmatched:
+            filters = ", ".join(unmatched)
+            if not args.allow_fallback:
+                raise FilterMismatchError(EXCEPTIONS["cli"]["filter_no_match"].format(filters=filters))
+            progress.warn(_PROG["filter_fallback"].format(filters=filters))
+        else:
+            players = filtered
 
         chosen = players[0]
         stream, embed = _resolve_with_fallback(
@@ -401,7 +424,7 @@ def main() -> None:  # noqa: C901
         else:
             progress.error(str(exc))
         sys.exit(1)
-    except (AntiBotError, NoStreamError, ParseError) as exc:
+    except (AntiBotError, NoStreamError, ParseError, FilterMismatchError) as exc:
         progress.error(str(exc))
         sys.exit(1)
     except PlayerNotFoundError as exc:

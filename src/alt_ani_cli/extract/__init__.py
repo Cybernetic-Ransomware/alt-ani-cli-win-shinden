@@ -1,10 +1,13 @@
 import re
 from urllib.parse import urlparse
 
-from alt_ani_cli.content import EXCEPTIONS
+from alt_ani_cli.content import CONTENT, EXCEPTIONS
 from alt_ani_cli.errors import NoStreamError
 from alt_ani_cli.extract import dood, jwplayer, mp4upload, streamtape, ytdlp_resolver
 from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.ui import progress
+
+_PROG = CONTENT["progress"]
 
 # ebd.cda.pl/800x450/{id} → yt-dlp does not understand the embed URL; rewrite to www.cda.pl/video/{id}
 _EBD_CDA_RE = re.compile(r"/\d+x\d+/([0-9a-z]+)$", re.IGNORECASE)
@@ -102,6 +105,7 @@ def resolve(
         try:
             return custom_fn(embed_url, referer)
         except Exception as exc:
+            progress.warn(_PROG["extractor_fallback"].format(host=host, exc=f"{type(exc).__name__}: {exc}"))
             try:
                 return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
             except Exception:
@@ -111,8 +115,8 @@ def resolve(
     # then fall back to yt-dlp (1500+ supported sites).
     try:
         return jwplayer.resolve(embed_url, referer)
-    except Exception:  # nosec B110
-        pass
+    except Exception as exc:
+        progress.warn(_PROG["jwplayer_fallback"].format(host=host, exc=f"{type(exc).__name__}: {exc}"))
 
     try:
         return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)

@@ -8,6 +8,7 @@ from alt_ani_cli.shinden.models import EpisodeRow, RelatedSeries, SeriesHit, Ser
 from alt_ani_cli.ui.menus import (
     _run_keyed_picker,
     _run_simple_picker,
+    confirm,
     pick_related,
     select_action,
     select_episodes,
@@ -228,3 +229,21 @@ class TestRunKeyedPicker:
             result = _run_keyed_picker(options, prompt="Wybierz", instruction="", fallback_invalid="INVALID")
         assert result == "a"
         assert any("INVALID" in line for line in printed)
+
+
+@pytest.mark.unit
+class TestConfirm:
+    def test_yes_returns_true(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        with patch("builtins.input", return_value="1"):
+            assert confirm("Kontynuować?") is True
+
+    def test_no_returns_false(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        with patch("builtins.input", return_value="2"):
+            assert confirm("Kontynuować?") is False
+
+    def test_empty_enter_returns_none(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        with patch("builtins.input", return_value=""):
+            assert confirm("Kontynuować?") is None

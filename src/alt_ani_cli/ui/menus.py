@@ -165,6 +165,18 @@ def _run_keyed_picker(
     )
 
 
+def confirm(message: str) -> bool | None:
+    """Yes/No prompt. Returns True/False, or None on ESC / empty Enter."""
+    _c = _M["confirm"]
+    key = _run_keyed_picker(
+        [("yes", _c["option_yes"]), ("no", _c["option_no"])],
+        prompt=message,
+        instruction=_c["instruction"],
+        fallback_invalid=_c["fallback_invalid"],
+    )
+    return None if key is None else key == "yes"
+
+
 def _numbered_pick(items: list, label_fn, prompt: str):
     """Single-pick numbered menu; returns None when user presses empty Enter."""
     for i, item in enumerate(items, 1):

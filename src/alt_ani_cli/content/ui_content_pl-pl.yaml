@@ -30,6 +30,7 @@ cli:
     subs: "Filtruj po języku napisów (lang_subs)."
     cookies_file: "Plik ciasteczek w formacie Netscape (eksportuj np. rozszerzeniem 'Get cookies.txt')."
     cookies_browser: "Czytaj ciasteczka z przeglądarki (wymagane dla treści 18+ na CDA itp.)."
+    allow_fallback: "Gdy filtry --lang/--subs/--player-name nic nie dopasują, użyj pełnej listy playerów zamiast kończyć błędem."
   errors:
     missing_input: "Podaj tytuł do wyszukania, URL (--url) lub użyj -c."
 
@@ -41,6 +42,9 @@ progress:
   no_episodes: "Brak dostępnych odcinków."
   episode: "Odcinek {number:g}: {title}"
   no_players: "Brak playerów dla odcinka {number:g} — pomijam."
+  filter_fallback: "Filtry ({filters}) nie pasują do żadnego playera — używam pełnej listy."
+  extractor_fallback: "Ekstraktor dla {host} zawiódł ({exc}) — próbuję yt-dlp."
+  jwplayer_fallback: "Nieznany host {host}: próba jwplayer nieudana ({exc}) — próbuję yt-dlp."
   no_episodes_picked: "Nie wybrano żadnych odcinków."
   range_not_found: "Nie znaleziono odcinków dla zakresu: {range}"
   range_unrecognized: "Nie rozpoznano formatu zakresu odcinków: {range} — ignoruję."
@@ -135,6 +139,13 @@ menu:
     instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
     fallback_prompt: "Akcja [1-3, Enter=wstecz]: "
     fallback_invalid: "  Wpisz liczbę 1–3."
+  confirm:
+    option_yes: "Tak"
+    option_no: "Nie"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
+    fallback_invalid: "  Wpisz liczbę 1–2."
+  filter_confirm:
+    question: "Żaden player nie pasuje do filtrów ({filters}). Użyć pełnej listy?"
   fallback:
     select_prompt: "{prompt} [1-{n}, Enter=wstecz]: "
     invalid_number: "  Wpisz liczbę 1–{n}."
