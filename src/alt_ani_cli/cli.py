@@ -18,7 +18,7 @@ from alt_ani_cli.errors import (
     ShindenError,
 )
 from alt_ani_cli.extract.common import Stream
-from alt_ani_cli.models import EpisodeRow, PlayerEntry, SeriesRef
+from alt_ani_cli.models import EmbedURL, EpisodeRow, PlayerEntry, SeriesRef
 from alt_ani_cli.player import runner as player_runner
 from alt_ani_cli.shinden import api as shinden_api
 from alt_ani_cli.shinden import episode as shinden_episode
@@ -61,6 +61,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lang", metavar="{pl,jp,en}", help=h["lang"])
     p.add_argument("--subs", metavar="{pl,en,none}", help=h["subs"])
     p.add_argument("--allow-fallback", action="store_true", help=h["allow_fallback"])
+    p.add_argument("--show-sources", action="store_true", help=h["show_sources"])
 
     p.add_argument("--cookies-file", metavar="PATH", help=h["cookies_file"])
     p.add_argument("--cookies-browser", metavar="{chrome,firefox,edge,opera,brave}", help=h["cookies_browser"])
@@ -173,6 +174,23 @@ def _warn_extract_fallback(event: str, host: str, exc: Exception) -> None:
     progress.warn(_PROG[event].format(host=host, exc=f"{type(exc).__name__}: {exc}"))
 
 
+def _resolve_embed_with_spinner(client, online_id: str) -> EmbedURL:
+    with progress.spinner(_PROG["spinner_api"].format(label=ANTIBOT_LABEL)):
+        return shinden_api.resolve_embed(client, online_id)
+
+
+def _extract_stream(embed: EmbedURL, cookies_file: str | None, cookies_browser: str | None) -> Stream:
+    _url_short = embed.url if len(embed.url) <= 80 else embed.url[:77] + "…"
+    progress.info(_PROG["embed"].format(url=_url_short))
+    return extract.resolve(
+        embed.url,
+        embed.referer,
+        cookies_file=cookies_file,
+        cookies_browser=cookies_browser,
+        on_fallback=_warn_extract_fallback,
+    )
+
+
 def _resolve_with_fallback(
     client,
     players: list[PlayerEntry],
@@ -182,30 +200,33 @@ def _resolve_with_fallback(
     *,
     cookies_file: str | None = None,
     cookies_browser: str | None = None,
+    embed_cache: dict[str, EmbedURL] | None = None,
 ):
     """Try chosen player; if it fails and auto-mode is active, walk down the sorted list.
 
     Returns (Stream, EmbedURL) on success, (None, None) when all players fail.
     For user-chosen players (auto=False) only the selected player is attempted.
+    A candidate found in embed_cache skips the 5 s resolve; if extraction on the
+    cached embed fails, one fresh resolve is attempted before giving up on it.
     """
     candidates = players if auto else [chosen]
     # Always start with the explicitly chosen player
     if auto and chosen in candidates:
         candidates = [chosen] + [p for p in candidates if p is not chosen]
 
+    cache = embed_cache or {}
+
     for candidate in candidates:
         try:
-            with progress.spinner(_PROG["spinner_api"].format(label=ANTIBOT_LABEL)):
-                embed = shinden_api.resolve_embed(client, candidate.online_id)
-            _url_short = embed.url if len(embed.url) <= 80 else embed.url[:77] + "…"
-            progress.info(_PROG["embed"].format(url=_url_short))
-            stream = extract.resolve(
-                embed.url,
-                embed.referer,
-                cookies_file=cookies_file,
-                cookies_browser=cookies_browser,
-                on_fallback=_warn_extract_fallback,
-            )
+            cached = cache.get(candidate.online_id)
+            embed = cached if cached is not None else _resolve_embed_with_spinner(client, candidate.online_id)
+            try:
+                stream = _extract_stream(embed, cookies_file, cookies_browser)
+            except NoStreamError:
+                if cached is None:
+                    raise
+                embed = _resolve_embed_with_spinner(client, candidate.online_id)
+                stream = _extract_stream(embed, cookies_file, cookies_browser)
             return stream, embed
         except (NoStreamError, AntiBotError) as exc:
             progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=exc))

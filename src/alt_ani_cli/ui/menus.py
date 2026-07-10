@@ -14,7 +14,7 @@ from typing import Literal
 from urllib.parse import urlparse
 
 from alt_ani_cli.content import CONTENT
-from alt_ani_cli.models import EpisodeRow, PlayerEntry, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_cli.models import EpisodeRow, PlayerEntry, PlayerSource, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
 from alt_ani_cli.ui import progress
 
 _RES_RE = re.compile(r"(\d+)")
@@ -414,22 +414,133 @@ def select_episodes(
     return None if ep is None else [ep]
 
 
-def select_player(
+_MAX_SOURCE_TEXT = 30
+
+
+def _source_host(source: str) -> str | None:
+    """Shorten a source URL to its registrable domain; non-URL text is truncated."""
+    host = urlparse(source).hostname
+    if host:
+        host = host.removeprefix("www.")
+        parts = host.split(".")
+        return ".".join(parts[-2:]) if len(parts) > 2 else host
+    text = source.strip()
+    if not text:
+        return None
+    return text if len(text) <= _MAX_SOURCE_TEXT else text[: _MAX_SOURCE_TEXT - 1] + "…"
+
+
+def _norm_token(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _origin_similar(author: str, host: str) -> bool:
+    """True when the author name and the source host are variants of the same name."""
+    a = _norm_token(author)
+    h = _norm_token(host.rsplit(".", 1)[0])
+    return bool(a) and bool(h) and (a in h or h in a)
+
+
+def _player_origin(p: PlayerEntry, resolved_host: str | None = None) -> str:
+    _pl = _M["player"]
+    author = p.subs_author or ""
+    host = _source_host(p.source) if p.source else None
+    if author and host and not _origin_similar(author, host):
+        origin = _pl["origin_author_host"].format(author=author, host=host)
+    elif author:
+        origin = _pl["origin_author"].format(author=author)
+    elif host:
+        origin = _pl["origin_host"].format(host=host)
+    else:
+        origin = ""
+    if resolved_host:
+        origin += _pl["resolved_host"].format(host=resolved_host)
+    return origin
+
+
+def _player_label(p: PlayerEntry, failed: set[str], sources: dict[str, PlayerSource] | None) -> str:
+    _pl = _M["player"]
+    audio = _lang_tag(p.lang_audio)
+    subs = f"+{_lang_tag(p.lang_subs)}" if p.lang_subs else ""
+    res = f" [{p.max_res}]" if p.max_res else ""
+    src = sources.get(p.online_id) if sources else None
+    origin = _player_origin(p, src.host if src else None)
+    tmpl = _pl["label_failed"] if p.online_id in failed else _pl["label_ok"]
+    return tmpl.format(player=p.player, res=res, audio=audio, subs=subs, origin=origin)
+
+
+def format_player_source(p: PlayerEntry, resolved: PlayerSource | None) -> tuple[str, str]:
+    """Build (title, body) for the source modal shown on Ctrl+O in the player picker."""
+    _pl = _M["player"]
+    lines = []
+    if p.subs_author:
+        lines.append(_pl["source_author"].format(author=p.subs_author))
+    if p.source:
+        lines.append(_pl["source_url"].format(url=p.source))
+    if resolved:
+        lines.append(_pl["source_embed"].format(url=resolved.embed_url))
+    body = "\n".join(lines) or _pl["source_empty"]
+    return _pl["source_header"].format(player=p.player), body
+
+
+def select_player_once(
     players: list[PlayerEntry],
     prompt: str = _M["player"]["default_prompt"],
     failed: set[str] | None = None,
-) -> PlayerEntry | None:
+    sources: dict[str, PlayerSource] | None = None,
+) -> tuple:
+    """Render the player picker once and return a signal tuple.
+
+    Return values:
+      ("pick",   PlayerEntry) — user confirmed a selection
+      ("back",   None)        — ESC or Ctrl-C
+      ("source", cursor_idx)  — Ctrl+O: caller should show the source modal
+
+    cursor_idx is an index into the *players* list that was passed in.
+    The fallback numbered menu only produces ("pick", ...) or ("back", None).
+    """
     _failed = failed or set()
     _pl = _M["player"]
 
     def _label(p: PlayerEntry) -> str:
-        audio = _lang_tag(p.lang_audio)
-        subs = f"+{_lang_tag(p.lang_subs)}" if p.lang_subs else ""
-        res = f" [{p.max_res}]" if p.max_res else ""
-        tmpl = _pl["label_failed"] if p.online_id in _failed else _pl["label_ok"]
-        return tmpl.format(player=p.player, res=res, audio=audio, subs=subs)
+        return _player_label(p, _failed, sources)
 
-    return _run_simple_picker(players, _label, prompt=prompt, instruction=_pl["instruction"], mode="select")
+    if not _use_inquirer():
+        picked = _numbered_pick(players, _label, prompt)
+        return ("back", None) if picked is None else ("pick", picked)
+
+    from InquirerPy import inquirer
+    from InquirerPy.base.control import Choice
+
+    choices = [Choice(value=i, name=_label(p)) for i, p in enumerate(players)]
+    signal: dict = {"sig": None}
+    prompt_obj = inquirer.select(
+        message=f"{prompt}:",
+        choices=choices,
+        long_instruction=_pl["instruction"],
+        raise_keyboard_interrupt=False,
+        keybindings=_BACK_KB,
+    )
+
+    def _idx() -> int:
+        try:
+            return prompt_obj.content_control.selection["value"]
+        except Exception:
+            return 0
+
+    @prompt_obj._kb.add("c-o", eager=True)
+    def _(event):
+        signal["sig"] = ("source", _idx())
+        event.app.exit(result=None)
+
+    try:
+        result = prompt_obj.execute()
+    except KeyboardInterrupt:
+        return ("back", None)
+
+    if signal["sig"] is not None:
+        return signal["sig"]
+    return ("back", None) if result is None else ("pick", players[result])
 
 
 def select_start_mode(has_history: bool, history_count: int = 0) -> Literal["search", "resume", "url", "quit"] | None:

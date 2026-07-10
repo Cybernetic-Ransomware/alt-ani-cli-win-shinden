@@ -12,6 +12,7 @@ player filters match nothing.
 
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
 
 from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
@@ -20,7 +21,8 @@ from alt_ani_cli import download, history
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.errors import ShindenError
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, ScreenResult
-from alt_ani_cli.models import SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_cli.models import EmbedURL, PlayerSource, SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_cli.shinden import api as shinden_api
 from alt_ani_cli.shinden import episode as shinden_episode
 from alt_ani_cli.shinden import search as shinden_search
 from alt_ani_cli.shinden import series as shinden_series
@@ -55,6 +57,31 @@ def _prefetch_series_metadata(client: cffi_requests.Session, hits: list[SeriesHi
 def _safe_fetch_one(client: cffi_requests.Session, hit: SeriesHit) -> SeriesMetadata:
     ref = parse_series_url(hit.url)
     return fetch_series_metadata(client, ref)
+
+
+def _record_player_source(state: FlowState, online_id: str, embed: EmbedURL) -> None:
+    host = (urlparse(embed.url).hostname or "").removeprefix("www.")
+    state.player_embeds[online_id] = embed
+    state.player_sources[online_id] = PlayerSource(online_id=online_id, host=host, embed_url=embed.url)
+
+
+def _prefetch_player_sources(state: FlowState) -> None:
+    """Resolve every player's embed up front (--show-sources); failures leave the host unknown."""
+    players = [p for p in state.players if p.online_id not in state.player_sources]
+    if not players:
+        return
+    with (
+        progress.spinner(_PROG["prefetch_sources"].format(count=len(players))),
+        ThreadPoolExecutor(max_workers=min(3, len(players))) as ex,
+    ):
+        futures = {ex.submit(shinden_api.resolve_embed, state.client, p.online_id): p for p in players}
+        for fut in as_completed(futures):
+            p = futures[fut]
+            try:
+                embed = fut.result()
+            except CurlRequestException, ShindenError:
+                continue
+            _record_player_source(state, p.online_id, embed)
 
 
 def _sorted_by_date_desc(hits: list[SeriesHit], metadata: dict[str, SeriesMetadata]) -> list[SeriesHit]:
@@ -307,10 +334,15 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
     state.failed_ids = set()
     state.stream = None
     state.embed = None
+    state.player_sources = {}
+    state.player_embeds = {}
 
     if args.select_nth or len(players) == 1:
         state.chosen_player = players[0]
         return Screen.RESOLVE_STREAM
+
+    if args.show_sources:
+        _prefetch_player_sources(state)
 
     return Screen.PLAYER_PICK
 
@@ -322,15 +354,22 @@ def handle_player_pick(state: FlowState) -> ScreenResult:
     if state.failed_ids:
         progress.warn(_PROG["player_failed_short"].format(player=repr(state.chosen_player.player)))
 
-    chosen = menus.select_player(
-        state.players,
-        prompt=CONTENT["menu"]["player"]["prompt_with_episode"].format(label=ep_label),
-        failed=state.failed_ids,
-    )
-    if chosen is None:
-        return Screen.EPISODES_PICK  # ESC → back to episode selection
-    state.chosen_player = chosen
-    return Screen.RESOLVE_STREAM
+    while True:
+        action, payload = menus.select_player_once(
+            state.players,
+            prompt=CONTENT["menu"]["player"]["prompt_with_episode"].format(label=ep_label),
+            failed=state.failed_ids,
+            sources=state.player_sources,
+        )
+        if action == "back":
+            return Screen.EPISODES_PICK  # ESC → back to episode selection
+        if action == "pick":
+            state.chosen_player = payload
+            return Screen.RESOLVE_STREAM
+        # "source" — show the modal, then re-render the picker
+        p = state.players[payload]
+        title, body = menus.format_player_source(p, state.player_sources.get(p.online_id))
+        menus.show_modal_text(title, body)
 
 
 def handle_resolve_stream(state: FlowState) -> ScreenResult:
@@ -348,11 +387,14 @@ def handle_resolve_stream(state: FlowState) -> ScreenResult:
         ep_number=ep.number,
         cookies_file=state.args.cookies_file,
         cookies_browser=state.args.cookies_browser,
+        embed_cache=state.player_embeds,
     )
 
     if stream is not None:
         state.stream = stream
         state.embed = embed
+        # opportunistic: a re-rendered player list can now show this player's real host
+        _record_player_source(state, state.chosen_player.online_id, embed)
         if state.quality is None and stream.qualities:
             return Screen.QUALITY_PICK
         return Screen.ACTION_PICK

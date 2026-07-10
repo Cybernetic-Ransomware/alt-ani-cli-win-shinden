@@ -4,14 +4,19 @@ from unittest.mock import patch
 
 import pytest
 
-from alt_ani_cli.shinden.models import EpisodeRow, RelatedSeries, SeriesHit, SeriesRef
+from alt_ani_cli.models import PlayerSource
+from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, RelatedSeries, SeriesHit, SeriesRef
 from alt_ani_cli.ui.menus import (
+    _origin_similar,
     _run_keyed_picker,
     _run_simple_picker,
+    _source_host,
     confirm,
+    format_player_source,
     pick_related,
     select_action,
     select_episodes,
+    select_player_once,
     select_quality,
     select_series_from_history,
     select_series_once,
@@ -195,6 +200,89 @@ class TestRunKeyedPicker:
             result = _run_keyed_picker(options, prompt="Wybierz", instruction="", fallback_invalid="INVALID")
         assert result == "a"
         assert any("INVALID" in line for line in printed)
+
+
+_PLAYER = PlayerEntry(online_id="p1", player="CDA", lang_audio="jp", lang_subs="pl", max_res="1080p")
+
+
+@pytest.mark.unit
+class TestSourceHost:
+    def test_url_shortened_to_registrable_domain(self):
+        assert _source_host("http://feeds.feedburner.com/crunchyroll/rss/anime?format=xml") == "feedburner.com"
+
+    def test_www_prefix_stripped(self):
+        assert _source_host("https://www.miorosubs.com/") == "miorosubs.com"
+
+    def test_two_label_host_kept(self):
+        assert _source_host("https://miorosubs.com/") == "miorosubs.com"
+
+    def test_non_url_text_returned_as_is(self):
+        assert _source_host("own translation") == "own translation"
+
+    def test_long_non_url_text_truncated(self):
+        long_text = "x" * 50
+        result = _source_host(long_text)
+        assert len(result) <= 30
+        assert result.endswith("…")
+
+    def test_blank_returns_none(self):
+        assert _source_host("   ") is None
+
+
+@pytest.mark.unit
+class TestOriginSimilar:
+    def test_author_matching_host_is_similar(self):
+        assert _origin_similar("Mioro-Subs", "miorosubs.com") is True
+
+    def test_unrelated_author_and_host_differ(self):
+        assert _origin_similar("Aniplex of America", "feedburner.com") is False
+
+    def test_empty_author_is_not_similar(self):
+        assert _origin_similar("", "miorosubs.com") is False
+
+
+@pytest.mark.unit
+class TestSelectPlayerOnce:
+    def test_fallback_pick_returns_pick_signal(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        with patch("builtins.input", return_value="1"):
+            assert select_player_once([_PLAYER]) == ("pick", _PLAYER)
+
+    def test_fallback_empty_enter_returns_back_signal(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        with patch("builtins.input", return_value=""):
+            assert select_player_once([_PLAYER]) == ("back", None)
+
+    def test_fallback_label_shows_resolved_host(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        sources = {"p1": PlayerSource(online_id="p1", host="kerapoxy.cc", embed_url="https://kerapoxy.cc/e/x")}
+        printed: list[str] = []
+        with (
+            patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+            patch("builtins.input", return_value="1"),
+        ):
+            select_player_once([_PLAYER], sources=sources)
+        assert any("kerapoxy.cc" in line for line in printed)
+
+
+@pytest.mark.unit
+class TestFormatPlayerSource:
+    def test_full_info(self):
+        p = PlayerEntry(
+            online_id="p1", player="CDA", lang_audio="jp", lang_subs="pl",
+            subs_author="Mioro-Subs", source="https://miorosubs.com/",
+        )
+        resolved = PlayerSource(online_id="p1", host="ebd.cda.pl", embed_url="https://ebd.cda.pl/620x395/xyz")
+        title, body = format_player_source(p, resolved)
+        assert "CDA" in title
+        assert "Mioro-Subs" in body
+        assert "https://miorosubs.com/" in body
+        assert "https://ebd.cda.pl/620x395/xyz" in body
+
+    def test_no_info_renders_empty_message(self):
+        title, body = format_player_source(_PLAYER, None)
+        assert "CDA" in title
+        assert body  # the "no info" message, never blank
 
 
 @pytest.mark.unit
