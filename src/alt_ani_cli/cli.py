@@ -169,6 +169,10 @@ def _pick_quality(stream: Stream, quality: str) -> Stream:
     return Stream(url=url, headers=stream.headers, qualities=stream.qualities, ext=stream.ext)
 
 
+def _warn_extract_fallback(event: str, host: str, exc: Exception) -> None:
+    progress.warn(_PROG[event].format(host=host, exc=f"{type(exc).__name__}: {exc}"))
+
+
 def _resolve_with_fallback(
     client,
     players: list[PlayerEntry],
@@ -200,6 +204,7 @@ def _resolve_with_fallback(
                 embed.referer,
                 cookies_file=cookies_file,
                 cookies_browser=cookies_browser,
+                on_fallback=_warn_extract_fallback,
             )
             return stream, embed
         except (NoStreamError, AntiBotError) as exc:

@@ -37,44 +37,56 @@ class TestResolveDispatch:
         with pytest.raises(NoStreamError, match="voe.sx"):
             resolve("https://voe.sx/embed/abc", _REFERER)
 
-    def test_custom_extractor_failure_warns_and_falls_back_to_ytdlp(self):
+    def test_custom_extractor_failure_reports_fallback_and_falls_back_to_ytdlp(self):
+        failing_fn = MagicMock(side_effect=ValueError("parse error"))
+        on_fallback = MagicMock()
+        with (
+            patch.dict("alt_ani_cli.extract._CUSTOM", {"mp4upload.com": failing_fn}),
+            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", return_value=_STREAM),
+        ):
+            result = resolve("https://mp4upload.com/embed-abc.html", _REFERER, on_fallback=on_fallback)
+        assert result is _STREAM
+        on_fallback.assert_called_once()
+        event, host, exc = on_fallback.call_args[0]
+        assert event == "extractor_fallback"
+        assert host == "mp4upload.com"
+        assert isinstance(exc, ValueError)
+
+    def test_custom_extractor_failure_without_callback_still_falls_back(self):
         failing_fn = MagicMock(side_effect=ValueError("parse error"))
         with (
             patch.dict("alt_ani_cli.extract._CUSTOM", {"mp4upload.com": failing_fn}),
             patch("alt_ani_cli.extract.ytdlp_resolver.resolve", return_value=_STREAM),
-            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
         ):
-            result = resolve("https://mp4upload.com/embed-abc.html", _REFERER)
-        assert result is _STREAM
-        mock_warn.assert_called_once()
-        assert "mp4upload.com" in mock_warn.call_args[0][0]
+            assert resolve("https://mp4upload.com/embed-abc.html", _REFERER) is _STREAM
 
     def test_custom_and_ytdlp_both_fail_raises_no_stream_error(self):
         failing_fn = MagicMock(side_effect=ValueError("parse error"))
         with (
             patch.dict("alt_ani_cli.extract._CUSTOM", {"mp4upload.com": failing_fn}),
             patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
-            patch("alt_ani_cli.ui.progress.warn"),
         ):
             with pytest.raises(NoStreamError):
                 resolve("https://mp4upload.com/embed-abc.html", _REFERER)
 
-    def test_unknown_host_jwplayer_fails_warns_then_ytdlp_succeeds(self):
+    def test_unknown_host_jwplayer_fails_reports_fallback_then_ytdlp_succeeds(self):
+        on_fallback = MagicMock()
         with (
             patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ValueError("no url")),
             patch("alt_ani_cli.extract.ytdlp_resolver.resolve", return_value=_STREAM),
-            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
         ):
-            result = resolve("https://unknownhost.tv/embed/abc", _REFERER)
+            result = resolve("https://unknownhost.tv/embed/abc", _REFERER, on_fallback=on_fallback)
         assert result is _STREAM
-        mock_warn.assert_called_once()
-        assert "unknownhost.tv" in mock_warn.call_args[0][0]
+        on_fallback.assert_called_once()
+        event, host, exc = on_fallback.call_args[0]
+        assert event == "jwplayer_fallback"
+        assert host == "unknownhost.tv"
+        assert isinstance(exc, ValueError)
 
     def test_unknown_host_both_fail_raises_no_stream_error(self):
         with (
             patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ValueError("no url")),
             patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
-            patch("alt_ani_cli.ui.progress.warn"),
         ):
             with pytest.raises(NoStreamError):
                 resolve("https://unknownhost.tv/embed/abc", _REFERER)

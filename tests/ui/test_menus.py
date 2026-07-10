@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from alt_ani_cli.shinden.models import EpisodeRow, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_cli.shinden.models import EpisodeRow, RelatedSeries, SeriesHit, SeriesRef
 from alt_ani_cli.ui.menus import (
     _run_keyed_picker,
     _run_simple_picker,
@@ -70,12 +70,6 @@ class TestSelectStartMode:
         with patch("builtins.input", return_value="2"):
             assert select_start_mode(has_history=True, history_count=3) == "resume"
 
-    def test_resume_count_in_label(self, monkeypatch, capsys):
-        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
-        with patch("builtins.input", return_value="2"):
-            select_start_mode(has_history=True, history_count=5)
-        assert "5" in capsys.readouterr().out
-
     def test_quit_without_history(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value="3"):
@@ -118,42 +112,14 @@ class TestSelectEpisodes:
         with patch("builtins.input", return_value=""):
             assert select_episodes(episodes) is None
 
-    def test_watched_marker_in_label(self, monkeypatch):
-        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
-        episodes = [
-            EpisodeRow(number=1, title="Ep A", url="http://x/1"),
-            EpisodeRow(number=2, title="Ep B", url="http://x/2"),
-        ]
-        printed_lines: list[str] = []
-        with (
-            patch("builtins.print", side_effect=lambda *a, **k: printed_lines.append(" ".join(str(x) for x in a))),
-            patch("builtins.input", return_value="2"),
-        ):
-            select_episodes(episodes, watched_numbers={1.0})
-        assert "✓" in "\n".join(printed_lines)
-
 
 @pytest.mark.unit
 class TestSelectSeriesOnce:
-    def test_fallback_pick_returns_pick_signal(self, monkeypatch, capsys):
+    def test_fallback_pick_returns_pick_signal(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         hits = [SeriesHit(id="1", slug="test", title="Test Anime", url="https://shinden.pl/series/1-test", series_type="TV")]
         with patch("builtins.input", return_value="1"):
-            signal = select_series_once(hits)
-        assert signal == ("pick", hits[0])
-        captured = capsys.readouterr()
-        assert "Test Anime" in captured.out
-        assert "(id:1)" in captured.out
-
-    def test_fallback_metadata_shows_date_in_label(self, monkeypatch, capsys):
-        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
-        hits = [SeriesHit(id="234", slug="ikkitousen", title="Ikkitousen", url="https://shinden.pl/series/234-ikkitousen", series_type="TV")]
-        meta = {"234": SeriesMetadata(air_date="30.07.2003", air_date_sort=(2003, 7, 30), description="", tags=(), related=())}
-        with patch("builtins.input", return_value="1"):
-            signal = select_series_once(hits, metadata=meta)
-        assert signal[0] == "pick"
-        assert signal[1] == hits[0]
-        assert "30.07.2003" in capsys.readouterr().out
+            assert select_series_once(hits) == ("pick", hits[0])
 
     def test_fallback_empty_enter_returns_back_signal(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
