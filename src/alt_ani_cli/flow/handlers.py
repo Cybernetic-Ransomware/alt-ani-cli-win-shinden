@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
-from alt_ani_cli import download, history
+from alt_ani_cli import __version__, download, history
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.errors import ShindenError
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, ScreenResult
@@ -116,10 +116,15 @@ def handle_start_mode(state: FlowState) -> ScreenResult:
         return Screen.SERIES_PICK
 
     all_entries = history.list_all()
-    choice = menus.select_start_mode(
-        has_history=bool(all_entries),
-        history_count=len(all_entries),
-    )
+    while True:
+        choice = menus.select_start_mode(
+            has_history=bool(all_entries),
+            history_count=len(all_entries),
+        )
+        if choice != "version":
+            break
+        _sm = _M["start_mode"]
+        menus.show_modal_text(_sm["version_header"], _sm["version_body"].format(version=__version__))
     if choice is None:
         return BACK  # ESC from first screen → exit via empty history_stack
     if choice == "quit":

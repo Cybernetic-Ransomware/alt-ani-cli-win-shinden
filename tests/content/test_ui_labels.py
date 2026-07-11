@@ -118,6 +118,7 @@ class TestTemplatePlaceholders:
             (("menu", "episodes", "label_watched"), ("{number", "{title}")),
             (("menu", "episodes", "label_unwatched"), ("{number", "{title}")),
             (("menu", "start_mode", "options", "resume_with_count"), ("{count}",)),
+            (("menu", "start_mode", "version_body"), ("{version}",)),
             (("menu", "player", "label_ok"), ("{player}", "{res}", "{audio}", "{subs}", "{origin}")),
             (("menu", "player", "label_failed"), ("{player}", "{res}", "{audio}", "{subs}", "{origin}")),
             (("menu", "player", "origin_author"), ("{author}",)),

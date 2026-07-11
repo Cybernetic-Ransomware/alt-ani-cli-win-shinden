@@ -129,10 +129,13 @@ def _run_keyed_picker(
     prompt: str,
     instruction: str,
     fallback_invalid: str,
+    signal_keys: dict[str, str] | None = None,
 ):
     """One-shot key-value picker where values are string keys (not list indices).
 
     options: [(key, display_label), ...]
+    signal_keys maps extra prompt_toolkit keybindings to returned key strings
+    (e.g. {"c-o": "version"}); ignored in the numbered fallback.
     Returns the selected key string, or None on ESC / empty Enter.
     """
     if not _use_inquirer():
@@ -154,15 +157,26 @@ def _run_keyed_picker(
     from InquirerPy.base.control import Choice
 
     choices = [Choice(value=key, name=label) for key, label in options]
-    return _ask(
-        inquirer.select(
-            message=f"{prompt}:",
-            choices=choices,
-            long_instruction=instruction,
-            raise_keyboard_interrupt=False,
-            keybindings=_BACK_KB,
-        )
+    prompt_obj = inquirer.select(
+        message=f"{prompt}:",
+        choices=choices,
+        long_instruction=instruction,
+        raise_keyboard_interrupt=False,
+        keybindings=_BACK_KB,
     )
+
+    signal: dict = {"sig": None}
+    for kb_key, sig_value in (signal_keys or {}).items():
+
+        @prompt_obj._kb.add(kb_key, eager=True)
+        def _(event, _sig=sig_value):
+            signal["sig"] = _sig
+            event.app.exit(result=None)
+
+    result = _ask(prompt_obj)
+    if signal["sig"] is not None:
+        return signal["sig"]
+    return result
 
 
 def confirm(message: str) -> bool | None:
@@ -543,7 +557,9 @@ def select_player_once(
     return ("back", None) if result is None else ("pick", players[result])
 
 
-def select_start_mode(has_history: bool, history_count: int = 0) -> Literal["search", "resume", "url", "quit"] | None:
+def select_start_mode(
+    has_history: bool, history_count: int = 0
+) -> Literal["search", "resume", "url", "quit", "version"] | None:
     _sm = _M["start_mode"]
     _opts = _sm["options"]
 
@@ -559,6 +575,7 @@ def select_start_mode(has_history: bool, history_count: int = 0) -> Literal["sea
         prompt=_sm["question"],
         instruction=_sm["instruction"],
         fallback_invalid=_sm["fallback_invalid"].format(n=len(options_plain)),
+        signal_keys={"c-o": "version"},
     )
 
 

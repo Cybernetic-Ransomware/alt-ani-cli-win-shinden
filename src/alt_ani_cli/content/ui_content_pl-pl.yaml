@@ -78,9 +78,11 @@ menu:
       resume_with_count: "Kontynuuj z historii ({count} pozycji)"
       url: "Wklej URL serii"
       quit: "Wyjdź"
-    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wyjście"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  Ctrl+O = wersja  |  ESC = wyjście"
     fallback_prompt: "Wybór [1-{n}, Enter=wyjście]: "
     fallback_invalid: "  Wpisz liczbę 1–{n}."
+    version_header: "O programie"
+    version_body: "alt-ani-cli {version}"
   search_query:
     message: "Czego szukasz?"
     invalid: "Wpisz tytuł anime."

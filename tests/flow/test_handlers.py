@@ -112,6 +112,21 @@ class TestHandleStartMode:
         assert result is Screen.SERIES_PICK
         assert state.query == "fate strange"
 
+    def test_version_signal_shows_modal_and_rerenders(self):
+        from alt_ani_cli import __version__
+
+        state = _make_state()
+        signals = iter(["version", None])
+        with (
+            patch("alt_ani_cli.history.list_all", return_value=[]),
+            patch("alt_ani_cli.ui.menus.select_start_mode", side_effect=lambda **kw: next(signals)),
+            patch("alt_ani_cli.ui.menus.show_modal_text") as mock_modal,
+        ):
+            result = HANDLERS[Screen.START_MODE](state)
+        mock_modal.assert_called_once()
+        assert __version__ in mock_modal.call_args[0][1]
+        assert isinstance(result, _BackSentinel)
+
 
 @pytest.mark.unit
 class TestHandleSearchQuery:
