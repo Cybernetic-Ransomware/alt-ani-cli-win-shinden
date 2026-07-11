@@ -86,7 +86,7 @@ Run without arguments for an interactive wizard (search → select series → pi
 | `--lang {pl,jp,en}` | Filter by audio language |
 | `--subs {pl,en,none}` | Filter by subtitle language |
 | `--allow-fallback` | When `--lang`/`--subs`/`--player-name` match nothing, use the full player list instead of failing |
-| `--show-sources` | Resolve and show each player's real host in the picker (slow: ~7 s per player due to antibot delay) |
+| `--show-sources` | Interactive mode only — resolve and show each player's real host in the picker (slow: ~7 s per player due to antibot delay) |
 | `--cookies-file PATH` | Netscape cookies file (for age-gated content) |
 | `--cookies-browser NAME` | Extract cookies from browser (`chrome`, `firefox`, …) |
 

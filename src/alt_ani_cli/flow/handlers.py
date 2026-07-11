@@ -66,7 +66,13 @@ def _record_player_source(state: FlowState, online_id: str, embed: EmbedURL) -> 
 
 
 def _prefetch_player_sources(state: FlowState) -> None:
-    """Resolve every player's embed up front (--show-sources); failures leave the host unknown."""
+    """Resolve every player's embed up front (--show-sources); failures leave the host unknown.
+
+    Tech debt: the shared curl_cffi session is used from multiple threads, the same
+    trade-off already taken in _prefetch_series_metadata. The safe alternatives are
+    a session per worker (extra FlareSolverr/cookie setup) or sequential fetching
+    (~7 s per player); revisit if antibot blocks or session corruption show up.
+    """
     players = [p for p in state.players if p.online_id not in state.player_sources]
     if not players:
         return
