@@ -37,6 +37,11 @@ vidara:
   bad_embed_url: "vidara: cannot parse filecode from {embed_url}"
   no_stream_url: "vidara: no streaming_url in API response for {embed_url}"
 
+lycoris:
+  bad_embed_url: "lycoris: cannot parse id/episode from {embed_url}"
+  no_primary_source: "lycoris: no primarySource in API response for {embed_url}"
+  no_stream_url: "lycoris: no playable URL in API response for {embed_url}"
+
 ytdlp:
   no_info: "yt-dlp returned no info for {embed_url}"
   no_url: "No playable URL in yt-dlp output for {embed_url}"

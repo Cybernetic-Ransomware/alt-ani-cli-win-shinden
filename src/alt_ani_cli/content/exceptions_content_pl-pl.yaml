@@ -37,6 +37,11 @@ vidara:
   bad_embed_url: "vidara: nie można sparsować filecode z {embed_url}"
   no_stream_url: "vidara: brak streaming_url w odpowiedzi API dla {embed_url}"
 
+lycoris:
+  bad_embed_url: "lycoris: nie można sparsować id/episode z {embed_url}"
+  no_primary_source: "lycoris: brak primarySource w odpowiedzi API dla {embed_url}"
+  no_stream_url: "lycoris: brak URL wideo w odpowiedzi API dla {embed_url}"
+
 ytdlp:
   no_info: "yt-dlp nie zwróciło informacji dla {embed_url}"
   no_url: "Brak URL wideo w wynikach yt-dlp dla {embed_url}"
