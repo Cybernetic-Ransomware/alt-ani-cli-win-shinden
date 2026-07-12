@@ -6,7 +6,7 @@ from alt_ani_cli.config import USER_AGENT
 from alt_ani_cli.content import EXCEPTIONS
 from alt_ani_cli.extract.common import Stream
 
-_EMBED_RE = re.compile(r"(https?://[^/]+)/(?:e|d|f|v)/([A-Za-z0-9]+)")
+_EMBED_RE = re.compile(r"^(https?://[^/]+)/(?:e|d|f|v)/([A-Za-z0-9_-]+)")
 
 
 def resolve(embed_url: str, referer: str) -> Stream:
@@ -34,6 +34,6 @@ def resolve(embed_url: str, referer: str) -> Stream:
 
     return Stream(
         url=url,
-        headers={"Referer": base + "/", "Origin": base, "User-Agent": USER_AGENT},
+        headers={"Referer": embed_url, "Origin": base, "User-Agent": USER_AGENT},
         ext="m3u8" if "m3u8" in url else "mp4",
     )

@@ -44,7 +44,7 @@ class TestResolveVidara:
             stream = resolve(_EMBED, _REFERER)
 
         assert stream.url == _HLS_URL
-        assert stream.headers.get("Referer") == "https://vidara.to/"
+        assert stream.headers.get("Referer") == _EMBED
         assert stream.headers.get("Origin") == "https://vidara.to"
         assert stream.ext == "m3u8"
 
