@@ -89,6 +89,12 @@ class TestResolveDispatch:
         assert _CUSTOM["vidara.to"] is vidara.resolve
         assert _CUSTOM["www.vidara.to"] is vidara.resolve
 
+    def test_lycoris_hosts_route_to_lycoris_extractor(self):
+        from alt_ani_cli.extract import _CUSTOM, lycoris
+
+        assert _CUSTOM["lycoris.cafe"] is lycoris.resolve
+        assert _CUSTOM["www.lycoris.cafe"] is lycoris.resolve
+
     def test_unknown_host_both_fail_raises_no_stream_error(self):
         with (
             patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ValueError("no url")),
