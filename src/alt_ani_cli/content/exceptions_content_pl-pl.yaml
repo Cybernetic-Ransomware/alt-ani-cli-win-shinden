@@ -33,6 +33,10 @@ mp4upload:
 streamtape:
   no_token: "streamtape: nie można sparsować tokenu z {embed_url}"
 
+vidara:
+  bad_embed_url: "vidara: nie można sparsować filecode z {embed_url}"
+  no_stream_url: "vidara: brak streaming_url w odpowiedzi API dla {embed_url}"
+
 ytdlp:
   no_info: "yt-dlp nie zwróciło informacji dla {embed_url}"
   no_url: "Brak URL wideo w wynikach yt-dlp dla {embed_url}"

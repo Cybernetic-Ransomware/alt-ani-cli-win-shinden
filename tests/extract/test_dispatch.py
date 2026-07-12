@@ -83,6 +83,12 @@ class TestResolveDispatch:
         assert host == "unknownhost.tv"
         assert isinstance(exc, ValueError)
 
+    def test_vidara_hosts_route_to_vidara_extractor(self):
+        from alt_ani_cli.extract import _CUSTOM, vidara
+
+        assert _CUSTOM["vidara.to"] is vidara.resolve
+        assert _CUSTOM["www.vidara.to"] is vidara.resolve
+
     def test_unknown_host_both_fail_raises_no_stream_error(self):
         with (
             patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ValueError("no url")),

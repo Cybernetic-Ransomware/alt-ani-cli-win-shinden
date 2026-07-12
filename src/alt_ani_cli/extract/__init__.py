@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 from alt_ani_cli.content import EXCEPTIONS
 from alt_ani_cli.errors import NoStreamError
-from alt_ani_cli.extract import dood, jwplayer, mp4upload, streamtape, ytdlp_resolver
+from alt_ani_cli.extract import dood, jwplayer, mp4upload, streamtape, vidara, ytdlp_resolver
 from alt_ani_cli.extract.common import Stream
 
 # ebd.cda.pl/800x450/{id} → yt-dlp does not understand the embed URL; rewrite to www.cda.pl/video/{id}
@@ -56,6 +56,9 @@ _CUSTOM: dict = {
     "dood.re": dood.resolve,
     "dooood.com": dood.resolve,
     "ds2play.com": dood.resolve,
+    # vidara
+    "vidara.to": vidara.resolve,
+    "www.vidara.to": vidara.resolve,
     # streamwish / playerwish (JWPlayer)
     "streamwish.com": jwplayer.resolve,
     "www.streamwish.com": jwplayer.resolve,
