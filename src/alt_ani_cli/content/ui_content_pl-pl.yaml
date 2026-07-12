@@ -30,6 +30,8 @@ cli:
     subs: "Filtruj po języku napisów (lang_subs)."
     cookies_file: "Plik ciasteczek w formacie Netscape (eksportuj np. rozszerzeniem 'Get cookies.txt')."
     cookies_browser: "Czytaj ciasteczka z przeglądarki (wymagane dla treści 18+ na CDA itp.)."
+    allow_fallback: "Gdy filtry --lang/--subs/--player-name nic nie dopasują, użyj pełnej listy playerów zamiast kończyć błędem."
+    show_sources: "Pokaż realny host każdego playera na liście (tryb interaktywny; kosztowne — ~7 s na player przez antibota shinden)."
   errors:
     missing_input: "Podaj tytuł do wyszukania, URL (--url) lub użyj -c."
 
@@ -41,6 +43,9 @@ progress:
   no_episodes: "Brak dostępnych odcinków."
   episode: "Odcinek {number:g}: {title}"
   no_players: "Brak playerów dla odcinka {number:g} — pomijam."
+  filter_fallback: "Filtry ({filters}) nie pasują do żadnego playera — używam pełnej listy."
+  extractor_fallback: "Ekstraktor dla {host} zawiódł ({exc}) — próbuję yt-dlp."
+  jwplayer_fallback: "Nieznany host {host}: próba jwplayer nieudana ({exc}) — próbuję yt-dlp."
   no_episodes_picked: "Nie wybrano żadnych odcinków."
   range_not_found: "Nie znaleziono odcinków dla zakresu: {range}"
   range_unrecognized: "Nie rozpoznano formatu zakresu odcinków: {range} — ignoruję."
@@ -57,6 +62,7 @@ progress:
   shinden_error: "Błąd shinden: {exc}"
   embed: "Embed: {url}"
   spinner_api: "Czekam na API shinden ({label}) …"
+  prefetch_sources: "Pobieram źródła playerów ({count}) …"
   playing: "Odtwarzam w {kind}: {title}"
 
 download:
@@ -72,9 +78,11 @@ menu:
       resume_with_count: "Kontynuuj z historii ({count} pozycji)"
       url: "Wklej URL serii"
       quit: "Wyjdź"
-    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wyjście"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  Ctrl+O = wersja  |  ESC = wyjście"
     fallback_prompt: "Wybór [1-{n}, Enter=wyjście]: "
     fallback_invalid: "  Wpisz liczbę 1–{n}."
+    version_header: "O programie"
+    version_body: "alt-ani-cli {version}"
   search_query:
     message: "Czego szukasz?"
     invalid: "Wpisz tytuł anime."
@@ -117,10 +125,19 @@ menu:
     prompt_with_title: "Wybierz odcinek ({title})"
   player:
     default_prompt: "Wybierz player"
-    label_ok: "  {player}{res}  {audio}{subs}"
-    label_failed: "✗ {player}{res}  {audio}{subs}"
-    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
+    label_ok: "  {player}{res}  {audio}{subs}{origin}"
+    label_failed: "✗ {player}{res}  {audio}{subs}{origin}"
+    origin_author: "  — {author}"
+    origin_author_host: "  — {author} / {host}"
+    origin_host: "  — {host}"
+    resolved_host: "  @ {host}"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  Ctrl+O = źródło  |  ESC = wstecz"
     prompt_with_episode: "Player — ep {label}"
+    source_header: "Źródło — {player}"
+    source_author: "Autor:  {author}"
+    source_url: "Źródło: {url}"
+    source_embed: "Embed:  {url}"
+    source_empty: "Brak informacji o źródle."
   quality:
     default_prompt: "Wybierz jakość"
     label_best: "best  (najwyższa dostępna — {top})"
@@ -135,6 +152,13 @@ menu:
     instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
     fallback_prompt: "Akcja [1-3, Enter=wstecz]: "
     fallback_invalid: "  Wpisz liczbę 1–3."
+  confirm:
+    option_yes: "Tak"
+    option_no: "Nie"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
+    fallback_invalid: "  Wpisz liczbę 1–2."
+  filter_confirm:
+    question: "Żaden player nie pasuje do filtrów ({filters}). Użyć pełnej listy?"
   fallback:
     select_prompt: "{prompt} [1-{n}, Enter=wstecz]: "
     invalid_number: "  Wpisz liczbę 1–{n}."

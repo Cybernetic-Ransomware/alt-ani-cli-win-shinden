@@ -47,10 +47,21 @@ def parse_players(html: str) -> list[PlayerEntry]:
                 lang_subs=str(data.get("lang_subs", "")).strip(),
                 max_res=max_res_raw or None,
                 date_added=date_added,
+                subs_author=_opt_str(data, "subs_author"),
+                source=_opt_str(data, "source"),
             )
         )
 
     return players
+
+
+def _opt_str(data: dict, key: str) -> str | None:
+    """Read an optional string field; JSON null, missing key and empty string all map to None."""
+    val = data.get(key)
+    if val is None:
+        return None
+    s = str(val).strip()
+    return s or None
 
 
 def _row_date(node: Node) -> str | None:

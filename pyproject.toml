@@ -1,6 +1,6 @@
 [project]
 name = "alt-ani-cli-win"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.14"
 description = "CLI for watching and downloading anime from shinden.pl on Windows"
 license = { text = "EUPL-1.2" }
@@ -75,7 +75,7 @@ exclude = ["tests/*", "tools/*"]
 skip = "./.git,./.github,./tests/*,./temp/*,./tools/*"
 builtin = "clear"
 quiet-level = 3
-ignore-words-list = "daty,serie"
+ignore-words-list = "daty,serie,autor"
 
 [tool.bandit]
 skips = ["B404", "B603"]
@@ -83,10 +83,11 @@ exclude_dirs = ["tests", "tools"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.1.0"
+version = "0.2.0"
 tag_format = "v$version"
 version_files = [
     "pyproject.toml:version",
+    "src/alt_ani_cli/__init__.py:__version__",
 ]
 change_type_order = ["feat", "fix", "hotfix", "chore", "docs", "refactor", "test"]
 schema_pattern = "(build|chore|ci|docs|feature|feat|fix|hotfix|perf|refactor|style|test|config)(\\(.+\\))?!?: .+"

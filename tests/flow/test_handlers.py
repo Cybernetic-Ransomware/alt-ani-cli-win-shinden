@@ -11,10 +11,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
-from alt_ani_cli.errors import ShindenError
-from alt_ani_cli.flow.handlers import HANDLERS, _prefetch_series_metadata, _safe_fetch_one, _sorted_by_date_desc
+from alt_ani_cli.errors import AntiBotError, NoStreamError, ShindenError
+from alt_ani_cli.flow.handlers import (
+    HANDLERS,
+    _prefetch_player_sources,
+    _prefetch_series_metadata,
+    _safe_fetch_one,
+    _sorted_by_date_desc,
+)
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, _BackSentinel
-from alt_ani_cli.models import RelatedSeries, SeriesMetadata
+from alt_ani_cli.models import EmbedURL, RelatedSeries, SeriesMetadata
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesRef
 
 
@@ -34,6 +40,8 @@ def _make_args(**overrides):
         player_name=None,
         lang=None,
         subs=None,
+        allow_fallback=False,
+        show_sources=False,
         cookies_file=None,
         cookies_browser=None,
     )
@@ -103,6 +111,21 @@ class TestHandleStartMode:
         result = HANDLERS[Screen.START_MODE](state)
         assert result is Screen.SERIES_PICK
         assert state.query == "fate strange"
+
+    def test_version_signal_shows_modal_and_rerenders(self):
+        from alt_ani_cli import __version__
+
+        state = _make_state()
+        signals = iter(["version", None])
+        with (
+            patch("alt_ani_cli.history.list_all", return_value=[]),
+            patch("alt_ani_cli.ui.menus.select_start_mode", side_effect=lambda **kw: next(signals)),
+            patch("alt_ani_cli.ui.menus.show_modal_text") as mock_modal,
+        ):
+            result = HANDLERS[Screen.START_MODE](state)
+        mock_modal.assert_called_once()
+        assert __version__ in mock_modal.call_args[0][1]
+        assert isinstance(result, _BackSentinel)
 
 
 @pytest.mark.unit
@@ -273,16 +296,27 @@ class TestHandleEpisodesPick:
 class TestHandlePlayerPick:
     def test_esc_returns_episodes_pick(self):
         state = _make_state(ref=_SERIES_REF, targets=[_EP1], ep_idx=0, players=[_PLAYER])
-        with patch("alt_ani_cli.ui.menus.select_player", return_value=None):
+        with patch("alt_ani_cli.ui.menus.select_player_once", return_value=("back", None)):
             result = HANDLERS[Screen.PLAYER_PICK](state)
         assert result is Screen.EPISODES_PICK
 
     def test_pick_returns_resolve_stream(self):
         state = _make_state(ref=_SERIES_REF, targets=[_EP1], ep_idx=0, players=[_PLAYER])
-        with patch("alt_ani_cli.ui.menus.select_player", return_value=_PLAYER):
+        with patch("alt_ani_cli.ui.menus.select_player_once", return_value=("pick", _PLAYER)):
             result = HANDLERS[Screen.PLAYER_PICK](state)
         assert result is Screen.RESOLVE_STREAM
         assert state.chosen_player is _PLAYER
+
+    def test_source_signal_shows_modal_and_rerenders(self):
+        state = _make_state(ref=_SERIES_REF, targets=[_EP1], ep_idx=0, players=[_PLAYER])
+        signals = iter([("source", 0), ("back", None)])
+        with (
+            patch("alt_ani_cli.ui.menus.select_player_once", side_effect=lambda *a, **kw: next(signals)),
+            patch("alt_ani_cli.ui.menus.show_modal_text") as mock_modal,
+        ):
+            result = HANDLERS[Screen.PLAYER_PICK](state)
+        mock_modal.assert_called_once()
+        assert result is Screen.EPISODES_PICK
 
 
 @pytest.mark.unit
@@ -432,18 +466,20 @@ class TestInteractiveFlow:
 
         mock_stream = MagicMock()
         mock_stream.qualities = {}
+        mock_embed = MagicMock()
+        mock_embed.url = "https://filemoon.sx/e/abc"
 
         player_calls: list[int] = []
 
-        def _fake_player(players, prompt="", failed=None):
+        def _fake_player(players, prompt="", failed=None, sources=None):
             player_calls.append(1)
-            return _PLAYER if len(player_calls) == 1 else None
+            return ("pick", _PLAYER) if len(player_calls) == 1 else ("back", None)
 
         with (
             patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
             patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
-            patch("alt_ani_cli.cli._resolve_with_fallback", return_value=(mock_stream, MagicMock())),
-            patch("alt_ani_cli.ui.menus.select_player", side_effect=_fake_player),
+            patch("alt_ani_cli.cli._resolve_with_fallback", return_value=(mock_stream, mock_embed)),
+            patch("alt_ani_cli.ui.menus.select_player_once", side_effect=_fake_player),
             patch("alt_ani_cli.ui.menus.select_action", return_value="play"),
             patch("alt_ani_cli.player.runner.play"),
             patch("alt_ani_cli.history.upsert"),
@@ -503,6 +539,81 @@ class TestSortedByDateDesc:
 
         result = _sorted_by_date_desc(hits, metadata)
         assert [h.id for h in result] == ["0", "1", "2"]
+
+
+def _make_ep_dispatch_state(lang=None, subs=None, player_name=None, allow_fallback=False):
+    """Build a FlowState ready for EPISODE_DISPATCH with two players."""
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.text = ""
+    client = MagicMock()
+    client.get.return_value = mock_resp
+    state = FlowState(
+        args=_make_args(lang=lang, subs=subs, player_name=player_name, allow_fallback=allow_fallback),
+        client=client,
+    )
+    state.targets = [_EP1]
+    state.ep_idx = 0
+    return state
+
+
+@pytest.mark.unit
+class TestEpisodeDispatchFilterMiss:
+    def test_filters_match_proceeds_without_confirm(self):
+        state = _make_ep_dispatch_state(lang="jp")
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.ui.menus.confirm") as mock_confirm,
+        ):
+            result = HANDLERS[Screen.EPISODE_DISPATCH](state)
+        mock_confirm.assert_not_called()
+        assert result in (Screen.PLAYER_PICK, Screen.RESOLVE_STREAM)
+        assert state.players == [_PLAYER, _PLAYER2]
+
+    def test_filter_miss_confirm_true_uses_full_list(self):
+        state = _make_ep_dispatch_state(lang="xx")
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.ui.menus.confirm", return_value=True),
+        ):
+            result = HANDLERS[Screen.EPISODE_DISPATCH](state)
+        assert result in (Screen.PLAYER_PICK, Screen.RESOLVE_STREAM)
+        assert state.players == [_PLAYER, _PLAYER2]
+
+    def test_filter_miss_confirm_false_returns_episodes_pick(self):
+        state = _make_ep_dispatch_state(lang="xx")
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.ui.menus.confirm", return_value=False),
+        ):
+            result = HANDLERS[Screen.EPISODE_DISPATCH](state)
+        assert result is Screen.EPISODES_PICK
+
+    def test_filter_miss_confirm_none_esc_returns_episodes_pick(self):
+        state = _make_ep_dispatch_state(lang="xx")
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.ui.menus.confirm", return_value=None),
+        ):
+            result = HANDLERS[Screen.EPISODE_DISPATCH](state)
+        assert result is Screen.EPISODES_PICK
+
+    def test_allow_fallback_skips_confirm_and_warns(self):
+        state = _make_ep_dispatch_state(lang="xx", allow_fallback=True)
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.ui.menus.confirm") as mock_confirm,
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            result = HANDLERS[Screen.EPISODE_DISPATCH](state)
+        mock_confirm.assert_not_called()
+        mock_warn.assert_called_once()
+        assert result in (Screen.PLAYER_PICK, Screen.RESOLVE_STREAM)
 
 
 @contextmanager
@@ -613,3 +724,110 @@ class TestPrefetchSeriesMetadata:
         ):
             _prefetch_series_metadata(client, [_SERIES_HIT])
         assert len(spinner_calls) == 1
+
+
+_EMBED = EmbedURL(url="https://www.filemoon.sx/e/abc", referer="https://shinden.pl/")
+
+
+@pytest.mark.unit
+class TestPrefetchPlayerSources:
+    def test_success_records_host_and_embed(self):
+        state = _make_state(players=[_PLAYER])
+        with (
+            patch("alt_ani_cli.shinden.api.resolve_embed", return_value=_EMBED),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+        ):
+            _prefetch_player_sources(state)
+        assert state.player_sources[_PLAYER.online_id].host == "filemoon.sx"
+        assert state.player_sources[_PLAYER.online_id].embed_url == _EMBED.url
+        assert state.player_embeds[_PLAYER.online_id] is _EMBED
+
+    def test_antibot_error_leaves_host_unknown(self):
+        state = _make_state(players=[_PLAYER, _PLAYER2])
+
+        def _resolve(client, online_id):
+            if online_id == _PLAYER.online_id:
+                raise AntiBotError("blocked")
+            return _EMBED
+
+        with (
+            patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=_resolve),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+        ):
+            _prefetch_player_sources(state)
+        assert _PLAYER.online_id not in state.player_sources
+        assert _PLAYER2.online_id in state.player_sources
+
+    def test_known_ids_are_skipped(self):
+        state = _make_state(players=[_PLAYER])
+        state.player_sources = {_PLAYER.online_id: MagicMock()}
+        with patch("alt_ani_cli.shinden.api.resolve_embed") as mock_resolve:
+            _prefetch_player_sources(state)
+        mock_resolve.assert_not_called()
+
+    def test_episode_dispatch_triggers_prefetch_with_flag(self):
+        state = _make_ep_dispatch_state()
+        state.args.show_sources = True
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.flow.handlers._prefetch_player_sources") as mock_prefetch,
+        ):
+            result = HANDLERS[Screen.EPISODE_DISPATCH](state)
+        mock_prefetch.assert_called_once_with(state)
+        assert result is Screen.PLAYER_PICK
+
+    def test_episode_dispatch_skips_prefetch_without_flag(self):
+        state = _make_ep_dispatch_state()
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.flow.handlers._prefetch_player_sources") as mock_prefetch,
+        ):
+            HANDLERS[Screen.EPISODE_DISPATCH](state)
+        mock_prefetch.assert_not_called()
+
+
+@pytest.mark.unit
+class TestResolveStreamEmbedCache:
+    def _state_with_cache(self):
+        state = _make_state(
+            ref=_SERIES_REF,
+            targets=[_EP1],
+            ep_idx=0,
+            players=[_PLAYER],
+            chosen_player=_PLAYER,
+        )
+        state.player_embeds = {_PLAYER.online_id: _EMBED}
+        return state
+
+    def test_cached_embed_skips_resolve(self):
+        state = self._state_with_cache()
+        mock_stream = MagicMock()
+        mock_stream.qualities = {}
+        with (
+            patch("alt_ani_cli.shinden.api.resolve_embed") as mock_resolve,
+            patch("alt_ani_cli.extract.resolve", return_value=mock_stream) as mock_extract,
+        ):
+            result = HANDLERS[Screen.RESOLVE_STREAM](state)
+        mock_resolve.assert_not_called()
+        assert mock_extract.call_args[0][0] == _EMBED.url
+        assert result is Screen.ACTION_PICK
+        assert state.stream is mock_stream
+
+    def test_expired_cached_embed_falls_back_to_fresh_resolve(self):
+        state = self._state_with_cache()
+        fresh = EmbedURL(url="https://kerapoxy.cc/e/new", referer="https://shinden.pl/")
+        mock_stream = MagicMock()
+        mock_stream.qualities = {}
+        with (
+            patch("alt_ani_cli.shinden.api.resolve_embed", return_value=fresh) as mock_resolve,
+            patch("alt_ani_cli.extract.resolve", side_effect=[NoStreamError("expired"), mock_stream]) as mock_extract,
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+        ):
+            result = HANDLERS[Screen.RESOLVE_STREAM](state)
+        mock_resolve.assert_called_once()
+        assert mock_extract.call_count == 2
+        assert mock_extract.call_args[0][0] == fresh.url
+        assert result is Screen.ACTION_PICK
+        assert state.embed is fresh

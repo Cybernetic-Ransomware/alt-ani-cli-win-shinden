@@ -45,6 +45,26 @@ class TestArgParser:
         args = p.parse_args(["fate", "strange", "fake"])
         assert args.query == ["fate", "strange", "fake"]
 
+    def test_allow_fallback_flag(self):
+        p = _build_parser()
+        args = p.parse_args(["--allow-fallback", "--url", "u"])
+        assert args.allow_fallback is True
+
+    def test_allow_fallback_default_false(self):
+        p = _build_parser()
+        args = p.parse_args(["--url", "u"])
+        assert args.allow_fallback is False
+
+    def test_show_sources_flag(self):
+        p = _build_parser()
+        args = p.parse_args(["--show-sources", "--url", "u"])
+        assert args.show_sources is True
+
+    def test_show_sources_default_false(self):
+        p = _build_parser()
+        args = p.parse_args(["--url", "u"])
+        assert args.show_sources is False
+
     def test_flags_before_query(self):
         p = _build_parser()
         a1 = p.parse_args(["-d", "-e", "5", "fate", "strange"])

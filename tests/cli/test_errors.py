@@ -6,6 +6,7 @@ import pytest
 from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
 
 from alt_ani_cli.cli import main
+from alt_ani_cli.errors import FilterMismatchError
 
 
 def _make_http_error(status_code: int, url: str = "https://shinden.pl/series/1-test") -> CurlHTTPError:
@@ -73,3 +74,19 @@ class TestHTTPStatusErrorHandler:
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
         assert "localhost:8191" in captured.err + captured.out
+
+
+@pytest.mark.unit
+class TestFilterMismatchErrorHandler:
+    def test_filter_mismatch_exits_1_with_message(self, capsys):
+        exc = FilterMismatchError("No players match the requested filters (--lang=xx).")
+        with (
+            patch("sys.argv", ["alt-ani-cli", "--url", "https://shinden.pl/series/1-test", "-S", "1", "-e", "1"]),
+            patch("alt_ani_cli.cli._run_noninteractive", side_effect=exc),
+            patch("alt_ani_cli.cli.shinden_http.make_client"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "--lang=xx" in captured.err + captured.out

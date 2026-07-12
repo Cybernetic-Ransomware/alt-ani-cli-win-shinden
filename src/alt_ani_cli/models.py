@@ -33,6 +33,15 @@ class PlayerEntry:
     lang_subs: str
     max_res: str | None = None
     date_added: str | None = None
+    subs_author: str | None = None
+    source: str | None = None
+
+
+@dataclass(frozen=True)
+class PlayerSource:
+    online_id: str
+    host: str
+    embed_url: str
 
 
 @dataclass(frozen=True)

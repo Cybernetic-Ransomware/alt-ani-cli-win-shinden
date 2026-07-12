@@ -11,7 +11,7 @@ _SERIES_RE = re.compile(r"/series/(\d+)-([^/?#\s]+)")
 
 
 def search_series(client: cffi_requests.Session, query: str) -> list[SeriesHit]:
-    resp = client.get(f"{SHINDEN_BASE}/series", params={"q": query})
+    resp = client.get(f"{SHINDEN_BASE}/series", params={"search": query})
     resp.raise_for_status()
     return _parse_results(resp.text)
 

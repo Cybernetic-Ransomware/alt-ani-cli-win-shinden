@@ -70,6 +70,8 @@ class FlowState:
     failed_ids: set[str] = field(default_factory=set)
     stream: Any = None
     embed: Any = None
+    player_sources: dict = field(default_factory=dict)  # online_id → PlayerSource
+    player_embeds: dict = field(default_factory=dict)  # online_id → EmbedURL
 
     # cached user choices
     quality: str | None = None

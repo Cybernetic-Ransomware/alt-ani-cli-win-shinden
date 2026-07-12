@@ -55,7 +55,7 @@ Only the first request after expiry is slow (~20 s); all subsequent ones are ins
 
 ```powershell
 git clone https://github.com/Cybernetic-Ransomware/alt-ani-cli-win-shinden
-cd alt-ani-cli-win
+cd alt-ani-cli-win-shinden
 uv sync --no-group dev
 ```
 
@@ -85,6 +85,8 @@ Run without arguments for an interactive wizard (search → select series → pi
 | `--player-name NAME` | Filter by player name (`CDA`, `Mp4upload`, …) |
 | `--lang {pl,jp,en}` | Filter by audio language |
 | `--subs {pl,en,none}` | Filter by subtitle language |
+| `--allow-fallback` | When `--lang`/`--subs`/`--player-name` match nothing, use the full player list instead of failing |
+| `--show-sources` | Interactive mode only — resolve and show each player's real host in the picker (slow: ~7 s per player due to antibot delay) |
 | `--cookies-file PATH` | Netscape cookies file (for age-gated content) |
 | `--cookies-browser NAME` | Extract cookies from browser (`chrome`, `firefox`, …) |
 

@@ -1,3 +1,6 @@
+cli:
+  filter_no_match: "Żaden player nie pasuje do podanych filtrów ({filters}). Użyj --allow-fallback, aby skorzystać z pełnej listy playerów."
+
 api:
   player_load_403: "shinden API zwróciło 403 na player_load — GUEST_AUTH w config.py mógł wygasnąć."
   player_show_403: "shinden API zwróciło 403 na player_show."

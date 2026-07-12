@@ -28,6 +28,34 @@ class TestParsePlayers:
         assert cda.lang_subs == "pl"
         assert cda.max_res == "1080p"
 
+    def test_subs_author_and_source_parsed(self, episode_players_html):
+        players = parse_players(episode_players_html)
+        cda = next(p for p in players if p.player == "CDA")
+        assert cda.subs_author == "Mioro-Subs"
+        assert cda.source == "https://miorosubs.com/"
+
+    def test_subs_author_and_source_null(self, episode_players_html):
+        players = parse_players(episode_players_html)
+        filemoon = next(p for p in players if p.player == "Filemoon")
+        assert filemoon.subs_author is None
+        assert filemoon.source is None
+
+    def test_subs_author_and_source_missing_keys(self):
+        html = """<a data-episode="{&quot;online_id&quot;:&quot;abc&quot;,&quot;player&quot;:&quot;CDA&quot;,&quot;lang_audio&quot;:&quot;jp&quot;,&quot;lang_subs&quot;:&quot;pl&quot;}">x</a>"""
+        players = parse_players(html)
+        assert players[0].subs_author is None
+        assert players[0].source is None
+
+    def test_subs_author_empty_string_is_none(self):
+        html = (
+            '<a data-episode="{&quot;online_id&quot;:&quot;abc&quot;,&quot;player&quot;:&quot;CDA&quot;,'
+            '&quot;lang_audio&quot;:&quot;jp&quot;,&quot;lang_subs&quot;:&quot;pl&quot;,'
+            '&quot;subs_author&quot;:&quot;  &quot;,&quot;source&quot;:&quot;&quot;}">x</a>'
+        )
+        players = parse_players(html)
+        assert players[0].subs_author is None
+        assert players[0].source is None
+
     def test_html_unescape(self):
         html = """<a data-episode="{&quot;online_id&quot;:&quot;abc&quot;,&quot;player&quot;:&quot;Mp4upload&quot;,&quot;lang_audio&quot;:&quot;pl&quot;,&quot;lang_subs&quot;:&quot;&quot;}">x</a>"""
         players = parse_players(html)

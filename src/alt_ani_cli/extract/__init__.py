@@ -1,4 +1,5 @@
 import re
+from collections.abc import Callable
 from urllib.parse import urlparse
 
 from alt_ani_cli.content import EXCEPTIONS
@@ -6,7 +7,7 @@ from alt_ani_cli.errors import NoStreamError
 from alt_ani_cli.extract import dood, jwplayer, mp4upload, streamtape, ytdlp_resolver
 from alt_ani_cli.extract.common import Stream
 
-# ebd.cda.pl/800x450/{id} → yt-dlp only understands player.cda.pl/play/{id}
+# ebd.cda.pl/800x450/{id} → yt-dlp does not understand the embed URL; rewrite to www.cda.pl/video/{id}
 _EBD_CDA_RE = re.compile(r"/\d+x\d+/([0-9a-z]+)$", re.IGNORECASE)
 
 
@@ -81,8 +82,13 @@ def resolve(
     *,
     cookies_file: str | None = None,
     cookies_browser: str | None = None,
+    on_fallback: Callable[[str, str, Exception], None] | None = None,
 ) -> Stream:
-    """Dispatch to the right extractor based on the embed URL hostname."""
+    """Dispatch to the right extractor based on the embed URL hostname.
+
+    ``on_fallback(event, host, exc)`` is invoked before each fallback attempt;
+    event keys match ``CONTENT["progress"]`` so the caller can render them.
+    """
     embed_url = _normalize_url(embed_url)
     host = urlparse(embed_url).netloc.lower()
 
@@ -102,6 +108,8 @@ def resolve(
         try:
             return custom_fn(embed_url, referer)
         except Exception as exc:
+            if on_fallback:
+                on_fallback("extractor_fallback", host, exc)
             try:
                 return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
             except Exception:
@@ -111,8 +119,9 @@ def resolve(
     # then fall back to yt-dlp (1500+ supported sites).
     try:
         return jwplayer.resolve(embed_url, referer)
-    except Exception:  # nosec B110
-        pass
+    except Exception as exc:
+        if on_fallback:
+            on_fallback("jwplayer_fallback", host, exc)
 
     try:
         return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)

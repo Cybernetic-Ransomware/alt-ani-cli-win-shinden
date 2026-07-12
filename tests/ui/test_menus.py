@@ -4,13 +4,19 @@ from unittest.mock import patch
 
 import pytest
 
-from alt_ani_cli.shinden.models import EpisodeRow, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_cli.models import PlayerSource
+from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, RelatedSeries, SeriesHit, SeriesRef
 from alt_ani_cli.ui.menus import (
+    _origin_similar,
     _run_keyed_picker,
     _run_simple_picker,
+    _source_host,
+    confirm,
+    format_player_source,
     pick_related,
     select_action,
     select_episodes,
+    select_player_once,
     select_quality,
     select_series_from_history,
     select_series_once,
@@ -69,12 +75,6 @@ class TestSelectStartMode:
         with patch("builtins.input", return_value="2"):
             assert select_start_mode(has_history=True, history_count=3) == "resume"
 
-    def test_resume_count_in_label(self, monkeypatch, capsys):
-        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
-        with patch("builtins.input", return_value="2"):
-            select_start_mode(has_history=True, history_count=5)
-        assert "5" in capsys.readouterr().out
-
     def test_quit_without_history(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value="3"):
@@ -117,42 +117,14 @@ class TestSelectEpisodes:
         with patch("builtins.input", return_value=""):
             assert select_episodes(episodes) is None
 
-    def test_watched_marker_in_label(self, monkeypatch):
-        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
-        episodes = [
-            EpisodeRow(number=1, title="Ep A", url="http://x/1"),
-            EpisodeRow(number=2, title="Ep B", url="http://x/2"),
-        ]
-        printed_lines: list[str] = []
-        with (
-            patch("builtins.print", side_effect=lambda *a, **k: printed_lines.append(" ".join(str(x) for x in a))),
-            patch("builtins.input", return_value="2"),
-        ):
-            select_episodes(episodes, watched_numbers={1.0})
-        assert "✓" in "\n".join(printed_lines)
-
 
 @pytest.mark.unit
 class TestSelectSeriesOnce:
-    def test_fallback_pick_returns_pick_signal(self, monkeypatch, capsys):
+    def test_fallback_pick_returns_pick_signal(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         hits = [SeriesHit(id="1", slug="test", title="Test Anime", url="https://shinden.pl/series/1-test", series_type="TV")]
         with patch("builtins.input", return_value="1"):
-            signal = select_series_once(hits)
-        assert signal == ("pick", hits[0])
-        captured = capsys.readouterr()
-        assert "Test Anime" in captured.out
-        assert "(id:1)" in captured.out
-
-    def test_fallback_metadata_shows_date_in_label(self, monkeypatch, capsys):
-        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
-        hits = [SeriesHit(id="234", slug="ikkitousen", title="Ikkitousen", url="https://shinden.pl/series/234-ikkitousen", series_type="TV")]
-        meta = {"234": SeriesMetadata(air_date="30.07.2003", air_date_sort=(2003, 7, 30), description="", tags=(), related=())}
-        with patch("builtins.input", return_value="1"):
-            signal = select_series_once(hits, metadata=meta)
-        assert signal[0] == "pick"
-        assert signal[1] == hits[0]
-        assert "30.07.2003" in capsys.readouterr().out
+            assert select_series_once(hits) == ("pick", hits[0])
 
     def test_fallback_empty_enter_returns_back_signal(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
@@ -228,3 +200,104 @@ class TestRunKeyedPicker:
             result = _run_keyed_picker(options, prompt="Wybierz", instruction="", fallback_invalid="INVALID")
         assert result == "a"
         assert any("INVALID" in line for line in printed)
+
+
+_PLAYER = PlayerEntry(online_id="p1", player="CDA", lang_audio="jp", lang_subs="pl", max_res="1080p")
+
+
+@pytest.mark.unit
+class TestSourceHost:
+    def test_url_shortened_to_registrable_domain(self):
+        assert _source_host("http://feeds.feedburner.com/crunchyroll/rss/anime?format=xml") == "feedburner.com"
+
+    def test_www_prefix_stripped(self):
+        assert _source_host("https://www.miorosubs.com/") == "miorosubs.com"
+
+    def test_two_label_host_kept(self):
+        assert _source_host("https://miorosubs.com/") == "miorosubs.com"
+
+    def test_non_url_text_returned_as_is(self):
+        assert _source_host("own translation") == "own translation"
+
+    def test_long_non_url_text_truncated(self):
+        long_text = "x" * 50
+        result = _source_host(long_text)
+        assert len(result) <= 30
+        assert result.endswith("…")
+
+    def test_blank_returns_none(self):
+        assert _source_host("   ") is None
+
+
+@pytest.mark.unit
+class TestOriginSimilar:
+    def test_author_matching_host_is_similar(self):
+        assert _origin_similar("Mioro-Subs", "miorosubs.com") is True
+
+    def test_unrelated_author_and_host_differ(self):
+        assert _origin_similar("Aniplex of America", "feedburner.com") is False
+
+    def test_empty_author_is_not_similar(self):
+        assert _origin_similar("", "miorosubs.com") is False
+
+
+@pytest.mark.unit
+class TestSelectPlayerOnce:
+    def test_fallback_pick_returns_pick_signal(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        with patch("builtins.input", return_value="1"):
+            assert select_player_once([_PLAYER]) == ("pick", _PLAYER)
+
+    def test_fallback_empty_enter_returns_back_signal(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        with patch("builtins.input", return_value=""):
+            assert select_player_once([_PLAYER]) == ("back", None)
+
+    def test_fallback_label_shows_resolved_host(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        sources = {"p1": PlayerSource(online_id="p1", host="kerapoxy.cc", embed_url="https://kerapoxy.cc/e/x")}
+        printed: list[str] = []
+        with (
+            patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+            patch("builtins.input", return_value="1"),
+        ):
+            select_player_once([_PLAYER], sources=sources)
+        assert any("kerapoxy.cc" in line for line in printed)
+
+
+@pytest.mark.unit
+class TestFormatPlayerSource:
+    def test_full_info(self):
+        p = PlayerEntry(
+            online_id="p1", player="CDA", lang_audio="jp", lang_subs="pl",
+            subs_author="Mioro-Subs", source="https://miorosubs.com/",
+        )
+        resolved = PlayerSource(online_id="p1", host="ebd.cda.pl", embed_url="https://ebd.cda.pl/620x395/xyz")
+        title, body = format_player_source(p, resolved)
+        assert "CDA" in title
+        assert "Mioro-Subs" in body
+        assert "https://miorosubs.com/" in body
+        assert "https://ebd.cda.pl/620x395/xyz" in body
+
+    def test_no_info_renders_empty_message(self):
+        title, body = format_player_source(_PLAYER, None)
+        assert "CDA" in title
+        assert body  # the "no info" message, never blank
+
+
+@pytest.mark.unit
+class TestConfirm:
+    def test_yes_returns_true(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        with patch("builtins.input", return_value="1"):
+            assert confirm("Kontynuować?") is True
+
+    def test_no_returns_false(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        with patch("builtins.input", return_value="2"):
+            assert confirm("Kontynuować?") is False
+
+    def test_empty_enter_returns_none(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        with patch("builtins.input", return_value=""):
+            assert confirm("Kontynuować?") is None

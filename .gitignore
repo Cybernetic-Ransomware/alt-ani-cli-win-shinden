@@ -40,6 +40,8 @@ dmypy.json
 # Claude Code
 .claude/
 CLAUDE.md
+.mcp.json
+.playwright-mcp/
 
 # Test artifacts
 tests/result/
