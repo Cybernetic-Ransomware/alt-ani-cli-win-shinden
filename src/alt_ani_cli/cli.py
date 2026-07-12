@@ -3,6 +3,7 @@
 import argparse
 import contextlib
 import sys
+from urllib.parse import urlparse
 
 from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
 
@@ -150,6 +151,14 @@ def _filter_players(
     return (result, []) if not unmatched else ([], unmatched)
 
 
+def _guess_ext_from_url(url: str, fallback: str) -> str:
+    path = urlparse(url).path.lower()
+    for ext in ("mkv", "mp4", "m3u8"):
+        if path.endswith(f".{ext}"):
+            return ext
+    return fallback
+
+
 def _pick_quality(stream: Stream, quality: str) -> Stream:
     if not stream.qualities:
         return stream
@@ -167,7 +176,7 @@ def _pick_quality(stream: Stream, quality: str) -> Stream:
     else:
         url = stream.qualities.get(quality, stream.url)
 
-    return Stream(url=url, headers=stream.headers, qualities=stream.qualities, ext=stream.ext)
+    return Stream(url=url, headers=stream.headers, qualities=stream.qualities, ext=_guess_ext_from_url(url, stream.ext))
 
 
 def _warn_extract_fallback(event: str, host: str, exc: Exception) -> None:
