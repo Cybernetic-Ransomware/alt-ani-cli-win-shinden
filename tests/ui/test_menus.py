@@ -117,6 +117,15 @@ class TestSelectEpisodes:
         with patch("builtins.input", return_value=""):
             assert select_episodes(episodes) is None
 
+    def test_fallback_ignores_default_index(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        episodes = [
+            EpisodeRow(number=1, title="Ep 1", url="http://x/1"),
+            EpisodeRow(number=2, title="Ep 2", url="http://x/2"),
+        ]
+        with patch("builtins.input", return_value="1"):
+            assert select_episodes(episodes, multi=True, default_index=1) == [episodes[0]]
+
 
 @pytest.mark.unit
 class TestSelectSeriesOnce:

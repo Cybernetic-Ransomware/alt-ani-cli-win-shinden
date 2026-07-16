@@ -382,6 +382,7 @@ def select_episodes(
     prompt: str = _M["episodes"]["default_prompt"],
     multi: bool = False,
     watched_numbers: set[float] | None = None,
+    default_index: int | None = None,
 ) -> list[EpisodeRow] | None:
     _watched = watched_numbers or set()
     _ep = _M["episodes"]
@@ -407,6 +408,7 @@ def select_episodes(
             inquirer.checkbox(
                 message=f"{prompt}:",
                 choices=choices,
+                default=default_index,
                 validate=lambda result: len(result) > 0,
                 invalid_message=_ep["invalid_multi"],
                 long_instruction=_ep["instruction_multi"],

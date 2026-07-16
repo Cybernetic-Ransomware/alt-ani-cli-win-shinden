@@ -279,6 +279,32 @@ class TestHandleEpisodesPick:
         _, kwargs = mock_sel.call_args
         assert kwargs.get("watched_numbers") == {1.0}
 
+    def test_resume_passes_full_list_with_cursor_on_first_unwatched(self):
+        state = _make_state(ref=_SERIES_REF, episodes=[_EP1, _EP2, _EP3], last_ep=2.0)
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP3]) as mock_sel:
+            HANDLERS[Screen.EPISODES_PICK](state)
+        args, kwargs = mock_sel.call_args
+        assert args[0] == [_EP1, _EP2, _EP3]
+        assert kwargs.get("default_index") == 2
+        assert kwargs.get("watched_numbers") == {1.0, 2.0}
+
+    def test_resume_all_watched_puts_cursor_on_last_episode(self):
+        state = _make_state(ref=_SERIES_REF, episodes=[_EP1, _EP2, _EP3], last_ep=3.0)
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP3]) as mock_sel:
+            HANDLERS[Screen.EPISODES_PICK](state)
+        args, kwargs = mock_sel.call_args
+        assert args[0] == [_EP1, _EP2, _EP3]
+        assert kwargs.get("default_index") == 2
+        assert kwargs.get("watched_numbers") == {1.0, 2.0, 3.0}
+
+    def test_no_resume_has_no_default_index(self):
+        state = _make_state(ref=_SERIES_REF, episodes=[_EP1, _EP2], completed_eps={1.0})
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP2]) as mock_sel:
+            HANDLERS[Screen.EPISODES_PICK](state)
+        _, kwargs = mock_sel.call_args
+        assert kwargs.get("default_index") is None
+        assert kwargs.get("watched_numbers") == {1.0}
+
     def test_cli_episode_arg_skips_menu(self):
         state = _make_state(
             args=_make_args(episode="1"),

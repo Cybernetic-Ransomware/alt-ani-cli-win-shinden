@@ -280,17 +280,21 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
         state.ep_idx = 0
         return Screen.EPISODE_DISPATCH
 
+    default_index = None
+    watched = set(state.completed_eps)
     if state.last_ep > 0:
-        candidate = [ep for ep in state.episodes if ep.number > state.last_ep]
-        pool = candidate if candidate else state.episodes
-    else:
-        pool = state.episodes
+        watched |= {ep.number for ep in state.episodes if ep.number <= state.last_ep}
+        default_index = next(
+            (i for i, ep in enumerate(state.episodes) if ep.number > state.last_ep),
+            len(state.episodes) - 1,
+        )
 
     result = menus.select_episodes(
-        pool,
+        state.episodes,
         prompt=CONTENT["menu"]["episodes"]["prompt_with_title"].format(title=state.ref.title),
         multi=True,
-        watched_numbers=state.completed_eps,
+        watched_numbers=watched,
+        default_index=default_index,
     )
     if result is None:
         return BACK
