@@ -443,7 +443,7 @@ def select_episodes(
             raise_keyboard_interrupt=False,
             keybindings=_BACK_KB,
         )
-        if default_index:
+        if default_index is not None and default_index > 0:
             _anchor_choice_window(prompt_obj, default_index, len(episodes))
         indices = _ask(prompt_obj)
         return None if indices is None else [episodes[i] for i in indices]

@@ -121,6 +121,13 @@ alt-ani-cli --lang jp --subs pl berserk
 alt-ani-cli --cookies-browser chrome --url https://shinden.pl/series/...
 ```
 
+### Resume from history
+
+When continuing a series, the episode picker opens on the first unwatched episode and
+shows only the unwatched ones. Watched episodes stay reachable — scrolling up reveals
+them one by one (marked with ✓), growing the list up to 15 rows, after which it scrolls
+as a sliding window.
+
 ### Player selection
 
 Players are sorted automatically:
