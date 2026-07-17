@@ -1,12 +1,13 @@
 """Tests for ui/menus — only the pure/fallback paths (no InquirerPy TTY needed)."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from alt_ani_cli.models import PlayerSource
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, RelatedSeries, SeriesHit, SeriesRef
 from alt_ani_cli.ui.menus import (
+    _anchor_choice_window,
     _origin_similar,
     _run_keyed_picker,
     _run_simple_picker,
@@ -116,6 +117,121 @@ class TestSelectEpisodes:
         episodes = [EpisodeRow(number=1, title="Ep 1", url="http://x/1")]
         with patch("builtins.input", return_value=""):
             assert select_episodes(episodes) is None
+
+    def test_fallback_ignores_default_index(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        episodes = [
+            EpisodeRow(number=1, title="Ep 1", url="http://x/1"),
+            EpisodeRow(number=2, title="Ep 2", url="http://x/2"),
+        ]
+        with patch("builtins.input", return_value="1"):
+            assert select_episodes(episodes, multi=True, default_index=1) == [episodes[0]]
+
+    def test_default_index_passed_to_checkbox(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", True)
+        episodes = [EpisodeRow(number=n, title=f"Ep {n}", url=f"http://x/{n}") for n in (1, 2, 3)]
+        prompt_obj = MagicMock()
+        prompt_obj.execute.return_value = [2]
+        prompt_obj.application.layout.find_all_windows.return_value = []
+        with patch("InquirerPy.inquirer.checkbox", return_value=prompt_obj) as mock_cb:
+            result = select_episodes(episodes, multi=True, default_index=2)
+        assert result == [episodes[2]]
+        assert mock_cb.call_args.kwargs["default"] == 2
+
+
+@pytest.fixture
+def pt_session():
+    """Headless prompt_toolkit app session — no TTY required."""
+    from prompt_toolkit.application.current import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        yield
+
+
+def _anchored_prompt(total: int, start: int):
+    from InquirerPy import inquirer
+    from InquirerPy.base.control import Choice
+
+    choices = [Choice(value=i, name=f"Odcinek {i + 1}") for i in range(total)]
+    prompt = inquirer.checkbox(
+        message="x:",
+        choices=choices,
+        default=start,
+        mandatory=False,
+        raise_keyboard_interrupt=False,
+    )
+    _anchor_choice_window(prompt, start, total)
+    return prompt
+
+
+def _visible_episode_numbers(prompt) -> list[int]:
+    """Render one frame of the choice window and return the episode numbers shown."""
+    from prompt_toolkit.layout.containers import WritePosition
+    from prompt_toolkit.layout.mouse_handlers import MouseHandlers
+    from prompt_toolkit.layout.screen import Screen
+
+    window = next(w for w in prompt.application.layout.find_all_windows() if w.content is prompt.content_control)
+    rows = window.height().preferred
+    # A real Application invalidates these per render cycle (keyed on render_counter);
+    # without a running app the caches must be cleared by hand.
+    prompt.content_control._fragment_cache.clear()
+    prompt.content_control._content_cache.clear()
+    screen = Screen()
+    window.write_to_screen(
+        screen,
+        MouseHandlers(),
+        WritePosition(xpos=0, ypos=0, width=60, height=rows),
+        parent_style="",
+        erase_bg=False,
+        z_index=None,
+    )
+    numbers = []
+    for y in range(rows):
+        row = screen.data_buffer.get(y, {})
+        text = "".join(row[x].char for x in sorted(row)).rstrip()
+        if text:
+            numbers.append(int(text.split("Odcinek ")[1]))
+    return numbers
+
+
+def _move_cursor(prompt, delta: int) -> None:
+    prompt.content_control.selected_choice_index += delta
+    _visible_episode_numbers(prompt)
+
+
+@pytest.mark.unit
+class TestAnchorChoiceWindow:
+    def test_initial_view_shows_only_unwatched(self, pt_session):
+        prompt = _anchored_prompt(total=12, start=11)
+        assert _visible_episode_numbers(prompt) == [12]
+
+    def test_cursor_up_grows_view_keeping_bottom(self, pt_session):
+        prompt = _anchored_prompt(total=12, start=11)
+        _move_cursor(prompt, -1)
+        assert _visible_episode_numbers(prompt) == [11, 12]
+        _move_cursor(prompt, -1)
+        assert _visible_episode_numbers(prompt) == [10, 11, 12]
+        _move_cursor(prompt, +1)
+        assert _visible_episode_numbers(prompt) == [10, 11, 12]
+
+    def test_window_slides_at_max_rows(self, pt_session):
+        prompt = _anchored_prompt(total=30, start=20)
+        assert _visible_episode_numbers(prompt) == list(range(21, 31))
+        for _ in range(5):
+            _move_cursor(prompt, -1)
+        assert _visible_episode_numbers(prompt) == list(range(16, 31))
+        _move_cursor(prompt, -1)
+        assert _visible_episode_numbers(prompt) == list(range(15, 30))
+        for _ in range(15):
+            _move_cursor(prompt, +1)
+        assert _visible_episode_numbers(prompt) == list(range(16, 31))
+
+    def test_missing_window_is_silent_noop(self):
+        prompt = MagicMock()
+        prompt.application.layout.find_all_windows.return_value = []
+        _anchor_choice_window(prompt, 5, 10)
 
 
 @pytest.mark.unit

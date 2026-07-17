@@ -377,11 +377,39 @@ def select_series_from_history(
     )
 
 
+_EP_WINDOW_MAX_ROWS = 15
+
+
+def _anchor_choice_window(prompt_obj, start: int, total: int) -> None:
+    """Start the viewport at `start` (bottom-anchored); moving the cursor above it
+    grows the view one row at a time up to _EP_WINDOW_MAX_ROWS, then it slides."""
+    from prompt_toolkit.layout.dimension import Dimension
+
+    control = prompt_obj.content_control
+    for window in prompt_obj.application.layout.find_all_windows():
+        if window.content is control:
+            break
+    else:
+        return
+
+    window.vertical_scroll = start
+    top = start
+
+    def _height() -> Dimension:
+        nonlocal top
+        top = min(top, control.selected_choice_index)
+        rows = min(_EP_WINDOW_MAX_ROWS, total - top)
+        return Dimension(preferred=rows, max=rows)
+
+    window.height = _height
+
+
 def select_episodes(
     episodes: list[EpisodeRow],
     prompt: str = _M["episodes"]["default_prompt"],
     multi: bool = False,
     watched_numbers: set[float] | None = None,
+    default_index: int | None = None,
 ) -> list[EpisodeRow] | None:
     _watched = watched_numbers or set()
     _ep = _M["episodes"]
@@ -403,19 +431,21 @@ def select_episodes(
 
     if multi:
         _name_map = {i: _label(ep) for i, ep in enumerate(episodes)}
-        indices = _ask(
-            inquirer.checkbox(
-                message=f"{prompt}:",
-                choices=choices,
-                validate=lambda result: len(result) > 0,
-                invalid_message=_ep["invalid_multi"],
-                long_instruction=_ep["instruction_multi"],
-                transformer=lambda result: ", ".join(_name_map.get(r, str(r)) for r in result),
-                mandatory=False,
-                raise_keyboard_interrupt=False,
-                keybindings=_BACK_KB,
-            )
+        prompt_obj = inquirer.checkbox(
+            message=f"{prompt}:",
+            choices=choices,
+            default=default_index,
+            validate=lambda result: len(result) > 0,
+            invalid_message=_ep["invalid_multi"],
+            long_instruction=_ep["instruction_multi"],
+            transformer=lambda result: ", ".join(_name_map.get(r, str(r)) for r in result),
+            mandatory=False,
+            raise_keyboard_interrupt=False,
+            keybindings=_BACK_KB,
         )
+        if default_index is not None and default_index > 0:
+            _anchor_choice_window(prompt_obj, default_index, len(episodes))
+        indices = _ask(prompt_obj)
         return None if indices is None else [episodes[i] for i in indices]
 
     ep = _run_simple_picker(
