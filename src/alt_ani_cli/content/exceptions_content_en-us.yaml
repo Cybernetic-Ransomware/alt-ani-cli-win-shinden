@@ -16,6 +16,7 @@ series:
 
 extract:
   js_only_host: "{host} requires JavaScript execution (pure SPA — no static video URL)"
+  unsupported_host: "{host} is not supported — pick another player"
   ytdlp_failed: "yt-dlp could not extract stream from {embed_url}: {exc}"
   all_failed: "All extractors failed for {embed_url}"
   all_failed_exc: "All extractors failed for {embed_url}: {exc}"
