@@ -27,7 +27,8 @@ class HostRule:
     """Routing rule for a known embed host.
 
     - ``custom`` — native extractor in ``resolver``, falls back to yt-dlp on failure.
-    - ``jwplayer`` — JWPlayer-based host, shorthand for ``custom`` with ``jwplayer.resolve``.
+    - ``jwplayer`` — JWPlayer-based host, shorthand for ``custom`` with ``jwplayer.resolve``;
+      falls back to yt-dlp on failure.
     - ``ytdlp`` — go straight to yt-dlp, no JWPlayer attempt and no fallback.
     - ``unsupported`` — fail fast; ``reason`` is an ``EXCEPTIONS["extract"]`` message key.
     """
