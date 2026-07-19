@@ -179,8 +179,8 @@ def _pick_quality(stream: Stream, quality: str) -> Stream:
     return Stream(url=url, headers=stream.headers, qualities=stream.qualities, ext=_guess_ext_from_url(url, stream.ext))
 
 
-def _warn_extract_fallback(event: str, host: str, exc: Exception) -> None:
-    progress.warn(_PROG[event].format(host=host, exc=f"{type(exc).__name__}: {exc}"))
+def _warn_extract_fallback(event: str, host: str, exc_text: str) -> None:
+    progress.warn(_PROG[event].format(host=host, exc=exc_text))
 
 
 def _resolve_embed_with_spinner(client, online_id: str) -> EmbedURL:
@@ -189,8 +189,8 @@ def _resolve_embed_with_spinner(client, online_id: str) -> EmbedURL:
 
 
 def _extract_stream(embed: EmbedURL, cookies_file: str | None, cookies_browser: str | None) -> Stream:
-    _url_short = embed.url if len(embed.url) <= 80 else embed.url[:77] + "…"
-    progress.info(_PROG["embed"].format(url=_url_short))
+    # the only place the full embed URL is shown — failure messages use the host only
+    progress.info(_PROG["embed"].format(url=embed.url))
     return extract.resolve(
         embed.url,
         embed.referer,

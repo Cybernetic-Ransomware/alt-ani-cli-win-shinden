@@ -16,9 +16,11 @@ series:
 
 extract:
   js_only_host: "{host} wymaga wykonania JavaScript (czyste SPA — brak statycznego URL wideo)"
-  ytdlp_failed: "yt-dlp nie mógł wyodrębnić strumienia z {embed_url}: {exc}"
-  all_failed: "Wszystkie ekstraktory zawiodły dla {embed_url}"
-  all_failed_exc: "Wszystkie ekstraktory zawiodły dla {embed_url}: {exc}"
+  unsupported_host: "{host} nie jest obsługiwany — wybierz inny player"
+  encrypted_host: "{host} serwuje pliki szyfrowane end-to-end — żaden player ani ekstraktor nie odszyfruje strumienia; wybierz inny player"
+  ytdlp_failed: "yt-dlp nie mógł wyodrębnić strumienia z {host}: {exc}"
+  all_failed: "Wszystkie ekstraktory zawiodły dla {host}"
+  all_failed_exc: "Wszystkie ekstraktory zawiodły dla {host}: {exc}"
 
 dood:
   bad_base_url: "dood: nie można sparsować bazowego URL z {embed_url}"

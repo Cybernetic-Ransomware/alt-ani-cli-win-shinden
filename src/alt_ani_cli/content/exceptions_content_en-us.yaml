@@ -16,9 +16,11 @@ series:
 
 extract:
   js_only_host: "{host} requires JavaScript execution (pure SPA — no static video URL)"
-  ytdlp_failed: "yt-dlp could not extract stream from {embed_url}: {exc}"
-  all_failed: "All extractors failed for {embed_url}"
-  all_failed_exc: "All extractors failed for {embed_url}: {exc}"
+  unsupported_host: "{host} is not supported — pick another player"
+  encrypted_host: "{host} serves end-to-end encrypted files — no player or extractor can decrypt the stream; pick another player"
+  ytdlp_failed: "yt-dlp could not extract stream from {host}: {exc}"
+  all_failed: "All extractors failed for {host}"
+  all_failed_exc: "All extractors failed for {host}: {exc}"
 
 dood:
   bad_base_url: "dood: cannot parse base URL from {embed_url}"
