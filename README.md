@@ -174,6 +174,14 @@ Lycoris Cafe embeds are resolved through the host API and expose the available d
 
 All other hosts fall back to yt-dlp (1500+ supported sites).
 
+**Not supported: mega.nz.** MEGA serves end-to-end encrypted files (AES-128-CTR, decryption key
+in the URL fragment), so neither yt-dlp nor mpv can play the stream — the host fails fast with a
+clear message instead of attempting extraction.
+
+> **TODO — full MEGA player support**: call the MEGA API for the direct (encrypted) file URL,
+> decrypt AES-128-CTR on the fly through a local streaming proxy for mpv, and add a custom
+> download path bypassing yt-dlp. Requires a new crypto dependency (e.g. `pycryptodome`).
+
 ## Security notes
 
 **`GUEST_AUTH` token** — the value hardcoded in `config.py` is a public guest token issued by shinden.pl for unauthenticated API access.

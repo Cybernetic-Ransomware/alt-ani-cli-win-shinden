@@ -87,10 +87,10 @@ class TestResolveDispatch:
             result = resolve("https://mp4upload.com/embed-abc.html", _REFERER, on_fallback=on_fallback)
         assert result is _STREAM
         on_fallback.assert_called_once()
-        event, host, exc = on_fallback.call_args[0]
+        event, host, exc_text = on_fallback.call_args[0]
         assert event == "extractor_fallback"
         assert host == "mp4upload.com"
-        assert isinstance(exc, ValueError)
+        assert exc_text == "ValueError: parse error"
 
     def test_custom_extractor_failure_without_callback_still_falls_back(self):
         failing_fn = MagicMock(side_effect=ValueError("parse error"))
@@ -118,10 +118,10 @@ class TestResolveDispatch:
             result = resolve("https://unknownhost.tv/embed/abc", _REFERER, on_fallback=on_fallback)
         assert result is _STREAM
         on_fallback.assert_called_once()
-        event, host, exc = on_fallback.call_args[0]
+        event, host, exc_text = on_fallback.call_args[0]
         assert event == "jwplayer_fallback"
         assert host == "unknownhost.tv"
-        assert isinstance(exc, ValueError)
+        assert exc_text == "ValueError: no url"
 
     def test_unknown_host_both_fail_raises_no_stream_error(self):
         with (
@@ -146,3 +146,35 @@ class TestResolveDispatch:
     def test_pixeldrain_hosts_route_to_ytdlp(self):
         assert HOST_RULES["pixeldrain.com"].mode == "ytdlp"
         assert HOST_RULES["www.pixeldrain.com"].mode == "ytdlp"
+
+    def test_mega_hosts_marked_unsupported_as_encrypted(self):
+        assert HOST_RULES["mega.nz"] == HostRule("unsupported", reason="encrypted_host")
+        assert HOST_RULES["www.mega.nz"] == HostRule("unsupported", reason="encrypted_host")
+
+    def test_mega_fails_fast_without_extraction_attempts(self):
+        on_fallback = MagicMock()
+        with (
+            patch("alt_ani_cli.extract.jwplayer.resolve") as mock_jw,
+            patch("alt_ani_cli.extract.ytdlp_resolver.resolve") as mock_ytdlp,
+        ):
+            with pytest.raises(UnsupportedHostError, match="mega.nz") as exc_info:
+                resolve("https://mega.nz/embed/#!abc!key", _REFERER, on_fallback=on_fallback)
+        assert not isinstance(exc_info.value, JavaScriptRequiredError)
+        mock_jw.assert_not_called()
+        mock_ytdlp.assert_not_called()
+        on_fallback.assert_not_called()
+
+    def test_failure_messages_use_host_not_embed_url(self):
+        embed_url = "https://unknownhost.tv/embed/abc"
+        on_fallback = MagicMock()
+        with (
+            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ValueError(f"no video URL in {embed_url!r}")),
+            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception(f"Unsupported URL: {embed_url}")),
+        ):
+            with pytest.raises(NoStreamError) as exc_info:
+                resolve(embed_url, _REFERER, on_fallback=on_fallback)
+        assert embed_url not in str(exc_info.value)
+        assert "unknownhost.tv" in str(exc_info.value)
+        exc_text = on_fallback.call_args[0][2]
+        assert embed_url not in exc_text
+        assert "unknownhost.tv" in exc_text

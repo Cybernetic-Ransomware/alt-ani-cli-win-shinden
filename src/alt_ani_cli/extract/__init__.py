@@ -45,6 +45,9 @@ HOST_RULES: dict[str, HostRule] = {
     "www.bysesukior.com": HostRule("unsupported", reason="js_only_host"),
     "voe.sx": HostRule("unsupported", reason="js_only_host"),
     "www.voe.sx": HostRule("unsupported", reason="js_only_host"),
+    # end-to-end encrypted (AES-CTR, key in URL fragment) — no player or extractor can decrypt
+    "mega.nz": HostRule("unsupported", reason="encrypted_host"),
+    "www.mega.nz": HostRule("unsupported", reason="encrypted_host"),
     # yt-dlp handles these natively — skip the JWPlayer attempt
     "cda.pl": HostRule("ytdlp"),
     "www.cda.pl": HostRule("ytdlp"),
@@ -97,17 +100,22 @@ HOST_RULES: dict[str, HostRule] = {
 }
 
 
+def _exc_text(exc: Exception, embed_url: str, host: str) -> str:
+    """Format an exception for user-facing messages, replacing the embed URL with its host."""
+    return f"{type(exc).__name__}: {exc}".replace(repr(embed_url), host).replace(embed_url, host)
+
+
 def resolve(
     embed_url: str,
     referer: str,
     *,
     cookies_file: str | None = None,
     cookies_browser: str | None = None,
-    on_fallback: Callable[[str, str, Exception], None] | None = None,
+    on_fallback: Callable[[str, str, str], None] | None = None,
 ) -> Stream:
     """Dispatch to the right extractor based on the embed URL hostname.
 
-    ``on_fallback(event, host, exc)`` is invoked before each fallback attempt;
+    ``on_fallback(event, host, exc_text)`` is invoked before each fallback attempt;
     event keys match ``CONTENT["progress"]`` so the caller can render them.
     """
     embed_url = _normalize_url(embed_url)
@@ -126,7 +134,9 @@ def resolve(
         try:
             return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
         except Exception as exc:
-            raise NoStreamError(EXCEPTIONS["extract"]["ytdlp_failed"].format(embed_url=repr(embed_url), exc=exc)) from exc
+            raise NoStreamError(
+                EXCEPTIONS["extract"]["ytdlp_failed"].format(host=host, exc=_exc_text(exc, embed_url, host))
+            ) from exc
 
     if rule is not None:
         resolver = rule.resolver or jwplayer.resolve
@@ -134,11 +144,11 @@ def resolve(
             return resolver(embed_url, referer)
         except Exception as exc:
             if on_fallback:
-                on_fallback("extractor_fallback", host, exc)
+                on_fallback("extractor_fallback", host, _exc_text(exc, embed_url, host))
             try:
                 return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
             except Exception:
-                raise NoStreamError(EXCEPTIONS["extract"]["all_failed"].format(embed_url=repr(embed_url))) from exc
+                raise NoStreamError(EXCEPTIONS["extract"]["all_failed"].format(host=host)) from exc
 
     # Unknown host — try JWPlayer first (covers most embed-site patterns),
     # then fall back to yt-dlp (1500+ supported sites).
@@ -146,9 +156,11 @@ def resolve(
         return jwplayer.resolve(embed_url, referer)
     except Exception as exc:
         if on_fallback:
-            on_fallback("jwplayer_fallback", host, exc)
+            on_fallback("jwplayer_fallback", host, _exc_text(exc, embed_url, host))
 
     try:
         return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
     except Exception as exc:
-        raise NoStreamError(EXCEPTIONS["extract"]["all_failed_exc"].format(embed_url=repr(embed_url), exc=exc)) from exc
+        raise NoStreamError(
+            EXCEPTIONS["extract"]["all_failed_exc"].format(host=host, exc=_exc_text(exc, embed_url, host))
+        ) from exc
