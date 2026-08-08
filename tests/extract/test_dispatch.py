@@ -137,11 +137,39 @@ class TestResolveDispatch:
         assert HOST_RULES["vidara.to"] == HostRule("custom", vidara.resolve)
         assert HOST_RULES["www.vidara.to"] == HostRule("custom", vidara.resolve)
 
+    def test_viewdara_hosts_route_to_vidara_extractor(self):
+        from alt_ani_cli.extract import vidara
+
+        assert HOST_RULES["viewdara.com"] == HostRule("custom", vidara.resolve)
+        assert HOST_RULES["www.viewdara.com"] == HostRule("custom", vidara.resolve)
+
     def test_lycoris_hosts_route_to_lycoris_extractor(self):
         from alt_ani_cli.extract import lycoris
 
         assert HOST_RULES["lycoris.cafe"] == HostRule("custom", lycoris.resolve)
         assert HOST_RULES["www.lycoris.cafe"] == HostRule("custom", lycoris.resolve)
+
+    def test_playmate_hosts_route_to_playmate_extractor(self):
+        from alt_ani_cli.extract import playmate
+
+        assert HOST_RULES["playmate.to"] == HostRule("custom", playmate.resolve)
+        assert HOST_RULES["www.playmate.to"] == HostRule("custom", playmate.resolve)
+
+    def test_uqload_hosts_route_to_uqload_extractor(self):
+        from alt_ani_cli.extract import uqload
+
+        assert HOST_RULES["uqload.is"] == HostRule("custom", uqload.resolve)
+        assert HOST_RULES["www.uqload.is"] == HostRule("custom", uqload.resolve)
+
+    def test_flyf_hosts_route_to_flyf_extractor(self):
+        from alt_ani_cli.extract import flyf
+
+        assert HOST_RULES["flyf.lat"] == HostRule("custom", flyf.resolve)
+        assert HOST_RULES["www.flyf.lat"] == HostRule("custom", flyf.resolve)
+
+    def test_morencius_hosts_route_to_jwplayer(self):
+        assert HOST_RULES["morencius.com"] == HostRule("jwplayer")
+        assert HOST_RULES["www.morencius.com"] == HostRule("jwplayer")
 
     def test_pixeldrain_hosts_route_to_ytdlp(self):
         assert HOST_RULES["pixeldrain.com"].mode == "ytdlp"

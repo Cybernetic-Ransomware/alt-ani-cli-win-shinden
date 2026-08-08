@@ -39,6 +39,18 @@ vidara:
   bad_embed_url: "vidara: nie można sparsować filecode z {embed_url}"
   no_stream_url: "vidara: brak streaming_url w odpowiedzi API dla {embed_url}"
 
+playmate:
+  bad_embed_url: "playmate: nie można sparsować filecode z {embed_url}"
+  no_stream_url: "playmate: brak URL sx w odpowiedzi API dla {embed_url}"
+
+uqload:
+  bad_embed_url: "uqload: nie można sparsować file code z {embed_url}"
+  no_video_url: "uqload: nie można znaleźć URL wideo w rozpakowanej odpowiedzi dla {embed_url}"
+
+flyf:
+  bad_embed_url: "flyf: nie można sparsować tokenu z {embed_url}"
+  no_stream_url: "flyf: brak URL do odtworzenia w odpowiedzi streaming/assign dla {embed_url}"
+
 lycoris:
   bad_embed_url: "lycoris: nie można sparsować id/episode z {embed_url}"
   no_primary_source: "lycoris: brak primarySource w odpowiedzi API dla {embed_url}"

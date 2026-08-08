@@ -39,6 +39,18 @@ vidara:
   bad_embed_url: "vidara: cannot parse filecode from {embed_url}"
   no_stream_url: "vidara: no streaming_url in API response for {embed_url}"
 
+playmate:
+  bad_embed_url: "playmate: cannot parse filecode from {embed_url}"
+  no_stream_url: "playmate: no sx URL in API response for {embed_url}"
+
+uqload:
+  bad_embed_url: "uqload: cannot parse file code from {embed_url}"
+  no_video_url: "uqload: cannot find video URL in unpacked response for {embed_url}"
+
+flyf:
+  bad_embed_url: "flyf: cannot parse token from {embed_url}"
+  no_stream_url: "flyf: no playable url in streaming/assign response for {embed_url}"
+
 lycoris:
   bad_embed_url: "lycoris: cannot parse id/episode from {embed_url}"
   no_primary_source: "lycoris: no primarySource in API response for {embed_url}"

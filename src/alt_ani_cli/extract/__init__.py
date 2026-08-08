@@ -6,7 +6,18 @@ from urllib.parse import urlparse
 
 from alt_ani_cli.content import EXCEPTIONS
 from alt_ani_cli.errors import JavaScriptRequiredError, NoStreamError, UnsupportedHostError
-from alt_ani_cli.extract import dood, jwplayer, lycoris, mp4upload, streamtape, vidara, ytdlp_resolver
+from alt_ani_cli.extract import (
+    dood,
+    flyf,
+    jwplayer,
+    lycoris,
+    mp4upload,
+    playmate,
+    streamtape,
+    uqload,
+    vidara,
+    ytdlp_resolver,
+)
 from alt_ani_cli.extract.common import Stream
 
 # ebd.cda.pl/800x450/{id} → yt-dlp does not understand the embed URL; rewrite to www.cda.pl/video/{id}
@@ -74,12 +85,23 @@ HOST_RULES: dict[str, HostRule] = {
     "dood.re": HostRule("custom", dood.resolve),
     "dooood.com": HostRule("custom", dood.resolve),
     "ds2play.com": HostRule("custom", dood.resolve),
-    # vidara
+    # vidara / viewdara — same host-agnostic API, base URL derived from the embed URL itself
     "vidara.to": HostRule("custom", vidara.resolve),
     "www.vidara.to": HostRule("custom", vidara.resolve),
+    "viewdara.com": HostRule("custom", vidara.resolve),
+    "www.viewdara.com": HostRule("custom", vidara.resolve),
     # lycoris
     "lycoris.cafe": HostRule("custom", lycoris.resolve),
     "www.lycoris.cafe": HostRule("custom", lycoris.resolve),
+    # playmate
+    "playmate.to": HostRule("custom", playmate.resolve),
+    "www.playmate.to": HostRule("custom", playmate.resolve),
+    # uqload
+    "uqload.is": HostRule("custom", uqload.resolve),
+    "www.uqload.is": HostRule("custom", uqload.resolve),
+    # flyf
+    "flyf.lat": HostRule("custom", flyf.resolve),
+    "www.flyf.lat": HostRule("custom", flyf.resolve),
     # streamwish / playerwish
     "streamwish.com": HostRule("jwplayer"),
     "www.streamwish.com": HostRule("jwplayer"),
@@ -97,6 +119,8 @@ HOST_RULES: dict[str, HostRule] = {
     "vidhidepro.com": HostRule("jwplayer"),
     "embedwish.com": HostRule("jwplayer"),
     "alions.pro": HostRule("jwplayer"),
+    "morencius.com": HostRule("jwplayer"),
+    "www.morencius.com": HostRule("jwplayer"),
 }
 
 

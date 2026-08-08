@@ -25,8 +25,9 @@ _SOURCES_RE = re.compile(
 # file:"url" standalone
 _FILE_RE = re.compile(r'"?file"?\s*:\s*["\']([^"\']{20,}\.(?:mp4|m3u8)[^"\']*)["\']')
 
-# hls:"url"
-_HLS_RE = re.compile(r'"hls"\s*:\s*"([^"]+\.m3u8[^"]*)"')
+# hls:"url" / hls2:"url" / hls3:"url" / hls4:"url" — quality-tiered HLS master URLs;
+# prefer the highest-numbered one when several are present.
+_HLS_RE = re.compile(r'"hls([234]?)"\s*:\s*"([^"]+\.m3u8[^"]*)"')
 
 # Dean Edwards packer: }('packed',base,count,'k1|k2|...'.split('|'))
 _PACKER_RE = re.compile(
@@ -34,8 +35,25 @@ _PACKER_RE = re.compile(
     re.DOTALL,
 )
 
+# Dean Edwards packer digit alphabet: 0-9, then a-z (10-35), then A-Z (36-61) — real-world
+# packers commonly declare base 62, which Python's builtin int(str, base) cannot decode
+# (hard-capped at base 36).
+_PACKER_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-def _unpack_packer(html: str) -> str:
+
+def _decode_base_n(word: str, base: int) -> int:
+    if base <= 36:
+        return int(word, base)
+    n = 0
+    for ch in word:
+        idx = _PACKER_ALPHABET.find(ch)
+        if idx < 0 or idx >= base:
+            raise ValueError(f"invalid packer digit {ch!r} for base {base}")
+        n = n * base + idx
+    return n
+
+
+def unpack_packer(html: str) -> str:
     """Decode Dean Edwards packed script and append result to html; noop if absent."""
     m = _PACKER_RE.search(html)
     if not m:
@@ -47,13 +65,23 @@ def _unpack_packer(html: str) -> str:
     def _lookup(match: re.Match) -> str:
         word = match.group(0)
         try:
-            n = int(word, base)
+            n = _decode_base_n(word, base)
         except ValueError:
             return word
         return keys[n] if n < len(keys) and keys[n] else word
 
     decoded = re.sub(r"\b\w+\b", _lookup, packed)
     return html + "\n" + decoded
+
+
+def _best_hls_url(html: str) -> str | None:
+    found: dict[str, str] = {}
+    for m in _HLS_RE.finditer(html):
+        found[m.group(1)] = m.group(2)
+    for key in ("4", "3", "2", ""):
+        if key in found:
+            return found[key]
+    return None
 
 
 def resolve(embed_url: str, referer: str) -> Stream:
@@ -68,7 +96,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
         )
         resp.raise_for_status()
 
-    html = _unpack_packer(resp.text)
+    html = unpack_packer(resp.text)
 
     # Try sources array first (most reliable)
     m = _SOURCES_RE.search(html)
@@ -80,11 +108,11 @@ def resolve(embed_url: str, referer: str) -> Stream:
             ext=_ext(url),
         )
 
-    # Try hls key
-    m = _HLS_RE.search(html)
-    if m:
+    # Try hls / hls2 / hls3 / hls4 keys
+    hls_url = _best_hls_url(html)
+    if hls_url:
         return Stream(
-            url=m.group(1),
+            url=hls_url,
             headers={"Referer": embed_url, "User-Agent": USER_AGENT},
             ext="m3u8",
         )
