@@ -1,5 +1,4 @@
 import re
-from typing import Any
 
 from curl_cffi import requests as cffi_requests
 
@@ -12,24 +11,13 @@ _API_BASE = "https://api.flyfile.app"
 _EMBED_RE = re.compile(r"^(https?://[^/]+)/embed/([A-Za-z0-9_-]+)")
 
 
-def _hls_ready(metadata: Any) -> bool:
-    """True if the /public/file metadata reports a READY HLS quality tier.
-
-    This call is best-effort — /streaming/assign is the actual required step — so any
-    shape mismatch here just means falling back to the raw file instead of aborting.
-    """
-    if not isinstance(metadata, dict):
-        return False
-    video_asset = metadata.get("videoAsset")
-    if not isinstance(video_asset, dict):
-        return False
-    qualities = video_asset.get("qualities")
-    if not isinstance(qualities, list):
-        return False
-    return any(isinstance(q, dict) and q.get("status") == "READY" for q in qualities)
-
-
 def resolve(embed_url: str, referer: str) -> Stream:
+    """Resolve to the raw file, not HLS.
+
+    A READY status on the /public/file HLS quality tier does not mean the HLS master is
+    actually playable — observed live, it produced video with no audio track. The raw
+    file is the only variant confirmed to carry both.
+    """
     m = _EMBED_RE.match(embed_url)
     if not m:
         raise ValueError(EXCEPTIONS["flyf"]["bad_embed_url"].format(embed_url=repr(embed_url)))
@@ -44,26 +32,14 @@ def resolve(embed_url: str, referer: str) -> Stream:
     }
 
     with cffi_requests.Session(impersonate="chrome", timeout=30.0, allow_redirects=True) as client:
-        hls_ready = False
-        try:
-            resp1 = client.get(f"{_API_BASE}/api/public/file/{token}", headers=headers)
-            resp1.raise_for_status()
-            hls_ready = _hls_ready(resp1.json())
-        except Exception:
-            hls_ready = False
-
-        resp2 = client.get(f"{_API_BASE}/api/streaming/assign/{token}", headers=headers)
-        resp2.raise_for_status()
-        data = resp2.json()
+        resp = client.get(f"{_API_BASE}/api/streaming/assign/{token}", headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
 
     stream_base = data.get("url") if isinstance(data, dict) else None
     stream_token = data.get("token") if isinstance(data, dict) else None
     if not stream_base or not stream_token:
         raise ValueError(EXCEPTIONS["flyf"]["no_stream_url"].format(embed_url=repr(embed_url)))
 
-    if hls_ready:
-        url, ext = f"{stream_base}/hls/{stream_token}/master.m3u8", "m3u8"
-    else:
-        url, ext = f"{stream_base}/raw/{stream_token}", "mp4"
-
-    return Stream(url=url, headers={"Referer": embed_url, "User-Agent": USER_AGENT}, ext=ext)
+    url = f"{stream_base}/raw/{stream_token}"
+    return Stream(url=url, headers={"Referer": embed_url, "User-Agent": USER_AGENT}, ext="mp4")
