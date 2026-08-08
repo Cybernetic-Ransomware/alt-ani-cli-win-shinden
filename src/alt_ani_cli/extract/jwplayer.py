@@ -14,9 +14,6 @@ from alt_ani_cli.config import USER_AGENT
 from alt_ani_cli.content import EXCEPTIONS
 from alt_ani_cli.extract.common import Stream
 
-# jwplayer("id").setup({...}) or jwplayer().setup({...})
-_SETUP_RE = re.compile(r"jwplayer\([^)]*\)\.setup\(\s*(\{.*?\})\s*\)", re.DOTALL)
-
 # sources:[{file:"...",...},...] — also matches with double-quotes or no quotes
 _SOURCES_RE = re.compile(
     r'"?sources"?\s*:\s*\[\s*\{[^}]*"?file"?\s*:\s*["\']([^"\']+\.(?:mp4|m3u8)[^"\']*)["\']',
@@ -107,7 +104,6 @@ def resolve(embed_url: str, referer: str) -> Stream:
 
     html = unpack_packer(resp.text)
 
-    # Try sources array first (most reliable)
     m = _SOURCES_RE.search(html)
     if m:
         url = _normalize_stream_url(m.group(1), embed_url)
@@ -117,7 +113,6 @@ def resolve(embed_url: str, referer: str) -> Stream:
             ext=_ext(url),
         )
 
-    # Try hls / hls2 / hls3 / hls4 keys
     hls_url = _best_hls_url(html)
     if hls_url:
         return Stream(
@@ -126,7 +121,6 @@ def resolve(embed_url: str, referer: str) -> Stream:
             ext="m3u8",
         )
 
-    # Try generic file key
     m = _FILE_RE.search(html)
     if m:
         url = _normalize_stream_url(m.group(1), embed_url)
