@@ -30,6 +30,12 @@ def mock_find_player():
 
 @pytest.mark.unit
 class TestBuildMpv:
+    # build() writes to CACHE_DIR unconditionally now — isolate it from the real user cache.
+    @pytest.fixture(autouse=True)
+    def _isolated_cache_dir(self, tmp_path):
+        with patch("alt_ani_cli.player.mpv.CACHE_DIR", tmp_path):
+            yield tmp_path
+
     def test_includes_referrer(self):
         cmd = build_mpv(_stream(), title="TestAnime ep1")
         assert any("--referrer=https://shinden.pl/" in arg for arg in cmd)
@@ -56,21 +62,32 @@ class TestBuildMpv:
         cmd = build_mpv(stream, title="X")
         assert not any("--http-header-fields" in arg for arg in cmd)
 
+    def test_includes_reconnect_hardening(self):
+        cmd = build_mpv(_stream(), title="X")
+        assert "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=2" in cmd
+
     def test_no_detach_writes_verbose_log_file(self, tmp_path):
         log_file = tmp_path / "mpv-debug.log"
-        with (
-            patch("alt_ani_cli.player.mpv.CACHE_DIR", tmp_path),
-            patch("alt_ani_cli.player.mpv.LOG_FILE", log_file),
-        ):
+        with patch("alt_ani_cli.player.mpv.LOG_FILE", log_file):
             cmd = build_mpv(_stream(), title="X", no_detach=True)
         assert f"--log-file={log_file}" in cmd
         assert "--msg-level=all=v" in cmd
         assert tmp_path.is_dir()
 
-    def test_detached_mode_omits_log_file(self):
+    def test_detached_mode_also_writes_log_file(self, tmp_path):
+        log_file = tmp_path / "mpv-debug.log"
+        with patch("alt_ani_cli.player.mpv.LOG_FILE", log_file):
+            cmd = build_mpv(_stream(), title="X", no_detach=False)
+        assert f"--log-file={log_file}" in cmd
+        assert "--msg-level=all=v" in cmd
+
+    def test_no_detach_omits_no_terminal_flag(self):
+        cmd = build_mpv(_stream(), title="X", no_detach=True)
+        assert "--no-terminal" not in cmd
+
+    def test_detached_mode_adds_no_terminal_flag(self):
         cmd = build_mpv(_stream(), title="X", no_detach=False)
-        assert not any("--log-file" in arg for arg in cmd)
-        assert not any("--msg-level" in arg for arg in cmd)
+        assert "--no-terminal" in cmd
 
 
 @pytest.mark.unit

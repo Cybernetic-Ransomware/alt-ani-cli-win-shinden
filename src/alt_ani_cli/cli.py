@@ -261,19 +261,15 @@ def _setup_encoding() -> None:
 ANTIBOT_LABEL = "5 s antibot delay"
 
 
-# rc == 0 this fast almost never means real playback: single-instance GUI players (mpv.net)
-# forward the URL to an already-running window over IPC and exit immediately, regardless of
-# whether that window loaded anything. Real playback — even closed right away by the user —
-# takes longer than this to start and tear down a player process.
+# rc == 0 this fast rarely means real playback — mpv.net forwards the URL to an
+# already-running window over IPC and exits instantly regardless of what happened next.
 _FAST_EXIT_THRESHOLD_SEC = 2.0
 
 
 def _report_playback(result, args, player_kind: str, title: str) -> None:
     if not args.no_detach:
         progress.success(_PROG["playing"].format(kind=player_kind, title=title))
-        return
-
-    if result.rc != 0:
+    elif result.rc != 0:
         progress.error(_PROG["playing_failed"].format(kind=player_kind, title=title, rc=result.rc))
     elif result.elapsed < _FAST_EXIT_THRESHOLD_SEC:
         progress.warn(_PROG["playing_unconfirmed"].format(kind=player_kind, title=title, secs=result.elapsed))

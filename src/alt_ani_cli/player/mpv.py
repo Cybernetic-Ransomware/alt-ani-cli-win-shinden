@@ -8,10 +8,8 @@ from alt_ani_cli.content import EXCEPTIONS_PL
 from alt_ani_cli.errors import PlayerNotFoundError
 from alt_ani_cli.extract.common import Stream
 
-# --no-detach diagnostics land here instead of relying on a console being attached —
-# mpv.net (mpvnet.exe) is a GUI-subsystem app with no console-wrapper counterpart (unlike
-# mpv.exe/mpv.com), so its stderr is never visible in the terminal even under --no-detach.
-# A log file works regardless of which mpv frontend is installed.
+# Written on every run (not just --no-detach), since playback glitches are usually
+# intermittent, and mpv.net's GUI subsystem hides stderr from the console either way.
 LOG_FILE = CACHE_DIR / "mpv-debug.log"
 
 _WIN_SEARCH_PATHS: list[Path] = []
@@ -50,11 +48,15 @@ def build(stream: Stream, *, title: str, no_detach: bool = False) -> list[str]:
     if extra_headers:
         fields = ",".join(f"{k}: {v}" for k, v in extra_headers.items())
         cmd.append(f"--http-header-fields={fields}")
-    if no_detach:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cmd.append(f"--log-file={LOG_FILE}")
-        cmd.append("--msg-level=all=v")
-    else:
+    # EXPERIMENTAL: some CDNs (observed on uqload.is) reset the HLS segment connection every
+    # ~10s (TLS -10054/ECONNRESET), corrupting packets faster than ffmpeg's own HLS-level
+    # retry recovers from. reconnect_streamed extends libavformat's auto-reconnect to
+    # non-seekable streamed sources like HLS; unverified whether it actually helps here.
+    cmd.append("--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=2")
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cmd.append(f"--log-file={LOG_FILE}")
+    cmd.append("--msg-level=all=v")
+    if not no_detach:
         cmd.append("--no-terminal")
     return cmd
 
@@ -63,9 +65,8 @@ def _find(*, no_detach: bool = False) -> str:
     env_path = os.environ.get("ANI_CLI_PLAYER", "")
     if env_path:
         return env_path
-    # mpv.exe is the GUI-subsystem binary — its stderr is invisible in a console even when
-    # not detached. mpv.com is the console wrapper, so prefer it when the caller explicitly
-    # wants to see what's happening.
+    # mpv.exe's stderr never reaches a console; mpv.com is the console wrapper, so prefer
+    # it when the caller wants to see what's happening.
     order = (
         ("mpv.com", "mpv.exe", "mpv", "mpvnet.exe", "mpvnet")
         if no_detach

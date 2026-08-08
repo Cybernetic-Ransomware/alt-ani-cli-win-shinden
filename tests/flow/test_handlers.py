@@ -563,8 +563,6 @@ class TestHandleRunActionPlaybackReporting:
         mock_warn.assert_not_called()
 
     def test_no_detach_zero_rc_slow_exit_reports_success(self):
-        # Real playback — even closed right away by the user — takes longer than the fast-exit
-        # threshold to start and tear down a player process.
         state = self._play_state(args_overrides={"no_detach": True})
         with (
             patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=0, elapsed=5.0)),
@@ -579,9 +577,6 @@ class TestHandleRunActionPlaybackReporting:
         mock_warn.assert_not_called()
 
     def test_no_detach_zero_rc_fast_exit_reports_unconfirmed_not_success(self):
-        # rc == 0 this fast almost never means real playback: single-instance GUI players
-        # (mpv.net) forward the URL to an already-running window over IPC and exit
-        # immediately, regardless of whether that window loaded anything.
         state = self._play_state(args_overrides={"no_detach": True})
         with (
             patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=0, elapsed=0.1)),
@@ -596,8 +591,6 @@ class TestHandleRunActionPlaybackReporting:
         mock_error.assert_not_called()
 
     def test_detached_mode_ignores_rc_and_elapsed_reports_success(self):
-        # Detached mode's return code and elapsed time carry no information by
-        # construction — the process is backgrounded before it can finish.
         state = self._play_state(args_overrides={"no_detach": False})
         with (
             patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=1, elapsed=0.0)),
@@ -634,7 +627,7 @@ class TestHandleRunActionPlaybackReporting:
             handle_run_action(state)
         mock_info.assert_not_called()
 
-    def test_detached_mode_does_not_report_mpv_log_hint(self):
+    def test_detached_mode_also_reports_log_file_hint(self):
         state = self._play_state(args_overrides={"no_detach": False, "vlc": False})
         with (
             patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=0, elapsed=0.0)),
@@ -643,7 +636,8 @@ class TestHandleRunActionPlaybackReporting:
             patch("alt_ani_cli.ui.progress.info") as mock_info,
         ):
             handle_run_action(state)
-        mock_info.assert_not_called()
+        mock_info.assert_called_once()
+        assert "mpv-debug.log" in mock_info.call_args[0][0]
 
 
 @pytest.mark.unit
@@ -702,7 +696,6 @@ class TestHandleRunActionHistoryTracking:
         assert state.completed_eps == set()
 
     def test_detached_mode_updates_history_unconditionally(self):
-        # Detached mode can't measure rc/elapsed — preserve the pre-existing behavior.
         state = self._play_state(args_overrides={"no_detach": False})
         with (
             patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=0, elapsed=0.0)),
