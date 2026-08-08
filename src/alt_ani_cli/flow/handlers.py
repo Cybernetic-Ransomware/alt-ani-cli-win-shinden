@@ -466,7 +466,7 @@ def handle_run_action(state: FlowState) -> ScreenResult:
     if ep is None:
         raise AssertionError
 
-    from alt_ani_cli.cli import _pick_quality, _print_debug, _report_playback
+    from alt_ani_cli.cli import _pick_quality, _playback_confirmed, _print_debug, _report_playback
 
     args = state.args
     player_kind = "vlc" if args.vlc else "mpv"
@@ -474,6 +474,7 @@ def handle_run_action(state: FlowState) -> ScreenResult:
     stream = _pick_quality(state.stream, quality)
     title = f"{state.ref.title} — Odcinek {ep.number:g}"
 
+    completed = False
     if args.download or state.episode_action == "download":
         download.run(stream, ep, state.ref)
     elif args.debug or state.episode_action == "debug":
@@ -483,9 +484,11 @@ def handle_run_action(state: FlowState) -> ScreenResult:
 
         result = player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
         _report_playback(result, args, player_kind, title)
+        completed = _playback_confirmed(result, args.no_detach)
 
-    history.upsert(state.ref, last_ep=ep.number)
-    state.completed_eps.add(ep.number)
+    if completed:
+        history.upsert(state.ref, last_ep=ep.number)
+        state.completed_eps.add(ep.number)
     state.ep_idx += 1
     state.stream = None
     state.embed = None

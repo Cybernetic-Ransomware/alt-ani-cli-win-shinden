@@ -286,6 +286,13 @@ def _report_playback(result, args, player_kind: str, title: str) -> None:
         progress.info(_PROG["mpv_log_hint"].format(path=LOG_FILE))
 
 
+def _playback_confirmed(result, no_detach: bool) -> bool:
+    """Whether playback should count toward watch history — same verdict as _report_playback."""
+    if not no_detach:
+        return True  # detached mode can't measure rc/elapsed; keep the prior behavior
+    return result.rc == 0 and result.elapsed >= _FAST_EXIT_THRESHOLD_SEC
+
+
 def _print_debug(stream: Stream, embed) -> None:
     from rich.table import Table
 
@@ -418,6 +425,7 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         else:
             _action = _episode_action or "play"
 
+        completed = False
         if _action == "download":
             download.run(stream, ep, ref)
         elif _action == "debug":
@@ -425,8 +433,10 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         else:
             result = player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
             _report_playback(result, args, player_kind, title)
+            completed = _playback_confirmed(result, args.no_detach)
 
-        history.upsert(ref, last_ep=ep.number)
+        if completed:
+            history.upsert(ref, last_ep=ep.number)
 
 
 def _run_interactive(args, client) -> None:

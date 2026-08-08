@@ -533,7 +533,7 @@ class TestInteractiveFlow:
 class TestHandleRunActionPlaybackReporting:
     """no_detach's return code must actually be surfaced — see mpv.py --no-detach diagnostics."""
 
-    def _play_state(self, **overrides):
+    def _play_state(self, episode_action="play", **overrides):
         args_overrides = {"vlc": False, "download": False, "debug": False}
         args_overrides.update(overrides.pop("args_overrides", {}))
         state = _make_state(
@@ -543,7 +543,7 @@ class TestHandleRunActionPlaybackReporting:
             ep_idx=0,
             stream=Stream(url="https://cdn.example.com/v.m3u8", headers={}, ext="m3u8"),
             embed=EmbedURL(url="https://morencius.com/embed/abc", referer="https://shinden.pl/"),
-            episode_action="play",
+            episode_action=episode_action,
             **overrides,
         )
         return state
@@ -644,6 +644,109 @@ class TestHandleRunActionPlaybackReporting:
         ):
             handle_run_action(state)
         mock_info.assert_not_called()
+
+
+@pytest.mark.unit
+class TestHandleRunActionHistoryTracking:
+    """History/completed_eps must only record playback actually confirmed as watched."""
+
+    def _play_state(self, episode_action="play", **overrides):
+        args_overrides = {"vlc": False, "download": False, "debug": False}
+        args_overrides.update(overrides.pop("args_overrides", {}))
+        state = _make_state(
+            args=_make_args(**args_overrides),
+            ref=_SERIES_REF,
+            targets=[_EP1],
+            ep_idx=0,
+            stream=Stream(url="https://cdn.example.com/v.m3u8", headers={}, ext="m3u8"),
+            embed=EmbedURL(url="https://morencius.com/embed/abc", referer="https://shinden.pl/"),
+            episode_action=episode_action,
+            **overrides,
+        )
+        return state
+
+    def test_confirmed_playback_updates_history_and_completed_eps(self):
+        state = self._play_state(args_overrides={"no_detach": True})
+        with (
+            patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=0, elapsed=5.0)),
+            patch("alt_ani_cli.history.upsert") as mock_upsert,
+            patch("alt_ani_cli.ui.progress.success"),
+            patch("alt_ani_cli.ui.progress.info"),
+        ):
+            handle_run_action(state)
+        mock_upsert.assert_called_once_with(_SERIES_REF, last_ep=_EP1.number)
+        assert _EP1.number in state.completed_eps
+
+    def test_unconfirmed_fast_exit_does_not_update_history(self):
+        state = self._play_state(args_overrides={"no_detach": True})
+        with (
+            patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=0, elapsed=0.1)),
+            patch("alt_ani_cli.history.upsert") as mock_upsert,
+            patch("alt_ani_cli.ui.progress.warn"),
+            patch("alt_ani_cli.ui.progress.info"),
+        ):
+            handle_run_action(state)
+        mock_upsert.assert_not_called()
+        assert state.completed_eps == set()
+
+    def test_failed_playback_does_not_update_history(self):
+        state = self._play_state(args_overrides={"no_detach": True})
+        with (
+            patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=1, elapsed=5.0)),
+            patch("alt_ani_cli.history.upsert") as mock_upsert,
+            patch("alt_ani_cli.ui.progress.error"),
+            patch("alt_ani_cli.ui.progress.info"),
+        ):
+            handle_run_action(state)
+        mock_upsert.assert_not_called()
+        assert state.completed_eps == set()
+
+    def test_detached_mode_updates_history_unconditionally(self):
+        # Detached mode can't measure rc/elapsed — preserve the pre-existing behavior.
+        state = self._play_state(args_overrides={"no_detach": False})
+        with (
+            patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=0, elapsed=0.0)),
+            patch("alt_ani_cli.history.upsert") as mock_upsert,
+            patch("alt_ani_cli.ui.progress.success"),
+        ):
+            handle_run_action(state)
+        mock_upsert.assert_called_once_with(_SERIES_REF, last_ep=_EP1.number)
+        assert _EP1.number in state.completed_eps
+
+    def test_debug_action_does_not_update_history(self):
+        # Showing the debug link table is not the same as watching the episode.
+        state = self._play_state(episode_action="debug")
+        with (
+            patch("alt_ani_cli.cli._print_debug"),
+            patch("alt_ani_cli.player.runner.play") as mock_play,
+            patch("alt_ani_cli.history.upsert") as mock_upsert,
+        ):
+            handle_run_action(state)
+        mock_play.assert_not_called()
+        mock_upsert.assert_not_called()
+        assert state.completed_eps == set()
+
+    def test_download_action_does_not_update_history(self):
+        state = self._play_state(episode_action="download")
+        with (
+            patch("alt_ani_cli.download.run") as mock_download,
+            patch("alt_ani_cli.history.upsert") as mock_upsert,
+        ):
+            handle_run_action(state)
+        mock_download.assert_called_once()
+        mock_upsert.assert_not_called()
+        assert state.completed_eps == set()
+
+    def test_ep_idx_advances_regardless_of_confirmation(self):
+        state = self._play_state(args_overrides={"no_detach": True})
+        with (
+            patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=1, elapsed=5.0)),
+            patch("alt_ani_cli.history.upsert"),
+            patch("alt_ani_cli.ui.progress.error"),
+            patch("alt_ani_cli.ui.progress.info"),
+        ):
+            handle_run_action(state)
+        assert state.ep_idx == 1
 
 
 @pytest.mark.unit
