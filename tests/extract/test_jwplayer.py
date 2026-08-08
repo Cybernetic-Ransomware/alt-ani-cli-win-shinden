@@ -47,6 +47,16 @@ class TestUnpackPacker:
         assert "sources" in result
         assert " 1;" in result or "1;" in result
 
+    def test_decodes_packer_call_without_trailing_split(self):
+        # Some hosts (morencius.com) call eval(...)('packed',base,count,'keys') without the
+        # usual trailing .split('|') — the keys string is still pipe-delimited either way.
+        packed = (
+            "<script>eval(function(p,a,c,k,e,d){e=function(c){return c};return p}"
+            "('0([{3:\"4\"}]);',10,5,'sources|x|y|file|https://cdn.example.com/no-split.m3u8|'))"
+            "</script>"
+        )
+        assert "https://cdn.example.com/no-split.m3u8" in unpack_packer(packed)
+
     def test_base_62_packer_decodes_uppercase_digit_index(self):
         # 40 keys: index 0..39. Base-62 digit 'A' = 36, 'B' = 37, 'C' = 38 (0-9,a-z,A-Z alphabet).
         keys = [*(f"k{i}" for i in range(36)), "sources", "file", "https://cdn.example.com/hi62.m3u8", "x"]
@@ -110,7 +120,10 @@ _EMBED = "https://morencius.com/embed/uwpbf2bnjip9"
 _REFERER = "https://shinden.pl/"
 
 # Morencius-shaped packed payload: hls2/hls3/hls4 keys with JSON-escaped slashes and a
-# host-relative hls4 path — regression fixture for the escaping/urljoin fix.
+# host-relative hls4 path — regression fixture for the escaping/urljoin fix. Crucially,
+# this omits the trailing .split('|') that the generic packer call normally has: the
+# morencius.com variant relies on the eval'd function to split the keys string itself,
+# so the outer packer regex must not require .split('|') to be present.
 _MORENCIUS_PACKED_KEYS = [
     *(f"k{i}" for i in range(36)),
     "hls2",
@@ -123,7 +136,7 @@ _MORENCIUS_PACKED_KEYS = [
 _MORENCIUS_PACKED_BODY = (
     "<script>eval(function(p,a,c,k,e,d){e=function(c){return c};return p}"
     "('\"A\":\"B\",\"C\":\"D\",\"E\":\"F\"',62,"
-    f"{len(_MORENCIUS_PACKED_KEYS)},'{'|'.join(_MORENCIUS_PACKED_KEYS)}'.split('|')))"
+    f"{len(_MORENCIUS_PACKED_KEYS)},'{'|'.join(_MORENCIUS_PACKED_KEYS)}'))"
     "</script>"
 )
 

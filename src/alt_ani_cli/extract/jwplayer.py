@@ -31,8 +31,11 @@ _FILE_RE = re.compile(r'"?file"?\s*:\s*["\']([^"\']{20,}\.(?:mp4|m3u8)[^"\']*)["
 _HLS_RE = re.compile(r'"hls([234]?)"\s*:\s*"([^"]+\.m3u8[^"]*)"')
 
 # Dean Edwards packer: }('packed',base,count,'k1|k2|...'.split('|'))
+# The trailing .split('|') is optional — some hosts (e.g. morencius.com) ship a packer
+# call that omits it and rely on the eval'd function to split internally; the keys string
+# itself is still pipe-delimited either way, so group(3).split("|") below covers both.
 _PACKER_RE = re.compile(
-    r"""}\s*\(\s*'((?:[^'\\]|\\.)*?)'\s*,\s*(\d+)\s*,\s*\d+\s*,\s*'([^']*)'\s*\.split\('\|'\)\s*\)\s*\)""",
+    r"""}\s*\(\s*'((?:[^'\\]|\\.)*?)'\s*,\s*(\d+)\s*,\s*\d+\s*,\s*'([^']*)'\s*(?:\.split\('\|'\))?\s*\)\s*\)""",
     re.DOTALL,
 )
 
