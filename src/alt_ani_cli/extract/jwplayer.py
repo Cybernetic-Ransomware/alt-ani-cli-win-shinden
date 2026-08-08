@@ -6,6 +6,7 @@ direct video URL.  Also handles Dean Edwards p,a,c,k,e,d packed scripts.
 """
 
 import re
+from urllib.parse import urljoin
 
 from curl_cffi import requests as cffi_requests
 
@@ -74,6 +75,11 @@ def unpack_packer(html: str) -> str:
     return html + "\n" + decoded
 
 
+def _normalize_stream_url(url: str, embed_url: str) -> str:
+    """Unescape JSON-escaped slashes (\\/) and resolve host-relative paths against the embed URL."""
+    return urljoin(embed_url, url.replace(r"\/", "/"))
+
+
 def _best_hls_url(html: str) -> str | None:
     found: dict[str, str] = {}
     for m in _HLS_RE.finditer(html):
@@ -101,7 +107,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
     # Try sources array first (most reliable)
     m = _SOURCES_RE.search(html)
     if m:
-        url = m.group(1)
+        url = _normalize_stream_url(m.group(1), embed_url)
         return Stream(
             url=url,
             headers={"Referer": embed_url, "User-Agent": USER_AGENT},
@@ -112,7 +118,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
     hls_url = _best_hls_url(html)
     if hls_url:
         return Stream(
-            url=hls_url,
+            url=_normalize_stream_url(hls_url, embed_url),
             headers={"Referer": embed_url, "User-Agent": USER_AGENT},
             ext="m3u8",
         )
@@ -120,7 +126,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
     # Try generic file key
     m = _FILE_RE.search(html)
     if m:
-        url = m.group(1)
+        url = _normalize_stream_url(m.group(1), embed_url)
         return Stream(
             url=url,
             headers={"Referer": embed_url, "User-Agent": USER_AGENT},

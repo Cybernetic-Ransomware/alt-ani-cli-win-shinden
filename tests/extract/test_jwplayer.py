@@ -1,8 +1,11 @@
 """Tests for Dean Edwards p,a,c,k,e,d packer decoder in jwplayer extractor."""
 
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
+
 import pytest
 
-from alt_ani_cli.extract.jwplayer import _best_hls_url, _decode_base_n, unpack_packer
+from alt_ani_cli.extract.jwplayer import _best_hls_url, _decode_base_n, _normalize_stream_url, resolve, unpack_packer
 
 _SIMPLE_PACKED = (
     "<script>eval(function(p,a,c,k,e,d){e=function(c){return c};return p}"
@@ -86,3 +89,71 @@ class TestBestHlsUrl:
 
     def test_none_when_no_hls_key(self):
         assert _best_hls_url("no hls here") is None
+
+
+@pytest.mark.unit
+class TestNormalizeStreamUrl:
+    def test_unescapes_json_escaped_slashes(self):
+        url = _normalize_stream_url(r"https:\/\/cdn.example\/foo.m3u8", "https://morencius.com/embed/abc")
+        assert url == "https://cdn.example/foo.m3u8"
+
+    def test_resolves_relative_path_against_embed_url(self):
+        url = _normalize_stream_url(r"\/foo\/master.m3u8", "https://morencius.com/embed/abc")
+        assert url == "https://morencius.com/foo/master.m3u8"
+
+    def test_absolute_url_without_escaping_is_unchanged(self):
+        url = _normalize_stream_url("https://cdn.example/foo.m3u8", "https://morencius.com/embed/abc")
+        assert url == "https://cdn.example/foo.m3u8"
+
+
+_EMBED = "https://morencius.com/embed/uwpbf2bnjip9"
+_REFERER = "https://shinden.pl/"
+
+# Morencius-shaped packed payload: hls2/hls3/hls4 keys with JSON-escaped slashes and a
+# host-relative hls4 path — regression fixture for the escaping/urljoin fix.
+_MORENCIUS_PACKED_KEYS = [
+    *(f"k{i}" for i in range(36)),
+    "hls2",
+    "https:\\/\\/cdn.example\\/low.m3u8",
+    "hls3",
+    "https:\\/\\/cdn.example\\/mid.m3u8",
+    "hls4",
+    "\\/hls\\/best\\/master.m3u8",
+]
+_MORENCIUS_PACKED_BODY = (
+    "<script>eval(function(p,a,c,k,e,d){e=function(c){return c};return p}"
+    "('\"A\":\"B\",\"C\":\"D\",\"E\":\"F\"',62,"
+    f"{len(_MORENCIUS_PACKED_KEYS)},'{'|'.join(_MORENCIUS_PACKED_KEYS)}'.split('|')))"
+    "</script>"
+)
+
+
+def _make_session_patch(html: str):
+    resp = MagicMock(status_code=200, text=html, **{"raise_for_status.return_value": None})
+    session = MagicMock()
+    session.get.return_value = resp
+    session.__enter__ = lambda s: session
+    session.__exit__ = MagicMock(return_value=False)
+
+    @contextmanager
+    def _ctx():
+        with patch("alt_ani_cli.extract.jwplayer.cffi_requests.Session", return_value=session):
+            yield session
+
+    return _ctx()
+
+
+@pytest.mark.unit
+class TestResolve:
+    def test_morencius_shaped_packed_hls_is_unescaped_and_joined(self):
+        with _make_session_patch(_MORENCIUS_PACKED_BODY):
+            stream = resolve(_EMBED, _REFERER)
+        # hls4 wins (highest tier), escaped slashes are unescaped, and the host-relative
+        # path is resolved against the embed URL's origin.
+        assert stream.url == "https://morencius.com/hls/best/master.m3u8"
+        assert stream.ext == "m3u8"
+
+    def test_no_video_url_raises_value_error(self):
+        with _make_session_patch("<html><body>nothing here</body></html>"):
+            with pytest.raises(ValueError, match="jwplayer"):
+                resolve(_EMBED, _REFERER)
