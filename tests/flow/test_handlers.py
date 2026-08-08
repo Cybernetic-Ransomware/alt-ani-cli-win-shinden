@@ -12,15 +12,18 @@ import pytest
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from alt_ani_cli.errors import AntiBotError, NoStreamError, ShindenError
+from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.flow.handlers import (
     HANDLERS,
     _prefetch_player_sources,
     _prefetch_series_metadata,
     _safe_fetch_one,
     _sorted_by_date_desc,
+    handle_run_action,
 )
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, _BackSentinel
 from alt_ani_cli.models import EmbedURL, RelatedSeries, SeriesMetadata
+from alt_ani_cli.player.runner import PlayResult
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesRef
 
 
@@ -404,6 +407,7 @@ class TestHandleActionPick:
 def _run_interactive_wrapped(args, client):
     """Thin wrapper to call _run_interactive with sys.exit suppressed."""
     from alt_ani_cli.cli import _run_interactive
+
     _run_interactive(args, client)
 
 
@@ -526,6 +530,123 @@ class TestInteractiveFlow:
 
 
 @pytest.mark.unit
+class TestHandleRunActionPlaybackReporting:
+    """no_detach's return code must actually be surfaced — see mpv.py --no-detach diagnostics."""
+
+    def _play_state(self, **overrides):
+        args_overrides = {"vlc": False, "download": False, "debug": False}
+        args_overrides.update(overrides.pop("args_overrides", {}))
+        state = _make_state(
+            args=_make_args(**args_overrides),
+            ref=_SERIES_REF,
+            targets=[_EP1],
+            ep_idx=0,
+            stream=Stream(url="https://cdn.example.com/v.m3u8", headers={}, ext="m3u8"),
+            embed=EmbedURL(url="https://morencius.com/embed/abc", referer="https://shinden.pl/"),
+            episode_action="play",
+            **overrides,
+        )
+        return state
+
+    def test_no_detach_nonzero_rc_reports_error_not_success(self):
+        state = self._play_state(args_overrides={"no_detach": True})
+        with (
+            patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=1, elapsed=5.0)),
+            patch("alt_ani_cli.history.upsert"),
+            patch("alt_ani_cli.ui.progress.success") as mock_success,
+            patch("alt_ani_cli.ui.progress.error") as mock_error,
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            handle_run_action(state)
+        mock_error.assert_called_once()
+        mock_success.assert_not_called()
+        mock_warn.assert_not_called()
+
+    def test_no_detach_zero_rc_slow_exit_reports_success(self):
+        # Real playback — even closed right away by the user — takes longer than the fast-exit
+        # threshold to start and tear down a player process.
+        state = self._play_state(args_overrides={"no_detach": True})
+        with (
+            patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=0, elapsed=5.0)),
+            patch("alt_ani_cli.history.upsert"),
+            patch("alt_ani_cli.ui.progress.success") as mock_success,
+            patch("alt_ani_cli.ui.progress.error") as mock_error,
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            handle_run_action(state)
+        mock_success.assert_called_once()
+        mock_error.assert_not_called()
+        mock_warn.assert_not_called()
+
+    def test_no_detach_zero_rc_fast_exit_reports_unconfirmed_not_success(self):
+        # rc == 0 this fast almost never means real playback: single-instance GUI players
+        # (mpv.net) forward the URL to an already-running window over IPC and exit
+        # immediately, regardless of whether that window loaded anything.
+        state = self._play_state(args_overrides={"no_detach": True})
+        with (
+            patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=0, elapsed=0.1)),
+            patch("alt_ani_cli.history.upsert"),
+            patch("alt_ani_cli.ui.progress.success") as mock_success,
+            patch("alt_ani_cli.ui.progress.error") as mock_error,
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            handle_run_action(state)
+        mock_warn.assert_called_once()
+        mock_success.assert_not_called()
+        mock_error.assert_not_called()
+
+    def test_detached_mode_ignores_rc_and_elapsed_reports_success(self):
+        # Detached mode's return code and elapsed time carry no information by
+        # construction — the process is backgrounded before it can finish.
+        state = self._play_state(args_overrides={"no_detach": False})
+        with (
+            patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=1, elapsed=0.0)),
+            patch("alt_ani_cli.history.upsert"),
+            patch("alt_ani_cli.ui.progress.success") as mock_success,
+            patch("alt_ani_cli.ui.progress.error") as mock_error,
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            handle_run_action(state)
+        mock_success.assert_called_once()
+        mock_error.assert_not_called()
+        mock_warn.assert_not_called()
+
+    def test_no_detach_mpv_reports_log_file_hint(self):
+        state = self._play_state(args_overrides={"no_detach": True, "vlc": False})
+        with (
+            patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=0, elapsed=5.0)),
+            patch("alt_ani_cli.history.upsert"),
+            patch("alt_ani_cli.ui.progress.success"),
+            patch("alt_ani_cli.ui.progress.info") as mock_info,
+        ):
+            handle_run_action(state)
+        mock_info.assert_called_once()
+        assert "mpv-debug.log" in mock_info.call_args[0][0]
+
+    def test_no_detach_vlc_does_not_report_mpv_log_hint(self):
+        state = self._play_state(args_overrides={"no_detach": True, "vlc": True})
+        with (
+            patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=0, elapsed=5.0)),
+            patch("alt_ani_cli.history.upsert"),
+            patch("alt_ani_cli.ui.progress.success"),
+            patch("alt_ani_cli.ui.progress.info") as mock_info,
+        ):
+            handle_run_action(state)
+        mock_info.assert_not_called()
+
+    def test_detached_mode_does_not_report_mpv_log_hint(self):
+        state = self._play_state(args_overrides={"no_detach": False, "vlc": False})
+        with (
+            patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=0, elapsed=0.0)),
+            patch("alt_ani_cli.history.upsert"),
+            patch("alt_ani_cli.ui.progress.success"),
+            patch("alt_ani_cli.ui.progress.info") as mock_info,
+        ):
+            handle_run_action(state)
+        mock_info.assert_not_called()
+
+
+@pytest.mark.unit
 class TestSortedByDateDesc:
     def test_sorts_by_year_descending(self):
         hit_a = SeriesHit(id="1", slug="a", title="A", url="http://shinden.pl/series/1-a")
@@ -556,10 +677,7 @@ class TestSortedByDateDesc:
         assert result[-1].id == "1"
 
     def test_equal_dates_preserve_relative_order(self):
-        hits = [
-            SeriesHit(id=str(i), slug=f"s{i}", title=f"S{i}", url=f"http://shinden.pl/series/{i}-s{i}")
-            for i in range(3)
-        ]
+        hits = [SeriesHit(id=str(i), slug=f"s{i}", title=f"S{i}", url=f"http://shinden.pl/series/{i}-s{i}") for i in range(3)]
         same_meta = SeriesMetadata(air_date="2020", air_date_sort=(2020, 1, 1), description="", tags=(), related=())
         metadata = {str(i): same_meta for i in range(3)}
 

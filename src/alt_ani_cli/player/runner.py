@@ -1,9 +1,17 @@
 import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from typing import Literal
 
 from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.player import build_command
+
+
+@dataclass
+class PlayResult:
+    rc: int
+    elapsed: float  # seconds; 0.0 in detached mode, where it isn't measured
 
 
 def play(
@@ -12,11 +20,13 @@ def play(
     kind: Literal["mpv", "vlc"],
     title: str,
     no_detach: bool = False,
-) -> int:
+) -> PlayResult:
     cmd = build_command(kind, stream, title=title, no_detach=no_detach)
 
     if no_detach:
-        return subprocess.run(cmd).returncode
+        start = time.monotonic()
+        rc = subprocess.run(cmd).returncode
+        return PlayResult(rc=rc, elapsed=time.monotonic() - start)
 
     kwargs: dict = {
         "stdout": subprocess.DEVNULL,
@@ -29,4 +39,4 @@ def play(
         kwargs["start_new_session"] = True
 
     subprocess.Popen(cmd, **kwargs)
-    return 0
+    return PlayResult(rc=0, elapsed=0.0)

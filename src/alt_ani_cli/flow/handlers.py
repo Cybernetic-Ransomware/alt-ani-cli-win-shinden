@@ -466,7 +466,7 @@ def handle_run_action(state: FlowState) -> ScreenResult:
     if ep is None:
         raise AssertionError
 
-    from alt_ani_cli.cli import _pick_quality, _print_debug
+    from alt_ani_cli.cli import _pick_quality, _print_debug, _report_playback
 
     args = state.args
     player_kind = "vlc" if args.vlc else "mpv"
@@ -481,8 +481,8 @@ def handle_run_action(state: FlowState) -> ScreenResult:
     else:
         from alt_ani_cli.player import runner as player_runner
 
-        player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
-        progress.success(_PROG["playing"].format(kind=player_kind, title=title))
+        result = player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
+        _report_playback(result, args, player_kind, title)
 
     history.upsert(state.ref, last_ep=ep.number)
     state.completed_eps.add(ep.number)

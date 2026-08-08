@@ -261,6 +261,31 @@ def _setup_encoding() -> None:
 ANTIBOT_LABEL = "5 s antibot delay"
 
 
+# rc == 0 this fast almost never means real playback: single-instance GUI players (mpv.net)
+# forward the URL to an already-running window over IPC and exit immediately, regardless of
+# whether that window loaded anything. Real playback — even closed right away by the user —
+# takes longer than this to start and tear down a player process.
+_FAST_EXIT_THRESHOLD_SEC = 2.0
+
+
+def _report_playback(result, args, player_kind: str, title: str) -> None:
+    if not args.no_detach:
+        progress.success(_PROG["playing"].format(kind=player_kind, title=title))
+        return
+
+    if result.rc != 0:
+        progress.error(_PROG["playing_failed"].format(kind=player_kind, title=title, rc=result.rc))
+    elif result.elapsed < _FAST_EXIT_THRESHOLD_SEC:
+        progress.warn(_PROG["playing_unconfirmed"].format(kind=player_kind, title=title, secs=result.elapsed))
+    else:
+        progress.success(_PROG["playing"].format(kind=player_kind, title=title))
+
+    if player_kind == "mpv":
+        from alt_ani_cli.player.mpv import LOG_FILE
+
+        progress.info(_PROG["mpv_log_hint"].format(path=LOG_FILE))
+
+
 def _print_debug(stream: Stream, embed) -> None:
     from rich.table import Table
 
@@ -398,8 +423,8 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         elif _action == "debug":
             _print_debug(stream, embed)
         else:
-            player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
-            progress.success(_PROG["playing"].format(kind=player_kind, title=title))
+            result = player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
+            _report_playback(result, args, player_kind, title)
 
         history.upsert(ref, last_ep=ep.number)
 
