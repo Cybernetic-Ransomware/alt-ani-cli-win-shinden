@@ -168,7 +168,8 @@ just format    # ruff format --check (report only)
 
 ## Supported video hosts
 
-Native extractors: mp4upload, streamtape, dood, Lycoris Cafe, streamwish/filemoon family (JWPlayer), CDA, sibnet, VK.
+Native extractors: mp4upload, streamtape, dood, Lycoris Cafe, Vidara/Viewdara, Playmate, Uqload, Flyf,
+streamwish/filemoon/morencius family (JWPlayer), CDA, sibnet, VK.
 
 Lycoris Cafe embeds are resolved through the host API and expose the available direct qualities (`1080p`, `720p`, `480p`) plus `source-mkv` when the API provides it.
 
