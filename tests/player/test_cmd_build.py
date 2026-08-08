@@ -61,10 +61,12 @@ class TestBuildMpv:
         stream = _stream(headers={"referer": "https://shinden.pl/", "user-agent": "TestUA"})
         cmd = build_mpv(stream, title="X")
         assert not any("--http-header-fields" in arg for arg in cmd)
+        assert "--user-agent=TestUA" in cmd
+        assert "--referrer=https://shinden.pl/" in cmd
 
     def test_includes_reconnect_hardening(self):
         cmd = build_mpv(_stream(), title="X")
-        assert "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=2" in cmd
+        assert "--stream-lavf-o=reconnect=1,reconnect_streamed=1" in cmd
 
     def test_no_detach_writes_verbose_log_file(self, tmp_path):
         log_file = tmp_path / "mpv-debug.log"

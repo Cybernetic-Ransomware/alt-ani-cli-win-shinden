@@ -33,15 +33,20 @@ if sys.platform == "win32":
 _STANDARD_HEADERS = {"user-agent", "referer"}
 
 
+def _get_header(headers: dict[str, str], name: str) -> str | None:
+    lname = name.lower()
+    return next((v for k, v in headers.items() if k.lower() == lname), None)
+
+
 def build(stream: Stream, *, title: str, no_detach: bool = False) -> list[str]:
     path = _find(no_detach=no_detach)
     cmd = [
         path,
         stream.url,
         f"--force-media-title={title}",
-        f"--user-agent={stream.headers.get('User-Agent', USER_AGENT)}",
+        f"--user-agent={_get_header(stream.headers, 'User-Agent') or USER_AGENT}",
     ]
-    referer = stream.headers.get("Referer") or stream.headers.get("referer")
+    referer = _get_header(stream.headers, "Referer")
     if referer:
         cmd.append(f"--referrer={referer}")
     extra_headers = {k: v for k, v in stream.headers.items() if k.lower() not in _STANDARD_HEADERS}
@@ -52,7 +57,9 @@ def build(stream: Stream, *, title: str, no_detach: bool = False) -> list[str]:
     # ~10s (TLS -10054/ECONNRESET), corrupting packets faster than ffmpeg's own HLS-level
     # retry recovers from. reconnect_streamed extends libavformat's auto-reconnect to
     # non-seekable streamed sources like HLS; unverified whether it actually helps here.
-    cmd.append("--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=2")
+    # No reconnect_delay_max override — this flag applies to every stream mpv opens, not
+    # just flaky ones, so keep ffmpeg's own default (120s) rather than capping it low.
+    cmd.append("--stream-lavf-o=reconnect=1,reconnect_streamed=1")
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cmd.append(f"--log-file={LOG_FILE}")
     cmd.append("--msg-level=all=v")
