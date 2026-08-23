@@ -38,6 +38,11 @@ def _get_header(headers: dict[str, str], name: str) -> str | None:
     return next((v for k, v in headers.items() if k.lower() == lname), None)
 
 
+def _escape_header_value(value: str) -> str:
+    # --http-header-fields is a comma-separated mpv list option; an unescaped comma would corrupt it.
+    return value.replace(",", "\\,")
+
+
 def build(stream: Stream, *, title: str, no_detach: bool = False) -> list[str]:
     path = _find(no_detach=no_detach)
     cmd = [
@@ -51,7 +56,7 @@ def build(stream: Stream, *, title: str, no_detach: bool = False) -> list[str]:
         cmd.append(f"--referrer={referer}")
     extra_headers = {k: v for k, v in stream.headers.items() if k.lower() not in _STANDARD_HEADERS}
     if extra_headers:
-        fields = ",".join(f"{k}: {v}" for k, v in extra_headers.items())
+        fields = ",".join(f"{k}: {_escape_header_value(v)}" for k, v in extra_headers.items())
         cmd.append(f"--http-header-fields={fields}")
     # EXPERIMENTAL: some CDNs (observed on uqload.is) reset the HLS segment connection every
     # ~10s (TLS -10054/ECONNRESET), corrupting packets faster than ffmpeg's own HLS-level

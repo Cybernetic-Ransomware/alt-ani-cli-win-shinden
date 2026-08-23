@@ -57,6 +57,11 @@ class TestBuildMpv:
         cmd = build_mpv(_stream(), title="X")
         assert not any("--http-header-fields" in arg for arg in cmd)
 
+    def test_escapes_comma_in_extra_header_value(self):
+        stream = _stream(headers={"Referer": "https://shinden.pl/", "User-Agent": "TestUA", "Cookie": "a=1, b=2"})
+        cmd = build_mpv(stream, title="X")
+        assert any(arg == "--http-header-fields=Cookie: a=1\\, b=2" for arg in cmd)
+
     def test_extra_header_lookup_is_case_insensitive_for_standard_headers(self):
         stream = _stream(headers={"referer": "https://shinden.pl/", "user-agent": "TestUA"})
         cmd = build_mpv(stream, title="X")
