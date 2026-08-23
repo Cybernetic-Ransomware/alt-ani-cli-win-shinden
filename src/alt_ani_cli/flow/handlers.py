@@ -415,7 +415,12 @@ def handle_resolve_stream(state: FlowState) -> ScreenResult:
         return Screen.ACTION_PICK
 
     # player failed
-    state.failed_ids.add(state.chosen_player.online_id)
+    online_id = state.chosen_player.online_id
+    state.failed_ids.add(online_id)
+    failed_embed = state.player_embeds.get(online_id)
+    if failed_embed is not None:
+        # the embed resolved fine, only extraction failed downstream — the host is already known
+        _record_player_source(state, online_id, failed_embed)
     remaining = [p for p in state.players if p.online_id not in state.failed_ids]
     if remaining:
         return Screen.PLAYER_PICK  # try another (no history push — stays in same UI level)

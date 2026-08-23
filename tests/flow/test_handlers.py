@@ -1071,3 +1071,45 @@ class TestResolveStreamEmbedCache:
         assert mock_extract.call_args[0][0] == fresh.url
         assert result is Screen.ACTION_PICK
         assert state.embed is fresh
+
+
+@pytest.mark.unit
+class TestResolveStreamFailureRecordsHost:
+    """A player whose embed resolved but whose extraction failed should still surface its host."""
+
+    def _state_with_two_players(self):
+        return _make_state(
+            ref=_SERIES_REF,
+            targets=[_EP1],
+            ep_idx=0,
+            players=[_PLAYER, _PLAYER2],
+            chosen_player=_PLAYER,
+        )
+
+    def test_extraction_failure_records_host_from_resolved_embed(self):
+        state = self._state_with_two_players()
+        embed = EmbedURL(url="https://playmate.to/e/xyz", referer="https://shinden.pl/")
+        with (
+            patch("alt_ani_cli.shinden.api.resolve_embed", return_value=embed),
+            patch("alt_ani_cli.extract.resolve", side_effect=NoStreamError("dead")),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn"),
+        ):
+            result = HANDLERS[Screen.RESOLVE_STREAM](state)
+        assert result is Screen.PLAYER_PICK
+        assert _PLAYER.online_id in state.failed_ids
+        assert state.player_embeds[_PLAYER.online_id] is embed
+        assert state.player_sources[_PLAYER.online_id].host == "playmate.to"
+
+    def test_antibot_error_leaves_host_unknown(self):
+        state = self._state_with_two_players()
+        with (
+            patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=AntiBotError("blocked")),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn"),
+        ):
+            result = HANDLERS[Screen.RESOLVE_STREAM](state)
+        assert result is Screen.PLAYER_PICK
+        assert _PLAYER.online_id in state.failed_ids
+        assert _PLAYER.online_id not in state.player_embeds
+        assert _PLAYER.online_id not in state.player_sources
