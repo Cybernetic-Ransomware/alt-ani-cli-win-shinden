@@ -8,3 +8,13 @@
 *.gif binary
 *.ico binary
 *.whl binary
+
+# Explicit text rules
+*.py text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.lock text eol=lf
+Dockerfile text eol=lf
