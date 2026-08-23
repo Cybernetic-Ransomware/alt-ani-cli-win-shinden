@@ -78,3 +78,12 @@ class TestResolveVidara:
         with _make_session_patch({**_API_RESPONSE, "streaming_url": "https://cdn.example.com/video.mp4"}):
             stream = resolve(_EMBED, _REFERER)
         assert stream.ext == "mp4"
+
+    def test_works_with_alternate_host_viewdara(self):
+        embed = "https://viewdara.com/e/gGnwW3ekLDWQX"
+        with _make_session_patch(_API_RESPONSE) as session:
+            resolve(embed, _REFERER)
+
+        call = session.post.call_args
+        assert call.args == ("https://viewdara.com/api/stream",)
+        assert call.kwargs["headers"]["Origin"] == "https://viewdara.com"

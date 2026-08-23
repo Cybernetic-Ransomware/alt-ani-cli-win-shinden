@@ -168,11 +168,20 @@ just format    # ruff format --check (report only)
 
 ## Supported video hosts
 
-Native extractors: mp4upload, streamtape, dood, Lycoris Cafe, streamwish/filemoon family (JWPlayer), CDA, sibnet, VK.
+Native extractors: mp4upload, streamtape, dood, Lycoris Cafe, Vidara/Viewdara, Playmate, Uqload, Flyf,
+streamwish/filemoon/morencius family (JWPlayer), CDA, sibnet, VK.
 
 Lycoris Cafe embeds are resolved through the host API and expose the available direct qualities (`1080p`, `720p`, `480p`) plus `source-mkv` when the API provides it.
 
 All other hosts fall back to yt-dlp (1500+ supported sites).
+
+**Not supported: mega.nz.** MEGA serves end-to-end encrypted files (AES-128-CTR, decryption key
+in the URL fragment), so this project cannot hand the stream directly to yt-dlp or mpv without a
+custom decrypting proxy — the host fails fast with a clear message instead of attempting extraction.
+
+> **TODO — full MEGA player support**: call the MEGA API for the direct (encrypted) file URL,
+> decrypt AES-128-CTR on the fly through a local streaming proxy for mpv, and add a custom
+> download path bypassing yt-dlp. Requires a new crypto dependency (e.g. `pycryptodome`).
 
 ## Security notes
 

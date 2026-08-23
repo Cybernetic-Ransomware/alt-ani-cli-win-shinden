@@ -179,8 +179,8 @@ def _pick_quality(stream: Stream, quality: str) -> Stream:
     return Stream(url=url, headers=stream.headers, qualities=stream.qualities, ext=_guess_ext_from_url(url, stream.ext))
 
 
-def _warn_extract_fallback(event: str, host: str, exc: Exception) -> None:
-    progress.warn(_PROG[event].format(host=host, exc=f"{type(exc).__name__}: {exc}"))
+def _warn_extract_fallback(event: str, host: str, exc_text: str) -> None:
+    progress.warn(_PROG[event].format(host=host, exc=exc_text))
 
 
 def _resolve_embed_with_spinner(client, online_id: str) -> EmbedURL:
@@ -189,8 +189,8 @@ def _resolve_embed_with_spinner(client, online_id: str) -> EmbedURL:
 
 
 def _extract_stream(embed: EmbedURL, cookies_file: str | None, cookies_browser: str | None) -> Stream:
-    _url_short = embed.url if len(embed.url) <= 80 else embed.url[:77] + "…"
-    progress.info(_PROG["embed"].format(url=_url_short))
+    # the only place the full embed URL is shown — failure messages use the host only
+    progress.info(_PROG["embed"].format(url=embed.url))
     return extract.resolve(
         embed.url,
         embed.referer,
@@ -259,6 +259,34 @@ def _setup_encoding() -> None:
 
 
 ANTIBOT_LABEL = "5 s antibot delay"
+
+
+# rc == 0 this fast rarely means real playback — mpv.net forwards the URL to an
+# already-running window over IPC and exits instantly regardless of what happened next.
+_FAST_EXIT_THRESHOLD_SEC = 2.0
+
+
+def _report_playback(result, args, player_kind: str, title: str) -> None:
+    if not args.no_detach:
+        progress.success(_PROG["playing"].format(kind=player_kind, title=title))
+    elif result.rc != 0:
+        progress.error(_PROG["playing_failed"].format(kind=player_kind, title=title, rc=result.rc))
+    elif result.elapsed < _FAST_EXIT_THRESHOLD_SEC:
+        progress.warn(_PROG["playing_unconfirmed"].format(kind=player_kind, title=title, secs=result.elapsed))
+    else:
+        progress.success(_PROG["playing"].format(kind=player_kind, title=title))
+
+    if player_kind == "mpv":
+        from alt_ani_cli.player.mpv import LOG_FILE
+
+        progress.info(_PROG["mpv_log_hint"].format(path=LOG_FILE))
+
+
+def _playback_confirmed(result, no_detach: bool) -> bool:
+    """Whether playback should count toward watch history — same verdict as _report_playback."""
+    if not no_detach:
+        return True  # detached mode can't measure rc/elapsed; keep the prior behavior
+    return result.rc == 0 and result.elapsed >= _FAST_EXIT_THRESHOLD_SEC
 
 
 def _print_debug(stream: Stream, embed) -> None:
@@ -393,15 +421,18 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         else:
             _action = _episode_action or "play"
 
+        completed = False
         if _action == "download":
             download.run(stream, ep, ref)
         elif _action == "debug":
             _print_debug(stream, embed)
         else:
-            player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
-            progress.success(_PROG["playing"].format(kind=player_kind, title=title))
+            result = player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
+            _report_playback(result, args, player_kind, title)
+            completed = _playback_confirmed(result, args.no_detach)
 
-        history.upsert(ref, last_ep=ep.number)
+        if completed:
+            history.upsert(ref, last_ep=ep.number)
 
 
 def _run_interactive(args, client) -> None:
