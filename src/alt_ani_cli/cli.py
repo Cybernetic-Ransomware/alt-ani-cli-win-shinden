@@ -223,18 +223,23 @@ def _resolve_with_fallback(
     if auto and chosen in candidates:
         candidates = [chosen] + [p for p in candidates if p is not chosen]
 
-    cache = embed_cache or {}
+    cache = embed_cache if embed_cache is not None else {}
 
     for candidate in candidates:
         try:
             cached = cache.get(candidate.online_id)
-            embed = cached if cached is not None else _resolve_embed_with_spinner(client, candidate.online_id)
+            if cached is not None:
+                embed = cached
+            else:
+                embed = _resolve_embed_with_spinner(client, candidate.online_id)
+                cache[candidate.online_id] = embed
             try:
                 stream = _extract_stream(embed, cookies_file, cookies_browser)
             except NoStreamError:
                 if cached is None:
                     raise
                 embed = _resolve_embed_with_spinner(client, candidate.online_id)
+                cache[candidate.online_id] = embed
                 stream = _extract_stream(embed, cookies_file, cookies_browser)
             return stream, embed
         except (NoStreamError, AntiBotError) as exc:
