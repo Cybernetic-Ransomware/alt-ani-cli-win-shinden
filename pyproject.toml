@@ -71,6 +71,9 @@ select = ["E", "F", "UP", "B", "SIM", "I"]
 [tool.ty.src]
 exclude = ["tests/*", "tools/*"]
 
+[tool.ty.environment]
+extra-paths = ["src"]
+
 [tool.codespell]
 skip = "./.git,./.github,./tests/*,./temp/*,./tools/*"
 builtin = "clear"

@@ -151,6 +151,8 @@ Files are saved to `%USERPROFILE%\Videos\alt-ani-cli\` by default.
 
 ## Development
 
+For branching, integration, and release rules, see [ADR-0001](docs/adr/0001-branching-and-release-flow.md).
+
 One-time setup:
 
 ```powershell
