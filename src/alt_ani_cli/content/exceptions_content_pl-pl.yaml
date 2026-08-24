@@ -16,9 +16,11 @@ series:
 
 extract:
   js_only_host: "{host} wymaga wykonania JavaScript (czyste SPA — brak statycznego URL wideo)"
-  ytdlp_failed: "yt-dlp nie mógł wyodrębnić strumienia z {embed_url}: {exc}"
-  all_failed: "Wszystkie ekstraktory zawiodły dla {embed_url}"
-  all_failed_exc: "Wszystkie ekstraktory zawiodły dla {embed_url}: {exc}"
+  unsupported_host: "{host} nie jest obsługiwany — wybierz inny player"
+  encrypted_host: "{host} serwuje pliki szyfrowane end-to-end — żaden player ani ekstraktor nie odszyfruje strumienia; wybierz inny player"
+  ytdlp_failed: "yt-dlp nie mógł wyodrębnić strumienia z {host}: {exc}"
+  all_failed: "Wszystkie ekstraktory zawiodły dla {host}"
+  all_failed_exc: "Wszystkie ekstraktory zawiodły dla {host}: {exc}"
 
 dood:
   bad_base_url: "dood: nie można sparsować bazowego URL z {embed_url}"
@@ -36,6 +38,18 @@ streamtape:
 vidara:
   bad_embed_url: "vidara: nie można sparsować filecode z {embed_url}"
   no_stream_url: "vidara: brak streaming_url w odpowiedzi API dla {embed_url}"
+
+playmate:
+  bad_embed_url: "playmate: nie można sparsować filecode z {embed_url}"
+  no_stream_url: "playmate: brak URL sx w odpowiedzi API dla {embed_url}"
+
+uqload:
+  bad_embed_url: "uqload: nie można sparsować file code z {embed_url}"
+  no_video_url: "uqload: nie można znaleźć URL wideo w rozpakowanej odpowiedzi dla {embed_url}"
+
+flyf:
+  bad_embed_url: "flyf: nie można sparsować tokenu z {embed_url}"
+  no_stream_url: "flyf: brak URL do odtworzenia w odpowiedzi streaming/assign dla {embed_url}"
 
 lycoris:
   bad_embed_url: "lycoris: nie można sparsować id/episode z {embed_url}"

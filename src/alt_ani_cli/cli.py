@@ -2,14 +2,17 @@
 
 import argparse
 import contextlib
+import platform
 import sys
+import time
 from urllib.parse import urlparse
 
 from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
 
-from alt_ani_cli import __version__, download, extract, history
+from alt_ani_cli import __version__, diagnostics, download, extract, history
 from alt_ani_cli.config import FLARESOLVERR_URL, SHINDEN_BASE
 from alt_ani_cli.content import CONTENT, EXCEPTIONS
+from alt_ani_cli.diagnostics import _host_of_url
 from alt_ani_cli.errors import (
     AntiBotError,
     FilterMismatchError,
@@ -179,8 +182,8 @@ def _pick_quality(stream: Stream, quality: str) -> Stream:
     return Stream(url=url, headers=stream.headers, qualities=stream.qualities, ext=_guess_ext_from_url(url, stream.ext))
 
 
-def _warn_extract_fallback(event: str, host: str, exc: Exception) -> None:
-    progress.warn(_PROG[event].format(host=host, exc=f"{type(exc).__name__}: {exc}"))
+def _warn_extract_fallback(event: str, host: str, exc_text: str) -> None:
+    progress.warn(_PROG[event].format(host=host, exc=exc_text))
 
 
 def _resolve_embed_with_spinner(client, online_id: str) -> EmbedURL:
@@ -189,8 +192,8 @@ def _resolve_embed_with_spinner(client, online_id: str) -> EmbedURL:
 
 
 def _extract_stream(embed: EmbedURL, cookies_file: str | None, cookies_browser: str | None) -> Stream:
-    _url_short = embed.url if len(embed.url) <= 80 else embed.url[:77] + "…"
-    progress.info(_PROG["embed"].format(url=_url_short))
+    # the only place the full embed URL is shown — failure messages use the host only
+    progress.info(_PROG["embed"].format(url=embed.url))
     return extract.resolve(
         embed.url,
         embed.referer,
@@ -223,21 +226,32 @@ def _resolve_with_fallback(
     if auto and chosen in candidates:
         candidates = [chosen] + [p for p in candidates if p is not chosen]
 
-    cache = embed_cache or {}
+    cache = embed_cache if embed_cache is not None else {}
 
     for candidate in candidates:
+        start = time.monotonic()
+        host_hint: str | None = None
         try:
             cached = cache.get(candidate.online_id)
-            embed = cached if cached is not None else _resolve_embed_with_spinner(client, candidate.online_id)
+            if cached is not None:
+                embed = cached
+            else:
+                embed = _resolve_embed_with_spinner(client, candidate.online_id)
+                cache[candidate.online_id] = embed
+            host_hint = _host_of_url(embed.url)
             try:
                 stream = _extract_stream(embed, cookies_file, cookies_browser)
             except NoStreamError:
                 if cached is None:
                     raise
                 embed = _resolve_embed_with_spinner(client, candidate.online_id)
+                cache[candidate.online_id] = embed
+                host_hint = _host_of_url(embed.url)
                 stream = _extract_stream(embed, cookies_file, cookies_browser)
+            diagnostics.resolve_result(host_hint, True, None, time.monotonic() - start)
             return stream, embed
         except (NoStreamError, AntiBotError) as exc:
+            diagnostics.resolve_result(host_hint, False, type(exc).__name__, time.monotonic() - start)
             progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=exc))
 
     return None, None
@@ -259,6 +273,44 @@ def _setup_encoding() -> None:
 
 
 ANTIBOT_LABEL = "5 s antibot delay"
+
+
+# rc == 0 this fast rarely means real playback — mpv.net forwards the URL to an
+# already-running window over IPC and exits instantly regardless of what happened next.
+_FAST_EXIT_THRESHOLD_SEC = 2.0
+
+
+def _report_playback(result, args, player_kind: str, title: str) -> None:
+    if not args.no_detach:
+        progress.success(_PROG["playing"].format(kind=player_kind, title=title))
+    elif result.rc != 0:
+        progress.error(_PROG["playing_failed"].format(kind=player_kind, title=title, rc=result.rc))
+    elif result.elapsed < _FAST_EXIT_THRESHOLD_SEC:
+        progress.warn(_PROG["playing_unconfirmed"].format(kind=player_kind, title=title, secs=result.elapsed))
+    else:
+        progress.success(_PROG["playing"].format(kind=player_kind, title=title))
+
+    mpv_log: str | None = None
+    if player_kind == "mpv":
+        from alt_ani_cli.player.mpv import LOG_FILE
+
+        mpv_log = str(LOG_FILE)
+        progress.info(_PROG["mpv_log_hint"].format(path=LOG_FILE))
+
+    diagnostics.playback_result(
+        kind=player_kind,
+        rc=result.rc,
+        elapsed=result.elapsed,
+        confirmed=_playback_confirmed(result, args.no_detach),
+        mpv_log=mpv_log,
+    )
+
+
+def _playback_confirmed(result, no_detach: bool) -> bool:
+    """Whether playback should count toward watch history — same verdict as _report_playback."""
+    if not no_detach:
+        return True  # detached mode can't measure rc/elapsed; keep the prior behavior
+    return result.rc == 0 and result.elapsed >= _FAST_EXIT_THRESHOLD_SEC
 
 
 def _print_debug(stream: Stream, embed) -> None:
@@ -393,15 +445,18 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         else:
             _action = _episode_action or "play"
 
+        completed = False
         if _action == "download":
             download.run(stream, ep, ref)
         elif _action == "debug":
             _print_debug(stream, embed)
         else:
-            player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
-            progress.success(_PROG["playing"].format(kind=player_kind, title=title))
+            result = player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
+            _report_playback(result, args, player_kind, title)
+            completed = _playback_confirmed(result, args.no_detach)
 
-        history.upsert(ref, last_ep=ep.number)
+        if completed:
+            history.upsert(ref, last_ep=ep.number)
 
 
 def _run_interactive(args, client) -> None:
@@ -414,15 +469,21 @@ def _run_interactive(args, client) -> None:
     screen: Screen | None = Screen.START_MODE
 
     while screen is not None:
+        current = screen
+        start = time.monotonic()
         result = HANDLERS[screen](state)
+        elapsed = time.monotonic() - start
         if isinstance(result, _BackSentinel):
             screen = None if not history_stack else history_stack.pop()
+            diagnostics.screen_transition(current.name, screen.name if screen else "EXIT", elapsed)
         elif result is None:
             screen = None
+            diagnostics.screen_transition(current.name, "EXIT", elapsed)
         else:
             if screen not in _VIRTUAL_SCREENS:
                 history_stack.append(screen)
             screen = result
+            diagnostics.screen_transition(current.name, screen.name, elapsed)
 
 
 def main() -> None:  # noqa: C901
@@ -438,15 +499,22 @@ def main() -> None:  # noqa: C901
     client = shinden_http.make_client()
     interactive = sys.stdin.isatty() and not args.select_nth
 
+    if interactive:
+        diag_path = diagnostics.configure()
+        diagnostics.session_start(__version__, platform.python_version(), platform.platform())
+        progress.info(_PROG["diagnostics_log_hint"].format(path=diag_path))
+
     try:
         if interactive:
             _run_interactive(args, client)
         else:
             _run_noninteractive(args, client)
     except KeyboardInterrupt:
+        diagnostics.session_end("interrupted", None)
         progress.warn(_PROG["interrupted"])
         sys.exit(130)
     except CurlHTTPError as exc:
+        diagnostics.session_end("error", type(exc).__name__)
         if exc.response is not None:
             status = exc.response.status_code
             url = str(exc.response.url)
@@ -460,13 +528,18 @@ def main() -> None:  # noqa: C901
             progress.error(str(exc))
         sys.exit(1)
     except (AntiBotError, NoStreamError, ParseError, FilterMismatchError) as exc:
+        diagnostics.session_end("error", type(exc).__name__)
         progress.error(str(exc))
         sys.exit(1)
     except PlayerNotFoundError as exc:
+        diagnostics.session_end("error", type(exc).__name__)
         progress.error(str(exc))
         sys.exit(1)
     except ShindenError as exc:
+        diagnostics.session_end("error", type(exc).__name__)
         progress.error(_PROG["shinden_error"].format(exc=exc))
         sys.exit(1)
+    else:
+        diagnostics.session_end("ok", None)
     finally:
         client.close()

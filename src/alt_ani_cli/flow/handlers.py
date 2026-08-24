@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
-from alt_ani_cli import __version__, download, history
+from alt_ani_cli import __version__, diagnostics, download, history
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.errors import ShindenError
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, ScreenResult
@@ -198,6 +198,7 @@ def handle_series_pick(state: FlowState) -> ScreenResult:
             ref = shinden_series.parse_series_url(hit.url)
             state.ref = SeriesRef(id=ref.id, slug=ref.slug, title=hit.title, url=ref.url)
             state.last_ep = 0.0
+            diagnostics.series_selected(state.ref.id, state.ref.title)
             return Screen.FETCH_EPISODES
 
         cursor = payload if payload is not None else 0
@@ -312,6 +313,7 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
 
     ep = state.targets[state.ep_idx]
     progress.info(_PROG["episode"].format(number=ep.number, title=ep.title))
+    diagnostics.episode_selected(ep.number, ep.title)
 
     ep_resp = state.client.get(ep.url)
     ep_resp.raise_for_status()
@@ -380,6 +382,8 @@ def handle_player_pick(state: FlowState) -> ScreenResult:
             return Screen.EPISODES_PICK  # ESC → back to episode selection
         if action == "pick":
             state.chosen_player = payload
+            source = state.player_sources.get(payload.online_id)
+            diagnostics.player_selected(payload.online_id, payload.player, source.host if source else None)
             return Screen.RESOLVE_STREAM
         # "source" — show the modal, then re-render the picker
         p = state.players[payload]
@@ -415,7 +419,12 @@ def handle_resolve_stream(state: FlowState) -> ScreenResult:
         return Screen.ACTION_PICK
 
     # player failed
-    state.failed_ids.add(state.chosen_player.online_id)
+    online_id = state.chosen_player.online_id
+    state.failed_ids.add(online_id)
+    failed_embed = state.player_embeds.get(online_id)
+    if failed_embed is not None:
+        # the embed resolved fine, only extraction failed downstream — the host is already known
+        _record_player_source(state, online_id, failed_embed)
     remaining = [p for p in state.players if p.online_id not in state.failed_ids]
     if remaining:
         return Screen.PLAYER_PICK  # try another (no history push — stays in same UI level)
@@ -466,7 +475,7 @@ def handle_run_action(state: FlowState) -> ScreenResult:
     if ep is None:
         raise AssertionError
 
-    from alt_ani_cli.cli import _pick_quality, _print_debug
+    from alt_ani_cli.cli import _pick_quality, _playback_confirmed, _print_debug, _report_playback
 
     args = state.args
     player_kind = "vlc" if args.vlc else "mpv"
@@ -474,6 +483,7 @@ def handle_run_action(state: FlowState) -> ScreenResult:
     stream = _pick_quality(state.stream, quality)
     title = f"{state.ref.title} — Odcinek {ep.number:g}"
 
+    completed = False
     if args.download or state.episode_action == "download":
         download.run(stream, ep, state.ref)
     elif args.debug or state.episode_action == "debug":
@@ -481,11 +491,14 @@ def handle_run_action(state: FlowState) -> ScreenResult:
     else:
         from alt_ani_cli.player import runner as player_runner
 
-        player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
-        progress.success(_PROG["playing"].format(kind=player_kind, title=title))
+        result = player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
+        _report_playback(result, args, player_kind, title)
+        completed = _playback_confirmed(result, args.no_detach)
 
-    history.upsert(state.ref, last_ep=ep.number)
-    state.completed_eps.add(ep.number)
+    if completed:
+        history.upsert(state.ref, last_ep=ep.number)
+        state.completed_eps.add(ep.number)
+        diagnostics.history_update(state.ref.id, ep.number)
     state.ep_idx += 1
     state.stream = None
     state.embed = None
