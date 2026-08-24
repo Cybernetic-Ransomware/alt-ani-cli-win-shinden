@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
-from alt_ani_cli import __version__, download, history
+from alt_ani_cli import __version__, diagnostics, download, history
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.errors import ShindenError
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, ScreenResult
@@ -198,6 +198,7 @@ def handle_series_pick(state: FlowState) -> ScreenResult:
             ref = shinden_series.parse_series_url(hit.url)
             state.ref = SeriesRef(id=ref.id, slug=ref.slug, title=hit.title, url=ref.url)
             state.last_ep = 0.0
+            diagnostics.series_selected(state.ref.id, state.ref.title)
             return Screen.FETCH_EPISODES
 
         cursor = payload if payload is not None else 0
@@ -312,6 +313,7 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
 
     ep = state.targets[state.ep_idx]
     progress.info(_PROG["episode"].format(number=ep.number, title=ep.title))
+    diagnostics.episode_selected(ep.number, ep.title)
 
     ep_resp = state.client.get(ep.url)
     ep_resp.raise_for_status()
@@ -380,6 +382,8 @@ def handle_player_pick(state: FlowState) -> ScreenResult:
             return Screen.EPISODES_PICK  # ESC → back to episode selection
         if action == "pick":
             state.chosen_player = payload
+            source = state.player_sources.get(payload.online_id)
+            diagnostics.player_selected(payload.online_id, payload.player, source.host if source else None)
             return Screen.RESOLVE_STREAM
         # "source" — show the modal, then re-render the picker
         p = state.players[payload]
@@ -494,6 +498,7 @@ def handle_run_action(state: FlowState) -> ScreenResult:
     if completed:
         history.upsert(state.ref, last_ep=ep.number)
         state.completed_eps.add(ep.number)
+        diagnostics.history_update(state.ref.id, ep.number)
     state.ep_idx += 1
     state.stream = None
     state.embed = None

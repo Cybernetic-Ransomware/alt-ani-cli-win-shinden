@@ -511,7 +511,7 @@ class TestInteractiveFlow:
             patch("alt_ani_cli.cli._resolve_with_fallback", return_value=(mock_stream, mock_embed)),
             patch("alt_ani_cli.ui.menus.select_player_once", side_effect=_fake_player),
             patch("alt_ani_cli.ui.menus.select_action", return_value="play"),
-            patch("alt_ani_cli.player.runner.play"),
+            patch("alt_ani_cli.player.runner.play", return_value=PlayResult(rc=0, elapsed=5.0)),
             patch("alt_ani_cli.history.upsert"),
         ):
             screen = Screen.EPISODE_DISPATCH
