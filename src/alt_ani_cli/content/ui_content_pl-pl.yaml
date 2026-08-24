@@ -67,6 +67,7 @@ progress:
   playing_failed: "Player {kind} zakończył się kodem {rc}: {title}"
   playing_unconfirmed: "Player {kind} zakończył się natychmiast (rc=0, {secs:.1f}s) — nie mogę potwierdzić, czy {title} faktycznie się odtworzyło."
   mpv_log_hint: "Log mpv (verbose): {path}"
+  diagnostics_log_hint: "Log diagnostyczny sesji: {path}"
 
 download:
   starting: "Pobieranie: {title} ep{ep_label} → {dir}"

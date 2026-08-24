@@ -2,14 +2,17 @@
 
 import argparse
 import contextlib
+import platform
 import sys
+import time
 from urllib.parse import urlparse
 
 from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
 
-from alt_ani_cli import __version__, download, extract, history
+from alt_ani_cli import __version__, diagnostics, download, extract, history
 from alt_ani_cli.config import FLARESOLVERR_URL, SHINDEN_BASE
 from alt_ani_cli.content import CONTENT, EXCEPTIONS
+from alt_ani_cli.diagnostics import _host_of_url
 from alt_ani_cli.errors import (
     AntiBotError,
     FilterMismatchError,
@@ -226,6 +229,8 @@ def _resolve_with_fallback(
     cache = embed_cache if embed_cache is not None else {}
 
     for candidate in candidates:
+        start = time.monotonic()
+        host_hint: str | None = None
         try:
             cached = cache.get(candidate.online_id)
             if cached is not None:
@@ -233,6 +238,7 @@ def _resolve_with_fallback(
             else:
                 embed = _resolve_embed_with_spinner(client, candidate.online_id)
                 cache[candidate.online_id] = embed
+            host_hint = _host_of_url(embed.url)
             try:
                 stream = _extract_stream(embed, cookies_file, cookies_browser)
             except NoStreamError:
@@ -240,9 +246,12 @@ def _resolve_with_fallback(
                     raise
                 embed = _resolve_embed_with_spinner(client, candidate.online_id)
                 cache[candidate.online_id] = embed
+                host_hint = _host_of_url(embed.url)
                 stream = _extract_stream(embed, cookies_file, cookies_browser)
+            diagnostics.resolve_result(host_hint, True, None, time.monotonic() - start)
             return stream, embed
         except (NoStreamError, AntiBotError) as exc:
+            diagnostics.resolve_result(host_hint, False, type(exc).__name__, time.monotonic() - start)
             progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=exc))
 
     return None, None
@@ -281,10 +290,20 @@ def _report_playback(result, args, player_kind: str, title: str) -> None:
     else:
         progress.success(_PROG["playing"].format(kind=player_kind, title=title))
 
+    mpv_log: str | None = None
     if player_kind == "mpv":
         from alt_ani_cli.player.mpv import LOG_FILE
 
+        mpv_log = str(LOG_FILE)
         progress.info(_PROG["mpv_log_hint"].format(path=LOG_FILE))
+
+    diagnostics.playback_result(
+        kind=player_kind,
+        rc=result.rc,
+        elapsed=result.elapsed,
+        confirmed=_playback_confirmed(result, args.no_detach),
+        mpv_log=mpv_log,
+    )
 
 
 def _playback_confirmed(result, no_detach: bool) -> bool:
@@ -450,15 +469,21 @@ def _run_interactive(args, client) -> None:
     screen: Screen | None = Screen.START_MODE
 
     while screen is not None:
+        current = screen
+        start = time.monotonic()
         result = HANDLERS[screen](state)
+        elapsed = time.monotonic() - start
         if isinstance(result, _BackSentinel):
             screen = None if not history_stack else history_stack.pop()
+            diagnostics.screen_transition(current.name, screen.name if screen else "EXIT", elapsed)
         elif result is None:
             screen = None
+            diagnostics.screen_transition(current.name, "EXIT", elapsed)
         else:
             if screen not in _VIRTUAL_SCREENS:
                 history_stack.append(screen)
             screen = result
+            diagnostics.screen_transition(current.name, screen.name, elapsed)
 
 
 def main() -> None:  # noqa: C901
@@ -474,15 +499,22 @@ def main() -> None:  # noqa: C901
     client = shinden_http.make_client()
     interactive = sys.stdin.isatty() and not args.select_nth
 
+    if interactive:
+        diag_path = diagnostics.configure()
+        diagnostics.session_start(__version__, platform.python_version(), platform.platform())
+        progress.info(_PROG["diagnostics_log_hint"].format(path=diag_path))
+
     try:
         if interactive:
             _run_interactive(args, client)
         else:
             _run_noninteractive(args, client)
     except KeyboardInterrupt:
+        diagnostics.session_end("interrupted", None)
         progress.warn(_PROG["interrupted"])
         sys.exit(130)
     except CurlHTTPError as exc:
+        diagnostics.session_end("error", type(exc).__name__)
         if exc.response is not None:
             status = exc.response.status_code
             url = str(exc.response.url)
@@ -496,13 +528,18 @@ def main() -> None:  # noqa: C901
             progress.error(str(exc))
         sys.exit(1)
     except (AntiBotError, NoStreamError, ParseError, FilterMismatchError) as exc:
+        diagnostics.session_end("error", type(exc).__name__)
         progress.error(str(exc))
         sys.exit(1)
     except PlayerNotFoundError as exc:
+        diagnostics.session_end("error", type(exc).__name__)
         progress.error(str(exc))
         sys.exit(1)
     except ShindenError as exc:
+        diagnostics.session_end("error", type(exc).__name__)
         progress.error(_PROG["shinden_error"].format(exc=exc))
         sys.exit(1)
+    else:
+        diagnostics.session_end("ok", None)
     finally:
         client.close()
