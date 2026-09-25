@@ -203,6 +203,17 @@ def _extract_stream(embed: EmbedURL, cookies_file: str | None, cookies_browser: 
     )
 
 
+_RESOLVE_DIAG_FIELDS = (
+    "layer",
+    "category",
+    "http_status",
+    "used_fallback",
+    "fallback_layer",
+    "fallback_category",
+    "fallback_http_status",
+)
+
+
 def _resolve_with_fallback(
     client,
     players: list[PlayerEntry],
@@ -251,21 +262,10 @@ def _resolve_with_fallback(
             diagnostics.resolve_result(host_hint, True, None, time.monotonic() - start)
             return stream, embed
         except (NoStreamError, AntiBotError) as exc:
+            fields = {name: getattr(exc, name, None) for name in _RESOLVE_DIAG_FIELDS}
             if isinstance(exc, AntiBotError):
-                layer, category = "shinden_api", "anti_bot"
-            else:
-                layer = getattr(exc, "layer", None)
-                category = getattr(exc, "category", None)
-            diagnostics.resolve_result(
-                host_hint,
-                False,
-                type(exc).__name__,
-                time.monotonic() - start,
-                layer=layer,
-                category=category,
-                http_status=getattr(exc, "http_status", None),
-                used_fallback=getattr(exc, "used_fallback", None),
-            )
+                fields.update(layer="shinden_api", category="anti_bot")
+            diagnostics.resolve_result(host_hint, False, type(exc).__name__, time.monotonic() - start, **fields)
             progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=exc))
 
     return None, None

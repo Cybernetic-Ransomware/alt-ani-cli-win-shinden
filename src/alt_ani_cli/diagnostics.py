@@ -106,6 +106,9 @@ def resolve_result(
     category: str | None = None,
     http_status: int | None = None,
     used_fallback: bool | None = None,
+    fallback_layer: str | None = None,
+    fallback_category: str | None = None,
+    fallback_http_status: int | None = None,
 ) -> None:
     """``layer``/``category`` values come from the classifier in extract/__init__.py."""
     _emit(
@@ -117,6 +120,9 @@ def resolve_result(
         category=category,
         http_status=http_status,
         used_fallback=used_fallback,
+        fallback_layer=fallback_layer,
+        fallback_category=fallback_category,
+        fallback_http_status=fallback_http_status,
         elapsed=f"{elapsed:.3f}",
     )
 

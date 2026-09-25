@@ -1,9 +1,14 @@
 """Tests for extract/__init__.py — _normalize_url and resolve() dispatch."""
 
+import io
 from unittest.mock import MagicMock, patch
 
 import pytest
 from curl_cffi.requests import exceptions as cffi_exceptions
+from yt_dlp import YoutubeDL
+from yt_dlp.networking import Response
+from yt_dlp.networking.exceptions import HTTPError as YtdlpHTTPError
+from yt_dlp.networking.exceptions import TransportError
 
 from alt_ani_cli.errors import JavaScriptRequiredError, NoStreamError, UnsupportedHostError
 from alt_ani_cli.extract import HOST_RULES, HostRule, _normalize_url, resolve
@@ -224,15 +229,6 @@ class TestFailureDiagnosticsAttrs:
         assert exc_info.value.http_status is None
         assert exc_info.value.used_fallback is False
 
-    def test_ytdlp_only_host_failure_tags_layer_ytdlp_no_fallback(self):
-        with patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=_http_error(404)):
-            with pytest.raises(NoStreamError) as exc_info:
-                resolve("https://pixeldrain.com/u/abc123", _REFERER)
-        assert exc_info.value.layer == "ytdlp"
-        assert exc_info.value.category == "http_error"
-        assert exc_info.value.http_status == 404
-        assert exc_info.value.used_fallback is False
-
     def test_custom_extractor_tagged_category_propagates_when_ytdlp_also_fails(self):
         failing_fn = MagicMock(side_effect=ExtractError("bad shape", CATEGORY_PARSER_DRIFT))
         with (
@@ -244,6 +240,8 @@ class TestFailureDiagnosticsAttrs:
         assert exc_info.value.layer == "custom"
         assert exc_info.value.category == CATEGORY_PARSER_DRIFT
         assert exc_info.value.used_fallback is True
+        assert exc_info.value.fallback_layer == "ytdlp"
+        assert exc_info.value.fallback_category == "unknown"
 
     def test_jwplayer_rule_mode_tags_layer_jwplayer(self):
         with (
@@ -267,6 +265,14 @@ class TestFailureDiagnosticsAttrs:
         assert exc_info.value.category == "http_error"
         assert exc_info.value.http_status == 403
         assert exc_info.value.used_fallback is True
+        assert exc_info.value.fallback_layer == "ytdlp"
+
+    def test_unsupported_host_has_no_fallback_fields(self):
+        with pytest.raises(UnsupportedHostError) as exc_info:
+            resolve("https://mega.nz/embed/abc", _REFERER)
+        assert exc_info.value.fallback_layer is None
+        assert exc_info.value.fallback_category is None
+        assert exc_info.value.fallback_http_status is None
 
     def test_timeout_classified_as_timeout_category(self):
         with (
@@ -310,3 +316,58 @@ class TestFailureDiagnosticsAttrs:
             with pytest.raises(NoStreamError) as exc_info:
                 resolve("https://mp4upload.com/embed-abc.html", _REFERER)
         assert exc_info.value.category == "unknown"
+
+
+def _ytdlp_transport_raises(exc: Exception):
+    """Fails yt-dlp at its transport layer so its real extractor and exception wrapping still run."""
+
+    def _urlopen(self, req, *args, **kwargs):
+        raise exc
+
+    return patch.object(YoutubeDL, "urlopen", _urlopen)
+
+
+def _ytdlp_http_error(status: int) -> YtdlpHTTPError:
+    return YtdlpHTTPError(Response(io.BytesIO(b""), "https://example.invalid/", {}, status=status))
+
+
+@pytest.mark.unit
+class TestRealYtdlpFailureDiagnostics:
+    def test_ytdlp_only_route_keeps_http_status_through_real_wrapping(self):
+        with _ytdlp_transport_raises(_ytdlp_http_error(403)):
+            with pytest.raises(NoStreamError) as exc_info:
+                resolve("https://www.cda.pl/video/abc123", _REFERER)
+        assert exc_info.value.layer == "ytdlp"
+        assert exc_info.value.category == "http_error"
+        assert exc_info.value.http_status == 403
+        assert exc_info.value.used_fallback is False
+        assert exc_info.value.fallback_layer is None
+
+    def test_ytdlp_only_route_timeout_is_not_flattened(self):
+        with _ytdlp_transport_raises(TransportError(cause=TimeoutError("timed out"))):
+            with pytest.raises(NoStreamError) as exc_info:
+                resolve("https://www.cda.pl/video/abc123", _REFERER)
+        assert exc_info.value.category == "timeout"
+
+    def test_unknown_host_keeps_primary_and_fallback_causes_separately(self):
+        with (
+            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ExtractError("no url", CATEGORY_PARSER_DRIFT)),
+            _ytdlp_transport_raises(TransportError(cause=ConnectionResetError("reset"))),
+        ):
+            with pytest.raises(NoStreamError) as exc_info:
+                resolve("https://unknownhost.tv/embed/abc", _REFERER)
+        err = exc_info.value
+        assert (err.layer, err.category, err.http_status) == ("jwplayer", CATEGORY_PARSER_DRIFT, None)
+        assert (err.fallback_layer, err.fallback_category, err.fallback_http_status) == ("ytdlp", "network_error", None)
+        assert err.used_fallback is True
+
+    def test_unknown_host_fallback_http_status_is_kept(self):
+        with (
+            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ExtractError("no url", CATEGORY_PARSER_DRIFT)),
+            _ytdlp_transport_raises(_ytdlp_http_error(503)),
+        ):
+            with pytest.raises(NoStreamError) as exc_info:
+                resolve("https://unknownhost.tv/embed/abc", _REFERER)
+        assert exc_info.value.category == CATEGORY_PARSER_DRIFT
+        assert exc_info.value.fallback_category == "http_error"
+        assert exc_info.value.fallback_http_status == 503

@@ -1,6 +1,41 @@
 from alt_ani_cli.config import USER_AGENT
 from alt_ani_cli.content import EXCEPTIONS
-from alt_ani_cli.extract.common import CATEGORY_NO_STREAM_URL, ExtractError, Stream
+from alt_ani_cli.extract.common import CATEGORY_NO_STREAM_URL, CATEGORY_PARSER_DRIFT, ExtractError, Stream
+
+
+def _cause_chain(exc: BaseException) -> list[BaseException]:
+    # yt-dlp nests the real error in DownloadError.exc_info and ExtractorError/RequestError.cause
+    chain: list[BaseException] = []
+    pending: list[object] = [exc]
+    while pending and len(chain) < 16:
+        cur = pending.pop(0)
+        if not isinstance(cur, BaseException) or any(cur is seen for seen in chain):
+            continue
+        chain.append(cur)
+        exc_info = getattr(cur, "exc_info", None)
+        nested = exc_info[1] if isinstance(exc_info, tuple) and len(exc_info) > 1 else None
+        pending += [nested, getattr(cur, "cause", None), cur.__cause__]
+    return chain
+
+
+def _classify_ytdlp_error(exc: BaseException) -> tuple[str, int | None]:
+    from yt_dlp.networking.exceptions import HTTPError, TransportError
+    from yt_dlp.utils import RegexNotFoundError, UnsupportedError
+
+    chain = _cause_chain(exc)
+    for e in chain:
+        if isinstance(e, HTTPError):
+            status = getattr(e, "status", None)
+            return "http_error", status if isinstance(status, int) else None
+    if any(isinstance(e, TimeoutError) for e in chain):
+        return "timeout", None
+    if any(isinstance(e, TransportError) for e in chain):
+        return "network_error", None
+    if any(isinstance(e, UnsupportedError) for e in chain):
+        return "unsupported_host", None
+    if any(isinstance(e, RegexNotFoundError) for e in chain):
+        return CATEGORY_PARSER_DRIFT, None
+    return "unknown", None
 
 
 class _SilentLogger:
@@ -47,7 +82,8 @@ def resolve(
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(embed_url, download=False)
     except Exception as exc:
-        raise ValueError(str(exc)) from exc
+        category, http_status = _classify_ytdlp_error(exc)
+        raise ExtractError(str(exc), category, http_status) from exc
 
     if not info:
         raise ExtractError(EXCEPTIONS["ytdlp"]["no_info"].format(embed_url=repr(embed_url)), CATEGORY_NO_STREAM_URL)

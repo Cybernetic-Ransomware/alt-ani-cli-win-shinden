@@ -12,12 +12,10 @@ _PLAYER = PlayerEntry(online_id="123", player="Default", lang_audio="pl", lang_s
 _EMBED = EmbedURL(url="https://vidawra.cc/e/abc123", referer="https://shinden.pl/")
 
 
-def _tagged_no_stream_error(*, layer, category, http_status, used_fallback) -> NoStreamError:
+def _tagged_no_stream_error(**fields) -> NoStreamError:
     err = NoStreamError("all extractors failed")
-    err.layer = layer
-    err.category = category
-    err.http_status = http_status
-    err.used_fallback = used_fallback
+    for name, value in fields.items():
+        setattr(err, name, value)
     return err
 
 
@@ -39,7 +37,15 @@ class TestResolveWithFallbackDiagnostics:
         assert args[1] is True
 
     def test_extractor_failure_forwards_layer_category_status_and_fallback(self):
-        exc = _tagged_no_stream_error(layer="jwplayer", category="http_error", http_status=403, used_fallback=True)
+        exc = _tagged_no_stream_error(
+            layer="jwplayer",
+            category="http_error",
+            http_status=403,
+            used_fallback=True,
+            fallback_layer="ytdlp",
+            fallback_category="timeout",
+            fallback_http_status=None,
+        )
         with (
             patch("alt_ani_cli.cli.shinden_api.resolve_embed", return_value=_EMBED),
             patch("alt_ani_cli.cli.extract.resolve", side_effect=exc),
@@ -57,6 +63,9 @@ class TestResolveWithFallbackDiagnostics:
         assert kwargs["category"] == "http_error"
         assert kwargs["http_status"] == 403
         assert kwargs["used_fallback"] is True
+        assert kwargs["fallback_layer"] == "ytdlp"
+        assert kwargs["fallback_category"] == "timeout"
+        assert kwargs["fallback_http_status"] is None
 
     def test_untagged_exception_forwards_none_fields(self):
         with (
@@ -70,6 +79,8 @@ class TestResolveWithFallbackDiagnostics:
         assert kwargs["category"] is None
         assert kwargs["http_status"] is None
         assert kwargs["used_fallback"] is None
+        assert kwargs["fallback_layer"] is None
+        assert kwargs["fallback_category"] is None
 
     def test_antibot_error_from_embed_resolution_tags_shinden_layer(self):
         with (

@@ -119,13 +119,19 @@ class TestEventEmission:
             category="http_error",
             http_status=403,
             used_fallback=True,
+            fallback_layer="ytdlp",
+            fallback_category="network_error",
+            fallback_http_status=None,
         )
 
         content = log_path.read_text(encoding="utf-8")
-        assert "layer=jwplayer" in content
-        assert "category=http_error" in content
-        assert "http_status=403" in content
+        assert " layer=jwplayer" in content
+        assert " category=http_error" in content
+        assert " http_status=403" in content
         assert "used_fallback=True" in content
+        assert "fallback_layer=ytdlp" in content
+        assert "fallback_category=network_error" in content
+        assert "fallback_http_status" not in content
 
     def test_resolve_result_omits_diagnostic_fields_when_not_given(self, log_path):
         diagnostics.resolve_result("mp4upload.com", True, None, 0.5)

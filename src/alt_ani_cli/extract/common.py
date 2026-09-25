@@ -16,6 +16,7 @@ CATEGORY_NO_STREAM_URL = "no_stream_url"  # request succeeded and parsed, but no
 class ExtractError(ValueError):
     """Stays a ValueError so existing ``except ValueError`` call sites keep working."""
 
-    def __init__(self, message: str, category: str) -> None:
+    def __init__(self, message: str, category: str, http_status: int | None = None) -> None:
         super().__init__(message)
         self.category = category
+        self.http_status = http_status

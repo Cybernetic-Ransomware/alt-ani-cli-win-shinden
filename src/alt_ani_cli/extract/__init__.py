@@ -150,16 +150,27 @@ def _classify(exc: Exception) -> str:
 
 
 def _http_status(exc: Exception) -> int | None:
-    status = getattr(getattr(exc, "response", None), "status_code", None)
+    status = getattr(exc, "http_status", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
     return status if isinstance(status, int) else None
 
 
-def _annotate_failure(err: Exception, *, layer: str, cause: Exception, used_fallback: bool) -> Exception:
-    """Reports the primary resolver's failure, not the fallback's — yt-dlp's is usually just "unsupported URL"."""
+def _annotate_failure(
+    err: Exception,
+    *,
+    layer: str,
+    cause: Exception,
+    fallback_layer: str | None = None,
+    fallback_cause: Exception | None = None,
+) -> Exception:
     err.layer = layer  # ty: ignore[unresolved-attribute]
     err.category = _classify(cause)  # ty: ignore[unresolved-attribute]
     err.http_status = _http_status(cause)  # ty: ignore[unresolved-attribute]
-    err.used_fallback = used_fallback  # ty: ignore[unresolved-attribute]
+    err.used_fallback = fallback_cause is not None  # ty: ignore[unresolved-attribute]
+    err.fallback_layer = fallback_layer  # ty: ignore[unresolved-attribute]
+    err.fallback_category = _classify(fallback_cause) if fallback_cause is not None else None  # ty: ignore[unresolved-attribute]
+    err.fallback_http_status = _http_status(fallback_cause) if fallback_cause is not None else None  # ty: ignore[unresolved-attribute]
     return err
 
 
@@ -187,18 +198,14 @@ def resolve(
         reason = rule.reason or "unsupported_host"
         error_cls = JavaScriptRequiredError if reason == "js_only_host" else UnsupportedHostError
         err = error_cls(EXCEPTIONS["extract"][reason].format(host=host))
-        err.layer = "unsupported"  # ty: ignore[unresolved-attribute]
-        err.category = "unsupported_host"  # ty: ignore[unresolved-attribute]
-        err.http_status = None  # ty: ignore[unresolved-attribute]
-        err.used_fallback = False  # ty: ignore[unresolved-attribute]
-        raise err
+        raise _annotate_failure(err, layer="unsupported", cause=err)
 
     if rule is not None and rule.mode == "ytdlp":
         try:
             return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
         except Exception as exc:
             err = NoStreamError(EXCEPTIONS["extract"]["ytdlp_failed"].format(host=host, exc=_exc_text(exc, embed_url, host)))
-            raise _annotate_failure(err, layer="ytdlp", cause=exc, used_fallback=False) from exc
+            raise _annotate_failure(err, layer="ytdlp", cause=exc) from exc
 
     if rule is not None:
         resolver = rule.resolver or jwplayer.resolve
@@ -210,9 +217,11 @@ def resolve(
                 on_fallback("extractor_fallback", host, _exc_text(exc, embed_url, host))
             try:
                 return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
-            except Exception:
+            except Exception as fallback_exc:
                 err = NoStreamError(EXCEPTIONS["extract"]["all_failed"].format(host=host))
-                raise _annotate_failure(err, layer=layer, cause=exc, used_fallback=True) from exc
+                raise _annotate_failure(
+                    err, layer=layer, cause=exc, fallback_layer="ytdlp", fallback_cause=fallback_exc
+                ) from exc
 
     # Unknown host — try JWPlayer first (covers most embed-site patterns),
     # then fall back to yt-dlp (1500+ supported sites).
@@ -228,4 +237,6 @@ def resolve(
         return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
     except Exception as exc:
         err = NoStreamError(EXCEPTIONS["extract"]["all_failed_exc"].format(host=host, exc=_exc_text(exc, embed_url, host)))
-        raise _annotate_failure(err, layer="jwplayer", cause=jwplayer_exc or exc, used_fallback=True) from exc
+        raise _annotate_failure(
+            err, layer="jwplayer", cause=jwplayer_exc or exc, fallback_layer="ytdlp", fallback_cause=exc
+        ) from exc
