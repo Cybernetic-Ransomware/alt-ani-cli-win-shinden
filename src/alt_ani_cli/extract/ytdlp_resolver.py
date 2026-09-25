@@ -1,6 +1,6 @@
 from alt_ani_cli.config import USER_AGENT
 from alt_ani_cli.content import EXCEPTIONS
-from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.extract.common import CATEGORY_NO_STREAM_URL, ExtractError, Stream
 
 
 class _SilentLogger:
@@ -50,7 +50,7 @@ def resolve(
         raise ValueError(str(exc)) from exc
 
     if not info:
-        raise ValueError(EXCEPTIONS["ytdlp"]["no_info"].format(embed_url=repr(embed_url)))
+        raise ExtractError(EXCEPTIONS["ytdlp"]["no_info"].format(embed_url=repr(embed_url)), CATEGORY_NO_STREAM_URL)
 
     qualities: dict[str, str] = {}
     best_url = ""
@@ -69,7 +69,7 @@ def resolve(
         best_url = info.get("url") or info.get("manifest_url", "")
 
     if not best_url:
-        raise ValueError(EXCEPTIONS["ytdlp"]["no_url"].format(embed_url=repr(embed_url)))
+        raise ExtractError(EXCEPTIONS["ytdlp"]["no_url"].format(embed_url=repr(embed_url)), CATEGORY_NO_STREAM_URL)
 
     ext = info.get("ext") or ("m3u8" if "m3u8" in best_url else "mp4")
     headers = dict(info.get("http_headers") or {})

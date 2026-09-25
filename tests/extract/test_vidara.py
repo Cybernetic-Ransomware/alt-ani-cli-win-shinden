@@ -60,19 +60,22 @@ class TestResolveVidara:
 
     def test_missing_streaming_url_raises_value_error(self):
         with _make_session_patch({"status": 404}):
-            with pytest.raises(ValueError, match="vidara"):
+            with pytest.raises(ValueError, match="vidara") as exc_info:
                 resolve(_EMBED, _REFERER)
+        assert exc_info.value.category == "no_stream_url"
 
     def test_non_dict_response_raises_value_error(self):
         with _make_session_patch(["unexpected"]):
-            with pytest.raises(ValueError, match="vidara"):
+            with pytest.raises(ValueError, match="vidara") as exc_info:
                 resolve(_EMBED, _REFERER)
+        assert exc_info.value.category == "no_stream_url"
 
     def test_bad_embed_url_raises_before_http(self):
         with _make_session_patch(_API_RESPONSE) as session:
-            with pytest.raises(ValueError, match="vidara"):
+            with pytest.raises(ValueError, match="vidara") as exc_info:
                 resolve("not-a-url", _REFERER)
         session.post.assert_not_called()
+        assert exc_info.value.category == "parser_drift"
 
     def test_mp4_streaming_url_gets_mp4_ext(self):
         with _make_session_patch({**_API_RESPONSE, "streaming_url": "https://cdn.example.com/video.mp4"}):

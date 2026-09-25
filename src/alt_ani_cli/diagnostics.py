@@ -96,8 +96,29 @@ def player_selected(online_id: str, player: str, host: str | None) -> None:
     _emit("player_selected", online_id=online_id, player=player, host=host)
 
 
-def resolve_result(host: str | None, ok: bool, exc: str | None, elapsed: float) -> None:
-    _emit("resolve_result", host=host, ok=ok, exc=exc, elapsed=f"{elapsed:.3f}")
+def resolve_result(
+    host: str | None,
+    ok: bool,
+    exc: str | None,
+    elapsed: float,
+    *,
+    layer: str | None = None,
+    category: str | None = None,
+    http_status: int | None = None,
+    used_fallback: bool | None = None,
+) -> None:
+    """``layer``/``category`` values come from the classifier in extract/__init__.py."""
+    _emit(
+        "resolve_result",
+        host=host,
+        ok=ok,
+        exc=exc,
+        layer=layer,
+        category=category,
+        http_status=http_status,
+        used_fallback=used_fallback,
+        elapsed=f"{elapsed:.3f}",
+    )
 
 
 def playback_result(kind: str, rc: int, elapsed: float, confirmed: bool, mpv_log: str | None) -> None:

@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlparse
 
+from curl_cffi.requests import exceptions as cffi_exceptions
+
 from alt_ani_cli.content import EXCEPTIONS
 from alt_ani_cli.errors import JavaScriptRequiredError, NoStreamError, UnsupportedHostError
 from alt_ani_cli.extract import (
@@ -129,6 +131,38 @@ def _exc_text(exc: Exception, embed_url: str, host: str) -> str:
     return f"{type(exc).__name__}: {exc}".replace(repr(embed_url), host).replace(embed_url, host)
 
 
+# Classify by ExtractError.category or exception type only — messages may carry URLs/tokens.
+def _classify(exc: Exception) -> str:
+    tagged = getattr(exc, "category", None)
+    if isinstance(tagged, str):
+        return tagged
+    if isinstance(exc, (JavaScriptRequiredError, UnsupportedHostError)):
+        return "unsupported_host"
+    if isinstance(exc, cffi_exceptions.JSONDecodeError):
+        return "parser_drift"
+    if isinstance(exc, cffi_exceptions.Timeout):
+        return "timeout"
+    if isinstance(exc, cffi_exceptions.HTTPError):
+        return "http_error"
+    if isinstance(exc, cffi_exceptions.RequestException):
+        return "network_error"
+    return "unknown"
+
+
+def _http_status(exc: Exception) -> int | None:
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _annotate_failure(err: Exception, *, layer: str, cause: Exception, used_fallback: bool) -> Exception:
+    """Reports the primary resolver's failure, not the fallback's — yt-dlp's is usually just "unsupported URL"."""
+    err.layer = layer  # ty: ignore[unresolved-attribute]
+    err.category = _classify(cause)  # ty: ignore[unresolved-attribute]
+    err.http_status = _http_status(cause)  # ty: ignore[unresolved-attribute]
+    err.used_fallback = used_fallback  # ty: ignore[unresolved-attribute]
+    return err
+
+
 def resolve(
     embed_url: str,
     referer: str,
@@ -152,18 +186,23 @@ def resolve(
     if rule is not None and rule.mode == "unsupported":
         reason = rule.reason or "unsupported_host"
         error_cls = JavaScriptRequiredError if reason == "js_only_host" else UnsupportedHostError
-        raise error_cls(EXCEPTIONS["extract"][reason].format(host=host))
+        err = error_cls(EXCEPTIONS["extract"][reason].format(host=host))
+        err.layer = "unsupported"  # ty: ignore[unresolved-attribute]
+        err.category = "unsupported_host"  # ty: ignore[unresolved-attribute]
+        err.http_status = None  # ty: ignore[unresolved-attribute]
+        err.used_fallback = False  # ty: ignore[unresolved-attribute]
+        raise err
 
     if rule is not None and rule.mode == "ytdlp":
         try:
             return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
         except Exception as exc:
-            raise NoStreamError(
-                EXCEPTIONS["extract"]["ytdlp_failed"].format(host=host, exc=_exc_text(exc, embed_url, host))
-            ) from exc
+            err = NoStreamError(EXCEPTIONS["extract"]["ytdlp_failed"].format(host=host, exc=_exc_text(exc, embed_url, host)))
+            raise _annotate_failure(err, layer="ytdlp", cause=exc, used_fallback=False) from exc
 
     if rule is not None:
         resolver = rule.resolver or jwplayer.resolve
+        layer = "custom" if rule.resolver else "jwplayer"
         try:
             return resolver(embed_url, referer)
         except Exception as exc:
@@ -172,19 +211,21 @@ def resolve(
             try:
                 return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
             except Exception:
-                raise NoStreamError(EXCEPTIONS["extract"]["all_failed"].format(host=host)) from exc
+                err = NoStreamError(EXCEPTIONS["extract"]["all_failed"].format(host=host))
+                raise _annotate_failure(err, layer=layer, cause=exc, used_fallback=True) from exc
 
     # Unknown host — try JWPlayer first (covers most embed-site patterns),
     # then fall back to yt-dlp (1500+ supported sites).
+    jwplayer_exc: Exception | None = None
     try:
         return jwplayer.resolve(embed_url, referer)
     except Exception as exc:
+        jwplayer_exc = exc
         if on_fallback:
             on_fallback("jwplayer_fallback", host, _exc_text(exc, embed_url, host))
 
     try:
         return ytdlp_resolver.resolve(embed_url, referer, **_ytdlp_kw)
     except Exception as exc:
-        raise NoStreamError(
-            EXCEPTIONS["extract"]["all_failed_exc"].format(host=host, exc=_exc_text(exc, embed_url, host))
-        ) from exc
+        err = NoStreamError(EXCEPTIONS["extract"]["all_failed_exc"].format(host=host, exc=_exc_text(exc, embed_url, host)))
+        raise _annotate_failure(err, layer="jwplayer", cause=jwplayer_exc or exc, used_fallback=True) from exc

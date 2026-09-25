@@ -3,10 +3,11 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from curl_cffi.requests import exceptions as cffi_exceptions
 
 from alt_ani_cli.errors import JavaScriptRequiredError, NoStreamError, UnsupportedHostError
 from alt_ani_cli.extract import HOST_RULES, HostRule, _normalize_url, resolve
-from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.extract.common import CATEGORY_NO_STREAM_URL, CATEGORY_PARSER_DRIFT, ExtractError, Stream
 
 _REFERER = "https://shinden.pl/"
 _STREAM = Stream(url="https://example.com/video.mp4")
@@ -206,3 +207,106 @@ class TestResolveDispatch:
         exc_text = on_fallback.call_args[0][2]
         assert embed_url not in exc_text
         assert "unknownhost.tv" in exc_text
+
+
+def _http_error(status_code: int) -> cffi_exceptions.HTTPError:
+    resp = MagicMock(status_code=status_code)
+    return cffi_exceptions.HTTPError(f"HTTP {status_code}", response=resp)
+
+
+@pytest.mark.unit
+class TestFailureDiagnosticsAttrs:
+    def test_unsupported_host_tags_layer_and_category(self):
+        with pytest.raises(UnsupportedHostError) as exc_info:
+            resolve("https://mega.nz/embed/abc", _REFERER)
+        assert exc_info.value.layer == "unsupported"
+        assert exc_info.value.category == "unsupported_host"
+        assert exc_info.value.http_status is None
+        assert exc_info.value.used_fallback is False
+
+    def test_ytdlp_only_host_failure_tags_layer_ytdlp_no_fallback(self):
+        with patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=_http_error(404)):
+            with pytest.raises(NoStreamError) as exc_info:
+                resolve("https://pixeldrain.com/u/abc123", _REFERER)
+        assert exc_info.value.layer == "ytdlp"
+        assert exc_info.value.category == "http_error"
+        assert exc_info.value.http_status == 404
+        assert exc_info.value.used_fallback is False
+
+    def test_custom_extractor_tagged_category_propagates_when_ytdlp_also_fails(self):
+        failing_fn = MagicMock(side_effect=ExtractError("bad shape", CATEGORY_PARSER_DRIFT))
+        with (
+            patch.dict("alt_ani_cli.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", failing_fn)}),
+            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+        ):
+            with pytest.raises(NoStreamError) as exc_info:
+                resolve("https://mp4upload.com/embed-abc.html", _REFERER)
+        assert exc_info.value.layer == "custom"
+        assert exc_info.value.category == CATEGORY_PARSER_DRIFT
+        assert exc_info.value.used_fallback is True
+
+    def test_jwplayer_rule_mode_tags_layer_jwplayer(self):
+        with (
+            patch.dict("alt_ani_cli.extract.HOST_RULES", {"streamwish.com": HostRule("jwplayer")}),
+            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ExtractError("no url", CATEGORY_NO_STREAM_URL)),
+            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+        ):
+            with pytest.raises(NoStreamError) as exc_info:
+                resolve("https://streamwish.com/e/abc", _REFERER)
+        assert exc_info.value.layer == "jwplayer"
+        assert exc_info.value.category == CATEGORY_NO_STREAM_URL
+
+    def test_unknown_host_both_fail_tags_layer_jwplayer_from_first_attempt(self):
+        with (
+            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=_http_error(403)),
+            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("Unsupported URL")),
+        ):
+            with pytest.raises(NoStreamError) as exc_info:
+                resolve("https://unknownhost.tv/embed/abc", _REFERER)
+        assert exc_info.value.layer == "jwplayer"
+        assert exc_info.value.category == "http_error"
+        assert exc_info.value.http_status == 403
+        assert exc_info.value.used_fallback is True
+
+    def test_timeout_classified_as_timeout_category(self):
+        with (
+            patch.dict(
+                "alt_ani_cli.extract.HOST_RULES",
+                {"mp4upload.com": HostRule("custom", MagicMock(side_effect=cffi_exceptions.ConnectTimeout("timed out")))},
+            ),
+            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+        ):
+            with pytest.raises(NoStreamError) as exc_info:
+                resolve("https://mp4upload.com/embed-abc.html", _REFERER)
+        assert exc_info.value.category == "timeout"
+
+    def test_dns_failure_classified_as_network_error_category(self):
+        with (
+            patch.dict(
+                "alt_ani_cli.extract.HOST_RULES",
+                {"mp4upload.com": HostRule("custom", MagicMock(side_effect=cffi_exceptions.DNSError("could not resolve host")))},
+            ),
+            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+        ):
+            with pytest.raises(NoStreamError) as exc_info:
+                resolve("https://mp4upload.com/embed-abc.html", _REFERER)
+        assert exc_info.value.category == "network_error"
+
+    def test_json_decode_failure_classified_as_parser_drift(self):
+        json_exc = cffi_exceptions.JSONDecodeError("Expecting value", "<html>...</html>", 0)
+        with (
+            patch.dict("alt_ani_cli.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", MagicMock(side_effect=json_exc))}),
+            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+        ):
+            with pytest.raises(NoStreamError) as exc_info:
+                resolve("https://mp4upload.com/embed-abc.html", _REFERER)
+        assert exc_info.value.category == "parser_drift"
+
+    def test_unclassifiable_exception_falls_back_to_unknown(self):
+        with (
+            patch.dict("alt_ani_cli.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", MagicMock(side_effect=RuntimeError("boom")))}),
+            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+        ):
+            with pytest.raises(NoStreamError) as exc_info:
+                resolve("https://mp4upload.com/embed-abc.html", _REFERER)
+        assert exc_info.value.category == "unknown"

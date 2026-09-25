@@ -54,19 +54,22 @@ class TestResolvePlaymate:
 
     def test_missing_sx_raises_value_error(self):
         with _make_session_patch({"status": 404}):
-            with pytest.raises(ValueError, match="playmate"):
+            with pytest.raises(ValueError, match="playmate") as exc_info:
                 resolve(_EMBED, _REFERER)
+        assert exc_info.value.category == "no_stream_url"
 
     def test_non_dict_response_raises_value_error(self):
         with _make_session_patch(["unexpected"]):
-            with pytest.raises(ValueError, match="playmate"):
+            with pytest.raises(ValueError, match="playmate") as exc_info:
                 resolve(_EMBED, _REFERER)
+        assert exc_info.value.category == "no_stream_url"
 
     def test_bad_embed_url_raises_before_http(self):
         with _make_session_patch(_API_RESPONSE) as session:
-            with pytest.raises(ValueError, match="playmate"):
+            with pytest.raises(ValueError, match="playmate") as exc_info:
                 resolve("not-a-url", _REFERER)
         session.post.assert_not_called()
+        assert exc_info.value.category == "parser_drift"
 
     def test_mp4_sx_gets_mp4_ext(self):
         with _make_session_patch({"sx": "https://cdn.example.com/video.mp4"}):

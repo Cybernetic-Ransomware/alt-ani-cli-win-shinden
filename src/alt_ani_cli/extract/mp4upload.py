@@ -5,7 +5,7 @@ from curl_cffi import requests as cffi_requests
 
 from alt_ani_cli.config import USER_AGENT
 from alt_ani_cli.content import EXCEPTIONS
-from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.extract.common import CATEGORY_PARSER_DRIFT, ExtractError, Stream
 
 _FILE_RE = re.compile(r'["\']?(?:file|src)["\']?\s*:\s*["\']([^"\']+\.(?:mp4|m3u8)[^"\']*)["\']')
 _PLAYER_SRC_RE = re.compile(r'player\.src\s*\(\s*["\']([^"\']+\.(?:mp4|m3u8)[^"\']*)["\']')
@@ -47,7 +47,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
         except Exception:  # nosec B110
             pass
 
-    raise ValueError(EXCEPTIONS["mp4upload"]["no_video_url"].format(embed_url=repr(embed_url)))
+    raise ExtractError(EXCEPTIONS["mp4upload"]["no_video_url"].format(embed_url=repr(embed_url)), CATEGORY_PARSER_DRIFT)
 
 
 def _ext(url: str) -> str:

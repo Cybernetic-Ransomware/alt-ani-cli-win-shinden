@@ -86,12 +86,14 @@ class TestResolveDood:
 
     def test_no_pass_md5_raises_value_error_after_one_request(self):
         with _make_session_patch([_PAGE_NO_PASS_MD5]) as session:
-            with pytest.raises(ValueError, match="dood"):
+            with pytest.raises(ValueError, match="dood") as exc_info:
                 resolve(_EMBED, _REFERER)
         assert session.get.call_count == 1
+        assert exc_info.value.category == "parser_drift"
 
     def test_bad_base_url_raises_before_http(self):
         with _make_session_patch([]) as session:
-            with pytest.raises(ValueError, match="dood"):
+            with pytest.raises(ValueError, match="dood") as exc_info:
                 resolve("not-a-url", _REFERER)
         session.get.assert_not_called()
+        assert exc_info.value.category == "parser_drift"

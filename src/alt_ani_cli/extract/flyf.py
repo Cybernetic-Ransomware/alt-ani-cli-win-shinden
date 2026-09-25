@@ -4,7 +4,7 @@ from curl_cffi import requests as cffi_requests
 
 from alt_ani_cli.config import USER_AGENT
 from alt_ani_cli.content import EXCEPTIONS
-from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.extract.common import CATEGORY_NO_STREAM_URL, CATEGORY_PARSER_DRIFT, ExtractError, Stream
 
 # api.flyfile.app is a fixed API domain, distinct from the flyf.lat embed host.
 _API_BASE = "https://api.flyfile.app"
@@ -20,7 +20,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
     """
     m = _EMBED_RE.match(embed_url)
     if not m:
-        raise ValueError(EXCEPTIONS["flyf"]["bad_embed_url"].format(embed_url=repr(embed_url)))
+        raise ExtractError(EXCEPTIONS["flyf"]["bad_embed_url"].format(embed_url=repr(embed_url)), CATEGORY_PARSER_DRIFT)
     token = m.group(2)
 
     headers = {
@@ -39,7 +39,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
     stream_base = data.get("url") if isinstance(data, dict) else None
     stream_token = data.get("token") if isinstance(data, dict) else None
     if not stream_base or not stream_token:
-        raise ValueError(EXCEPTIONS["flyf"]["no_stream_url"].format(embed_url=repr(embed_url)))
+        raise ExtractError(EXCEPTIONS["flyf"]["no_stream_url"].format(embed_url=repr(embed_url)), CATEGORY_NO_STREAM_URL)
 
     url = f"{stream_base}/raw/{stream_token}"
     return Stream(url=url, headers={"Referer": embed_url, "User-Agent": USER_AGENT}, ext="mp4")

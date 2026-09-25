@@ -67,16 +67,19 @@ class TestResolveFlyf:
 
     def test_missing_url_or_token_raises_value_error(self):
         with _make_session_patch({"url": "https://s1.flyfile.app"}):
-            with pytest.raises(ValueError, match="flyf"):
+            with pytest.raises(ValueError, match="flyf") as exc_info:
                 resolve(_EMBED, _REFERER)
+        assert exc_info.value.category == "no_stream_url"
 
     def test_non_dict_response_raises_value_error(self):
         with _make_session_patch(["unexpected"]):
-            with pytest.raises(ValueError, match="flyf"):
+            with pytest.raises(ValueError, match="flyf") as exc_info:
                 resolve(_EMBED, _REFERER)
+        assert exc_info.value.category == "no_stream_url"
 
     def test_bad_embed_url_raises_before_http(self):
         with _make_session_patch(_ASSIGN_RESPONSE) as session:
-            with pytest.raises(ValueError, match="flyf"):
+            with pytest.raises(ValueError, match="flyf") as exc_info:
                 resolve("not-a-url", _REFERER)
         session.get.assert_not_called()
+        assert exc_info.value.category == "parser_drift"

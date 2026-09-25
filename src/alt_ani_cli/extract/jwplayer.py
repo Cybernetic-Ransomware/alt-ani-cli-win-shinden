@@ -12,7 +12,7 @@ from curl_cffi import requests as cffi_requests
 
 from alt_ani_cli.config import USER_AGENT
 from alt_ani_cli.content import EXCEPTIONS
-from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.extract.common import CATEGORY_PARSER_DRIFT, ExtractError, Stream
 
 # sources:[{file:"...",...},...] — also matches with double-quotes or no quotes
 _SOURCES_RE = re.compile(
@@ -130,7 +130,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
             ext=_ext(url),
         )
 
-    raise ValueError(EXCEPTIONS["jwplayer"]["no_video_url"].format(embed_url=repr(embed_url)))
+    raise ExtractError(EXCEPTIONS["jwplayer"]["no_video_url"].format(embed_url=repr(embed_url)), CATEGORY_PARSER_DRIFT)
 
 
 def _ext(url: str) -> str:

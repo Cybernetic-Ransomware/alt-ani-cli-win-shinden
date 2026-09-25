@@ -109,6 +109,33 @@ class TestEventEmission:
         assert "http://" not in content
         assert "https://" not in content
 
+    def test_resolve_result_failure_records_layer_category_status_and_fallback(self, log_path):
+        diagnostics.resolve_result(
+            "vidawra.cc",
+            False,
+            "NoStreamError",
+            6.92,
+            layer="jwplayer",
+            category="http_error",
+            http_status=403,
+            used_fallback=True,
+        )
+
+        content = log_path.read_text(encoding="utf-8")
+        assert "layer=jwplayer" in content
+        assert "category=http_error" in content
+        assert "http_status=403" in content
+        assert "used_fallback=True" in content
+
+    def test_resolve_result_omits_diagnostic_fields_when_not_given(self, log_path):
+        diagnostics.resolve_result("mp4upload.com", True, None, 0.5)
+
+        content = log_path.read_text(encoding="utf-8")
+        assert "layer=" not in content
+        assert "category=" not in content
+        assert "http_status=" not in content
+        assert "used_fallback=" not in content
+
     def test_playback_result_includes_local_mpv_log_path_but_no_urls(self, log_path, tmp_path):
         mpv_log = tmp_path / "mpv-debug.log"
         diagnostics.playback_result(kind="mpv", rc=0, elapsed=5.0, confirmed=True, mpv_log=str(mpv_log))

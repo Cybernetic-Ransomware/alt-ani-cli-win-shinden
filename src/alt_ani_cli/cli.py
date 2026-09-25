@@ -251,7 +251,21 @@ def _resolve_with_fallback(
             diagnostics.resolve_result(host_hint, True, None, time.monotonic() - start)
             return stream, embed
         except (NoStreamError, AntiBotError) as exc:
-            diagnostics.resolve_result(host_hint, False, type(exc).__name__, time.monotonic() - start)
+            if isinstance(exc, AntiBotError):
+                layer, category = "shinden_api", "anti_bot"
+            else:
+                layer = getattr(exc, "layer", None)
+                category = getattr(exc, "category", None)
+            diagnostics.resolve_result(
+                host_hint,
+                False,
+                type(exc).__name__,
+                time.monotonic() - start,
+                layer=layer,
+                category=category,
+                http_status=getattr(exc, "http_status", None),
+                used_fallback=getattr(exc, "used_fallback", None),
+            )
             progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=exc))
 
     return None, None

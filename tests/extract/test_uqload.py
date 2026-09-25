@@ -72,14 +72,16 @@ class TestResolveUqload:
 
     def test_no_match_raises_value_error(self):
         with _make_session_patch(_NO_MATCH):
-            with pytest.raises(ValueError, match="uqload"):
+            with pytest.raises(ValueError, match="uqload") as exc_info:
                 resolve(_EMBED, _REFERER)
+        assert exc_info.value.category == "parser_drift"
 
     def test_bad_embed_url_raises_before_http(self):
         with _make_session_patch(_UNPACKED_BODY) as session:
-            with pytest.raises(ValueError, match="uqload"):
+            with pytest.raises(ValueError, match="uqload") as exc_info:
                 resolve("not-a-url", _REFERER)
         session.post.assert_not_called()
+        assert exc_info.value.category == "parser_drift"
 
     def test_m3u8_url_gets_m3u8_ext(self):
         html = '<script>var player = {file: "https://cdn.uqload.is/video.m3u8"};</script>'

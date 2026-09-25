@@ -168,5 +168,6 @@ class TestResolve:
 
     def test_no_video_url_raises_value_error(self):
         with _make_session_patch("<html><body>nothing here</body></html>"):
-            with pytest.raises(ValueError, match="jwplayer"):
+            with pytest.raises(ValueError, match="jwplayer") as exc_info:
                 resolve(_EMBED, _REFERER)
+        assert exc_info.value.category == "parser_drift"
