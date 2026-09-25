@@ -856,6 +856,21 @@ class TestEpisodeDispatchFilterMiss:
         assert result in (Screen.PLAYER_PICK, Screen.RESOLVE_STREAM)
 
 
+@pytest.mark.unit
+class TestEpisodeDispatchSinglePlayerAutoPick:
+    def test_auto_picks_only_player_and_logs_diagnostics(self):
+        state = _make_ep_dispatch_state()
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER]),
+            patch("alt_ani_cli.diagnostics.player_selected") as mock_diag,
+        ):
+            result = HANDLERS[Screen.EPISODE_DISPATCH](state)
+        assert result is Screen.RESOLVE_STREAM
+        assert state.chosen_player is _PLAYER
+        mock_diag.assert_called_once_with(_PLAYER.online_id, _PLAYER.player, None)
+
+
 @contextmanager
 def _noop_spinner(msg):
     yield

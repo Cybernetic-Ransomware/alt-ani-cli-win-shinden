@@ -179,8 +179,11 @@ def parse_diagnostics_log(path: Path) -> tuple[list[ReplayCase], int]:
 
         if event == "series_selected":
             current_series = (fields.get("id"), fields.get("title"))
+            current_episode = None
+            current_player = None
         elif event == "episode_selected":
             current_episode = (fields.get("number"), fields.get("title"))
+            current_player = None
         elif event == "player_selected":
             current_player = (fields.get("online_id"), fields.get("player"))
         elif event == "resolve_result" and fields.get("ok") is False:

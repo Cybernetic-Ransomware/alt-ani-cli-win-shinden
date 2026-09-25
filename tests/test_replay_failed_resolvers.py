@@ -150,6 +150,36 @@ class TestParseDiagnosticsLog:
         with pytest.raises(LogParseError):
             parse_diagnostics_log(log)
 
+    def test_player_context_does_not_leak_across_episodes_without_player_selected(self, tmp_path):
+        lines = [
+            _line("episode_selected", number=1, title="Ep One"),
+            _line("player_selected", online_id="111", player="CDA"),
+            _line("resolve_result", host="cda.pl", ok=False, exc="NoStreamError", elapsed=0.1),
+            _line("episode_selected", number=2, title="Ep Two"),
+            _line("resolve_result", host="cda.pl", ok=False, exc="NoStreamError", elapsed=0.1),
+        ]
+        log = tmp_path / "session.log"
+        log.write_text("\n".join(lines), encoding="utf-8")
+
+        cases, _ = parse_diagnostics_log(log)
+
+        assert len(cases) == 2
+        assert cases[0].online_id == "111"
+        assert cases[1].online_id is None
+
+    def test_player_context_reset_by_series_selected(self, tmp_path):
+        lines = [
+            _line("player_selected", online_id="111", player="CDA"),
+            _line("series_selected", id="s2", title="Other Series"),
+            _line("resolve_result", host="cda.pl", ok=False, exc="NoStreamError", elapsed=0.1),
+        ]
+        log = tmp_path / "session.log"
+        log.write_text("\n".join(lines), encoding="utf-8")
+
+        cases, _ = parse_diagnostics_log(log)
+
+        assert cases[0].online_id is None
+
     def test_quoted_values_with_spaces_round_trip(self, tmp_path):
         lines = [
             _line("episode_selected", number=1, title="A Title With Spaces"),

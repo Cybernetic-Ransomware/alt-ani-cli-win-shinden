@@ -356,6 +356,7 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
 
     if args.select_nth or len(players) == 1:
         state.chosen_player = players[0]
+        diagnostics.player_selected(state.chosen_player.online_id, state.chosen_player.player, None)
         return Screen.RESOLVE_STREAM
 
     if args.show_sources:
