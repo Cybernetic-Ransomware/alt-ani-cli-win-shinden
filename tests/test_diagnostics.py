@@ -2,6 +2,7 @@
 
 import logging
 import os
+import shlex
 from unittest.mock import patch
 
 import pytest
@@ -77,16 +78,38 @@ class TestHostOfUrl:
 class TestSafeValue:
     def test_collapses_newlines_and_tabs_to_single_space(self):
         # multi-word after collapsing, so it also gets quoted like any other value with a space
-        assert diagnostics._safe_value("line1\nline2\tend") == '"line1 line2 end"'
+        assert diagnostics._safe_value("line1\nline2\tend") == "'line1 line2 end'"
 
     def test_collapses_repeated_whitespace(self):
-        assert diagnostics._safe_value("a    b") == '"a b"'
+        assert diagnostics._safe_value("a    b") == "'a b'"
 
     def test_quotes_value_containing_space(self):
-        assert diagnostics._safe_value("Attack on Titan") == '"Attack on Titan"'
+        assert diagnostics._safe_value("Attack on Titan") == "'Attack on Titan'"
 
     def test_no_quotes_for_single_token(self):
         assert diagnostics._safe_value("mp4upload.com") == "mp4upload.com"
+
+
+@pytest.mark.unit
+class TestSafeValueRoundTrip:
+    """The replay harness reads these logs back with shlex.split — the exact original value must survive."""
+
+    @pytest.mark.parametrize(
+        "original",
+        [
+            "Bob's",
+            'He said "Hi"',
+            r"C:\Users\Scorpos\AppData\Local\Temp",
+            "Attack on Titan",
+        ],
+        ids=["apostrophe", "double_quotes", "windows_path", "spaces"],
+    )
+    def test_round_trips_through_shlex_split(self, original):
+        token = f"key={diagnostics._safe_value(original)}"
+        (parsed,) = shlex.split(token)
+        key, _, value = parsed.partition("=")
+        assert key == "key"
+        assert value == original
 
 
 @pytest.mark.unit

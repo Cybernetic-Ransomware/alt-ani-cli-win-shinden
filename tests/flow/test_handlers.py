@@ -260,6 +260,22 @@ class TestHandleSeriesPick:
 
 
 @pytest.mark.unit
+class TestHandleFetchEpisodes:
+    """Single centralized diagnostics point for series_selected — covers search/url/resume alike."""
+
+    def test_logs_series_selected_with_finalized_ref(self):
+        state = _make_state(ref=_SERIES_REF, last_ep=0.0)
+        with (
+            patch("alt_ani_cli.shinden.series.list_episodes", return_value=(_SERIES_REF, [_EP1])),
+            patch("alt_ani_cli.diagnostics.series_selected") as mock_diag,
+        ):
+            result = HANDLERS[Screen.FETCH_EPISODES](state)
+
+        assert result is Screen.EPISODES_PICK
+        mock_diag.assert_called_once_with(_SERIES_REF.id, _SERIES_REF.title)
+
+
+@pytest.mark.unit
 class TestHandleEpisodesPick:
     def test_esc_returns_back(self):
         state = _make_state(ref=_SERIES_REF, episodes=[_EP1, _EP2])

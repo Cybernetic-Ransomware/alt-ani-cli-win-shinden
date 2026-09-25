@@ -198,7 +198,6 @@ def handle_series_pick(state: FlowState) -> ScreenResult:
             ref = shinden_series.parse_series_url(hit.url)
             state.ref = SeriesRef(id=ref.id, slug=ref.slug, title=hit.title, url=ref.url)
             state.last_ep = 0.0
-            diagnostics.series_selected(state.ref.id, state.ref.title)
             return Screen.FETCH_EPISODES
 
         cursor = payload if payload is not None else 0
@@ -254,6 +253,7 @@ def handle_fetch_episodes(state: FlowState) -> ScreenResult:
     progress.info(_PROG["fetching_episodes"].format(title=state.ref.title))
     ref, episodes = shinden_series.list_episodes(state.client, state.ref)
     state.ref = ref
+    diagnostics.series_selected(ref.id, ref.title)
     state.episodes = episodes
     state.completed_eps = set()
     state.targets = []

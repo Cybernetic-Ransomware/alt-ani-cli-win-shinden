@@ -8,6 +8,7 @@ is enforced by the function signatures, not by caller discipline.
 """
 
 import logging
+import shlex
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -58,9 +59,9 @@ def _host_of_url(url: str) -> str:
 
 
 def _safe_value(value: object) -> str:
-    """Collapse whitespace/newlines and quote if needed, so one field can't corrupt the log line structure."""
+    """Collapse whitespace/newlines and shell-quote via shlex, so shlex.split round-trips it exactly."""
     text = " ".join(str(value).split())
-    return f'"{text}"' if " " in text else text
+    return shlex.quote(text)
 
 
 def _emit(event: str, **fields: object) -> None:

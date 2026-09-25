@@ -383,6 +383,7 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
 
     progress.info(_PROG["fetching_episodes"].format(title=ref.title))
     ref, episodes = shinden_series.list_episodes(client, ref)
+    diagnostics.series_selected(ref.id, ref.title)
 
     if not episodes:
         progress.error(_PROG["no_episodes"])
