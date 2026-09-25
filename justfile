@@ -31,3 +31,7 @@ test:
 # Run tests with coverage report
 test-cov:
     uv run pytest --tb=short -q
+
+# Replay resolve_result failures from a diagnostics session log against live hosts
+replay-failures LOG:
+    uv run python tools/replay_failed_resolvers.py "{{LOG}}"
