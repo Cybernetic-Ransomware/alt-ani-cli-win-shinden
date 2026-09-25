@@ -277,6 +277,16 @@ class TestClassifyOutcome:
         now = _now(ok=False, layer="ytdlp", category="http_error", http_status=403)
         assert classify_outcome(case, now) is Verdict.CHANGED_FAILURE
 
+    def test_none_to_unknown_category_is_not_changed_failure(self):
+        case = _case(layer_before="jwplayer", category_before=None, http_status_before=403)
+        now = _now(ok=False, layer="jwplayer", category="unknown", http_status=403)
+        assert classify_outcome(case, now) is Verdict.SAME_FAILURE
+
+    def test_unknown_to_none_category_is_not_changed_failure(self):
+        case = _case(layer_before="jwplayer", category_before="unknown", http_status_before=403)
+        now = _now(ok=False, layer="jwplayer", category=None, http_status=403)
+        assert classify_outcome(case, now) is Verdict.SAME_FAILURE
+
 
 @pytest.mark.unit
 class TestReplayCase:

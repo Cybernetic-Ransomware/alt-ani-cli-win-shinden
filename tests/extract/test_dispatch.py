@@ -149,6 +149,25 @@ class TestResolveDispatch:
         assert HOST_RULES["viewdara.com"] == HostRule("custom", vidara.resolve)
         assert HOST_RULES["www.viewdara.com"] == HostRule("custom", vidara.resolve)
 
+    def test_vidara_lookalike_hosts_route_to_vidara_extractor(self):
+        """vidawra/vidwara/vidvara mirrors confirmed to speak the same /api/stream protocol."""
+        from alt_ani_cli.extract import vidara
+
+        for host in ("vidawra.cc", "vidawra.co", "vidwara.site", "vidvara.biz"):
+            assert HOST_RULES[host] == HostRule("custom", vidara.resolve)
+
+    def test_morningmarkets_hosts_route_to_vidara_extractor(self):
+        """Cosmetic JWPlayer skin, but the real source comes from vidara's /api/stream."""
+        from alt_ani_cli.extract import vidara
+
+        assert HOST_RULES["morningmarkets.art"] == HostRule("custom", vidara.resolve)
+        assert HOST_RULES["morningmarkets.fit"] == HostRule("custom", vidara.resolve)
+
+    def test_dood_yt_routes_to_dood_extractor(self):
+        from alt_ani_cli.extract import dood
+
+        assert HOST_RULES["dood.yt"] == HostRule("custom", dood.resolve)
+
     def test_lycoris_hosts_route_to_lycoris_extractor(self):
         from alt_ani_cli.extract import lycoris
 
@@ -290,7 +309,11 @@ class TestFailureDiagnosticsAttrs:
         with (
             patch.dict(
                 "alt_ani_cli.extract.HOST_RULES",
-                {"mp4upload.com": HostRule("custom", MagicMock(side_effect=cffi_exceptions.DNSError("could not resolve host")))},
+                {
+                    "mp4upload.com": HostRule(
+                        "custom", MagicMock(side_effect=cffi_exceptions.DNSError("could not resolve host"))
+                    )
+                },
             ),
             patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
         ):
@@ -301,7 +324,9 @@ class TestFailureDiagnosticsAttrs:
     def test_json_decode_failure_classified_as_parser_drift(self):
         json_exc = cffi_exceptions.JSONDecodeError("Expecting value", "<html>...</html>", 0)
         with (
-            patch.dict("alt_ani_cli.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", MagicMock(side_effect=json_exc))}),
+            patch.dict(
+                "alt_ani_cli.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", MagicMock(side_effect=json_exc))}
+            ),
             patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
         ):
             with pytest.raises(NoStreamError) as exc_info:
@@ -310,7 +335,10 @@ class TestFailureDiagnosticsAttrs:
 
     def test_unclassifiable_exception_falls_back_to_unknown(self):
         with (
-            patch.dict("alt_ani_cli.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", MagicMock(side_effect=RuntimeError("boom")))}),
+            patch.dict(
+                "alt_ani_cli.extract.HOST_RULES",
+                {"mp4upload.com": HostRule("custom", MagicMock(side_effect=RuntimeError("boom")))},
+            ),
             patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
         ):
             with pytest.raises(NoStreamError) as exc_info:

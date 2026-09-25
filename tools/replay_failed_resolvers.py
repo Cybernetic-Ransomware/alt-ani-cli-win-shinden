@@ -251,6 +251,9 @@ def classify_outcome(case: ReplayCase, now: _NowSnapshot) -> Verdict:
         if before_val == now_val:
             continue
         unknown = _UNKNOWN_BY_FIELD[field_name]
+        if before_val in unknown and now_val in unknown:
+            # Both are "no specific info" placeholders (e.g. None <-> "unknown") — not a real change.
+            continue
         if before_val in unknown and now_val not in unknown:
             improved = True
             continue

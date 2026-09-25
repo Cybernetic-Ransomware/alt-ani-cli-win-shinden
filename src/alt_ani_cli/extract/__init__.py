@@ -85,6 +85,7 @@ HOST_RULES: dict[str, HostRule] = {
     "www.doodstream.com": HostRule("custom", dood.resolve),
     "dood.la": HostRule("custom", dood.resolve),
     "dood.re": HostRule("custom", dood.resolve),
+    "dood.yt": HostRule("custom", dood.resolve),
     "dooood.com": HostRule("custom", dood.resolve),
     "ds2play.com": HostRule("custom", dood.resolve),
     # vidara / viewdara — same host-agnostic API, base URL derived from the embed URL itself
@@ -92,6 +93,15 @@ HOST_RULES: dict[str, HostRule] = {
     "www.vidara.to": HostRule("custom", vidara.resolve),
     "viewdara.com": HostRule("custom", vidara.resolve),
     "www.viewdara.com": HostRule("custom", vidara.resolve),
+    # vidawra/vidwara/vidvara — same /api/stream protocol as vidara, confirmed by live replay
+    "vidawra.cc": HostRule("custom", vidara.resolve),
+    "vidawra.co": HostRule("custom", vidara.resolve),
+    "vidwara.site": HostRule("custom", vidara.resolve),
+    "vidvara.biz": HostRule("custom", vidara.resolve),
+    # morningmarkets — cosmetic JWPlayer skin, but the actual source comes from vidara's
+    # /api/stream protocol, confirmed by live replay
+    "morningmarkets.art": HostRule("custom", vidara.resolve),
+    "morningmarkets.fit": HostRule("custom", vidara.resolve),
     # lycoris
     "lycoris.cafe": HostRule("custom", lycoris.resolve),
     "www.lycoris.cafe": HostRule("custom", lycoris.resolve),
