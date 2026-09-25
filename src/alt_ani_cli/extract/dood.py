@@ -5,7 +5,7 @@ from curl_cffi import requests as cffi_requests
 
 from alt_ani_cli.config import USER_AGENT
 from alt_ani_cli.content import EXCEPTIONS
-from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.extract.common import CATEGORY_PARSER_DRIFT, ExtractError, Stream
 
 _PASS_MD5_RE = re.compile(r"/pass_md5/([a-zA-Z0-9/_-]+)")
 _TOKEN_RE = re.compile(r"token=([a-zA-Z0-9]+)")
@@ -14,7 +14,7 @@ _TOKEN_RE = re.compile(r"token=([a-zA-Z0-9]+)")
 def resolve(embed_url: str, referer: str) -> Stream:
     m_base = re.match(r"(https?://[^/]+)", embed_url)
     if not m_base:
-        raise ValueError(EXCEPTIONS["dood"]["bad_base_url"].format(embed_url=repr(embed_url)))
+        raise ExtractError(EXCEPTIONS["dood"]["bad_base_url"].format(embed_url=repr(embed_url)), CATEGORY_PARSER_DRIFT)
     base = m_base.group(1)
 
     with cffi_requests.Session(impersonate="chrome", timeout=30.0, allow_redirects=True) as client:
@@ -24,7 +24,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
 
         m_pass = _PASS_MD5_RE.search(html)
         if not m_pass:
-            raise ValueError(EXCEPTIONS["dood"]["no_pass_md5"].format(embed_url=repr(embed_url)))
+            raise ExtractError(EXCEPTIONS["dood"]["no_pass_md5"].format(embed_url=repr(embed_url)), CATEGORY_PARSER_DRIFT)
 
         pass_url = f"{base}/pass_md5/{m_pass.group(1)}"
         resp2 = client.get(

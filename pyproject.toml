@@ -1,6 +1,6 @@
 [project]
 name = "alt-ani-cli-win"
-version = "0.2.0"
+version = "0.3.0"
 requires-python = ">=3.14"
 description = "CLI for watching and downloading anime from shinden.pl on Windows"
 license = { text = "EUPL-1.2" }
@@ -86,7 +86,7 @@ exclude_dirs = ["tests", "tools"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.2.0"
+version = "0.3.0"
 tag_format = "v$version"
 version_files = [
     "pyproject.toml:version",

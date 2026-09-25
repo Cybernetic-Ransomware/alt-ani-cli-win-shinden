@@ -82,16 +82,19 @@ class TestResolveLycoris:
 
     def test_missing_primary_source_raises_value_error(self):
         with _make_session_patch({"episodeInfo": {}}):
-            with pytest.raises(ValueError, match="lycoris"):
+            with pytest.raises(ValueError, match="lycoris") as exc_info:
                 resolve(_EMBED, _REFERER)
+        assert exc_info.value.category == "no_stream_url"
 
     def test_missing_stream_urls_raises_value_error(self):
         with _make_session_patch({"episodeInfo": {"primarySource": {}}}):
-            with pytest.raises(ValueError, match="lycoris"):
+            with pytest.raises(ValueError, match="lycoris") as exc_info:
                 resolve(_EMBED, _REFERER)
+        assert exc_info.value.category == "no_stream_url"
 
     def test_bad_embed_url_raises_before_http(self):
         with _make_session_patch(_API_RESPONSE) as session:
-            with pytest.raises(ValueError, match="lycoris"):
+            with pytest.raises(ValueError, match="lycoris") as exc_info:
                 resolve("not-a-url", _REFERER)
         session.get.assert_not_called()
+        assert exc_info.value.category == "parser_drift"

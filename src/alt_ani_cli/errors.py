@@ -10,6 +10,14 @@ class NoStreamError(ShindenError):
     """Could not extract a playable video URL from the embed page."""
 
 
+class UnsupportedHostError(NoStreamError):
+    """Host is known to be unextractable — the registry marks it unsupported."""
+
+
+class JavaScriptRequiredError(UnsupportedHostError):
+    """Host serves a pure JS SPA — needs a real browser, no static video URL."""
+
+
 class PlayerNotFoundError(ShindenError):
     """mpv / vlc executable not found on PATH."""
 

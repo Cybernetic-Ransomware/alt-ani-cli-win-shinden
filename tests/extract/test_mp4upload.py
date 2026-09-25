@@ -59,8 +59,9 @@ class TestResolveMp4upload:
 
     def test_raises_when_no_url_found(self):
         with _make_session_patch("<html><body>no video here</body></html>"):
-            with pytest.raises(ValueError, match="mp4upload"):
+            with pytest.raises(ValueError, match="mp4upload") as exc_info:
                 resolve(_EMBED, _REFERER)
+        assert exc_info.value.category == "parser_drift"
 
     def test_referer_in_stream_headers(self):
         with _make_session_patch("<script>player.src('https://cdn.mp4upload.com/v/video.mp4');</script>"):

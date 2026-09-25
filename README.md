@@ -163,18 +163,34 @@ uv run pre-commit install     # install git hooks
 Day-to-day with [just](https://github.com/casey/just):
 
 ```powershell
-just test      # run tests
-just lint      # ruff check, ty, codespell, bandit
-just format    # ruff format --check (report only)
+just test           # run tests
+just lint           # ruff check, ty, codespell, bandit
+just format         # apply ruff formatting to src/
+just replay-failures "PATH_TO_LOG"  # replay resolve_result failures from a diagnostics session log
 ```
 
 ## Supported video hosts
 
-Native extractors: mp4upload, streamtape, dood, Lycoris Cafe, streamwish/filemoon family (JWPlayer), CDA, sibnet, VK.
+Native extractors: mp4upload, streamtape, dood, Lycoris Cafe, Vidara/Viewdara, Uqload, Flyf,
+streamwish/filemoon/morencius family (JWPlayer), CDA, sibnet, VK.
+
+**Playmate is currently broken.** The extractor exists (`extract/playmate.py`), but a live
+replay (see `tools/replay_failed_resolvers.py` below) confirmed the upstream protocol has
+changed: the current request now gets HTTP 403, and the additional request elements it needs
+have not been reverse-engineered yet. Playmate links fall back to yt-dlp, which also cannot
+resolve them.
 
 Lycoris Cafe embeds are resolved through the host API and expose the available direct qualities (`1080p`, `720p`, `480p`) plus `source-mkv` when the API provides it.
 
 All other hosts fall back to yt-dlp (1500+ supported sites).
+
+**Not supported: mega.nz.** MEGA serves end-to-end encrypted files (AES-128-CTR, decryption key
+in the URL fragment), so this project cannot hand the stream directly to yt-dlp or mpv without a
+custom decrypting proxy — the host fails fast with a clear message instead of attempting extraction.
+
+> **TODO — full MEGA player support**: call the MEGA API for the direct (encrypted) file URL,
+> decrypt AES-128-CTR on the fly through a local streaming proxy for mpv, and add a custom
+> download path bypassing yt-dlp. Requires a new crypto dependency (e.g. `pycryptodome`).
 
 ## Security notes
 
@@ -191,9 +207,11 @@ Scripts in `tools/` are used during development to inspect the shinden.pl API. T
 | `tools/spike_curl_cffi.py` | Verifies the Cloudflare bypass chain: curl_cffi TLS → FlareSolverr |
 | `tools/debug_embed.py <url>` | Scans a player JS bundle for CDN domains and HLS/token patterns — used to reverse-engineer new embed hosts |
 | `tools/dump_search_html.py [query]` | Dumps parsed search result rows from shinden.pl — used to debug the search HTML parser |
+| `tools/replay_failed_resolvers.py <log>` | Replays `resolve_result ok=False` entries from a diagnostics session log against live hosts, showing a BEFORE/NOW comparison per case — also available as `just replay-failures <log>` |
 
 ```powershell
 uv run python tools/spike_curl_cffi.py
 uv run python tools/dump_search_html.py "soul eater"
 uv run python tools/debug_embed.py https://example-embed-host.com/e/abc123
+just replay-failures "$env:LOCALAPPDATA\alt-ani-cli\alt-ani-cli\Cache\diagnostics\session_20260919_232825_752907.log"
 ```

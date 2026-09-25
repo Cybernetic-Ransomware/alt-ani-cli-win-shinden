@@ -75,5 +75,6 @@ class TestResolveStreamtape:
 
     def test_no_match_raises_value_error(self):
         with _make_session_patch(_NO_MATCH):
-            with pytest.raises(ValueError, match="streamtape"):
+            with pytest.raises(ValueError, match="streamtape") as exc_info:
                 resolve(_EMBED, _REFERER)
+        assert exc_info.value.category == "parser_drift"

@@ -4,7 +4,7 @@ from curl_cffi import requests as cffi_requests
 
 from alt_ani_cli.config import USER_AGENT
 from alt_ani_cli.content import EXCEPTIONS
-from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.extract.common import CATEGORY_PARSER_DRIFT, ExtractError, Stream
 
 # Streamtape concatenates two JS strings to form the /get_video token URL.
 # Pattern: robotlink.innerHTML = '/get_video?id=...' + '&expires=...&ip=...'
@@ -47,4 +47,4 @@ def resolve(embed_url: str, referer: str) -> Stream:
             ext="mp4",
         )
 
-    raise ValueError(EXCEPTIONS["streamtape"]["no_token"].format(embed_url=repr(embed_url)))
+    raise ExtractError(EXCEPTIONS["streamtape"]["no_token"].format(embed_url=repr(embed_url)), CATEGORY_PARSER_DRIFT)
