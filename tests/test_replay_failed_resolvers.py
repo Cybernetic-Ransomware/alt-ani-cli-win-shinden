@@ -180,6 +180,169 @@ class TestParseDiagnosticsLog:
 
         assert cases[0].online_id is None
 
+    def test_new_health_events_and_mode_are_parsed_without_creating_replay_cases(self, tmp_path):
+        lines = [
+            _line("session_start", version="1.0.0", python="3.14.0", platform="Windows", mode="interactive"),
+            _line("series_selected", id="123", title="Attack on Titan"),
+            _line("episode_selected", number=5, title="Ep Five"),
+            _line("player_selected", online_id="99", player="CDA", host="cda.pl"),
+            _line(
+                "host_health",
+                host="cda.pl",
+                from_state="healthy",
+                to_state="degraded",
+                signal="soft",
+                online_id="99",
+                category="parser_drift",
+                resolver="ytdlp",
+                evidence_expired=False,
+            ),
+            _line(
+                "health_defer",
+                action="deferred",
+                host="cda.pl",
+                online_id="99",
+                player="CDA",
+                state="degraded",
+                category="parser_drift",
+            ),
+            _line(
+                "resolve_result",
+                host="cda.pl",
+                ok=False,
+                exc="NoStreamError",
+                layer="ytdlp",
+                category="http_error",
+                http_status=403,
+                used_fallback=False,
+                elapsed=1.234,
+            ),
+        ]
+        log = tmp_path / "session.log"
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        cases, skipped = parse_diagnostics_log(log)
+
+        assert skipped == 0
+        assert len(cases) == 1
+        case = cases[0]
+        assert case.series_id == "123"
+        assert case.episode_number == 5.0
+        assert case.online_id == "99"
+        assert case.player_name == "CDA"
+        assert case.host_before == "cda.pl"
+
+    def test_noninteractive_run_with_two_failing_players_yields_two_cases(self, tmp_path):
+        lines = [
+            _line("session_start", version="1.0.0", python="3.14.0", platform="Windows", mode="noninteractive"),
+            _line("series_selected", id="123", title="Attack on Titan"),
+            _line("episode_selected", number=5, title="Ep Five"),
+            _line("player_selected", online_id="99", player="CDA"),
+            _line(
+                "host_health",
+                host="cda.pl",
+                from_state="unknown",
+                to_state="degraded",
+                signal="soft",
+                online_id="99",
+                category="parser_drift",
+                resolver="ytdlp",
+                evidence_expired=False,
+            ),
+            _line(
+                "resolve_result",
+                host="cda.pl",
+                ok=False,
+                exc="NoStreamError",
+                layer="ytdlp",
+                category="parser_drift",
+                used_fallback=False,
+                elapsed=1.1,
+            ),
+            _line("player_selected", online_id="88", player="Vidara"),
+            _line(
+                "host_health",
+                host="vidawra.cc",
+                from_state="unknown",
+                to_state="degraded",
+                signal="soft",
+                online_id="88",
+                category="http_error",
+                http_status=403,
+                resolver="vidara",
+                evidence_expired=False,
+            ),
+            _line(
+                "resolve_result",
+                host="vidawra.cc",
+                ok=False,
+                exc="NoStreamError",
+                layer="custom",
+                category="http_error",
+                http_status=403,
+                used_fallback=False,
+                elapsed=0.9,
+            ),
+        ]
+        log = tmp_path / "session.log"
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        cases, skipped = parse_diagnostics_log(log)
+
+        assert skipped == 0
+        assert len(cases) == 2
+        assert cases[0].online_id == "99"
+        assert cases[0].player_name == "CDA"
+        assert cases[0].host_before == "cda.pl"
+        assert cases[1].online_id == "88"
+        assert cases[1].player_name == "Vidara"
+        assert cases[1].host_before == "vidawra.cc"
+
+    def test_deferred_and_dropped_health_defer_events_never_create_cases(self, tmp_path):
+        """deferred/dropped never extract, so they must never surface as replayable cases — only real attempts do."""
+        lines = [
+            _line("player_selected", online_id="a1", player="APlayer"),
+            _line(
+                "health_defer", action="deferred", host="hostx.example", online_id="a1", player="APlayer", state="unavailable"
+            ),
+            _line("player_selected", online_id="b1", player="BPlayer"),
+            _line(
+                "resolve_result",
+                host="hosty.example",
+                ok=False,
+                exc="NoStreamError",
+                layer="custom",
+                category="http_error",
+                http_status=403,
+                elapsed=0.5,
+            ),
+            _line("player_selected", online_id="a1", player="APlayer"),
+            _line("health_defer", action="retry", host="hostx.example", online_id="a1", player="APlayer", state="unavailable"),
+            _line(
+                "resolve_result",
+                host="hostx.example",
+                ok=False,
+                exc="NoStreamError",
+                layer="custom",
+                category="network_error",
+                elapsed=0.3,
+            ),
+            _line(
+                "health_defer", action="dropped", host="hostx.example", online_id="c1", player="CPlayer", state="unavailable"
+            ),
+        ]
+        log = tmp_path / "session.log"
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        cases, skipped = parse_diagnostics_log(log)
+
+        assert skipped == 0
+        assert len(cases) == 2
+        assert cases[0].online_id == "b1"
+        assert cases[0].host_before == "hosty.example"
+        assert cases[1].online_id == "a1"
+        assert cases[1].host_before == "hostx.example"
+
     def test_quoted_values_with_spaces_round_trip(self, tmp_path):
         lines = [
             _line("episode_selected", number=1, title="A Title With Spaces"),
