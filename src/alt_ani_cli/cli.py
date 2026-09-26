@@ -22,6 +22,7 @@ from alt_ani_cli.errors import (
     ShindenError,
 )
 from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.health import HealthTransition, ResolverHealth, Signal, classify_failure
 from alt_ani_cli.models import EmbedURL, EpisodeRow, PlayerEntry, SeriesRef
 from alt_ani_cli.player import runner as player_runner
 from alt_ani_cli.shinden import api as shinden_api
@@ -214,6 +215,22 @@ _RESOLVE_DIAG_FIELDS = (
 )
 
 
+def _emit_health_transition(transition: HealthTransition | None, *, category: str | None, http_status: int | None) -> None:
+    if transition is None:
+        return
+    diagnostics.host_health(
+        host=transition.host,
+        from_state=transition.before.value,
+        to_state=transition.after.value,
+        signal=transition.signal.value,
+        online_id=transition.online_id,
+        category=category,
+        http_status=http_status,
+        resolver=extract.resolver_family(transition.host),
+        evidence_expired=transition.evidence_expired,
+    )
+
+
 def _resolve_with_fallback(
     client,
     players: list[PlayerEntry],
@@ -224,6 +241,7 @@ def _resolve_with_fallback(
     cookies_file: str | None = None,
     cookies_browser: str | None = None,
     embed_cache: dict[str, EmbedURL] | None = None,
+    health: ResolverHealth | None = None,
 ):
     """Try chosen player; if it fails and auto-mode is active, walk down the sorted list.
 
@@ -231,6 +249,9 @@ def _resolve_with_fallback(
     For user-chosen players (auto=False) only the selected player is attempted.
     A candidate found in embed_cache skips the 5 s resolve; if extraction on the
     cached embed fails, one fresh resolve is attempted before giving up on it.
+
+    ``health``, when given, only records outcomes for diagnostics — it never
+    skips, reorders, or defers a candidate (that lands in a later stage).
     """
     candidates = players if auto else [chosen]
     # Always start with the explicitly chosen player
@@ -240,6 +261,8 @@ def _resolve_with_fallback(
     cache = embed_cache if embed_cache is not None else {}
 
     for candidate in candidates:
+        if auto:
+            diagnostics.player_selected(candidate.online_id, candidate.player, None)
         start = time.monotonic()
         host_hint: str | None = None
         try:
@@ -259,12 +282,28 @@ def _resolve_with_fallback(
                 cache[candidate.online_id] = embed
                 host_hint = _host_of_url(embed.url)
                 stream = _extract_stream(embed, cookies_file, cookies_browser)
-            diagnostics.resolve_result(host_hint, True, None, time.monotonic() - start)
+            elapsed = time.monotonic() - start
+            if health is not None and host_hint is not None:
+                transition = health.record(host_hint, candidate.online_id, Signal.SUCCESS)
+                _emit_health_transition(transition, category=None, http_status=None)
+            diagnostics.resolve_result(host_hint, True, None, elapsed)
             return stream, embed
         except (NoStreamError, AntiBotError) as exc:
             fields = {name: getattr(exc, name, None) for name in _RESOLVE_DIAG_FIELDS}
             if isinstance(exc, AntiBotError):
                 fields.update(layer="shinden_api", category="anti_bot")
+            if health is not None and host_hint is not None:
+                signal = classify_failure(
+                    host_hint,
+                    layer=fields.get("layer") or "",
+                    category=fields.get("category"),
+                    http_status=fields.get("http_status"),
+                    used_fallback=bool(fields.get("used_fallback")),
+                    fallback_category=fields.get("fallback_category"),
+                    fallback_http_status=fields.get("fallback_http_status"),
+                )
+                transition = health.record(host_hint, candidate.online_id, signal)
+                _emit_health_transition(transition, category=fields.get("category"), http_status=fields.get("http_status"))
             diagnostics.resolve_result(host_hint, False, type(exc).__name__, time.monotonic() - start, **fields)
             progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=exc))
 
@@ -405,9 +444,11 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
 
     player_kind = "vlc" if args.vlc else "mpv"
     _episode_action: str | None = None
+    health = ResolverHealth()
 
     for ep in targets:
         progress.info(_PROG["episode"].format(number=ep.number, title=ep.title))
+        diagnostics.episode_selected(ep.number, ep.title)
 
         ep_resp = client.get(ep.url)
         ep_resp.raise_for_status()
@@ -443,6 +484,7 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
             ep_number=ep.number,
             cookies_file=args.cookies_file,
             cookies_browser=args.cookies_browser,
+            health=health,
         )
 
         if stream is None:
@@ -513,11 +555,11 @@ def main() -> None:  # noqa: C901
 
     client = shinden_http.make_client()
     interactive = sys.stdin.isatty() and not args.select_nth
+    mode = "interactive" if interactive else "noninteractive"
 
-    if interactive:
-        diag_path = diagnostics.configure()
-        diagnostics.session_start(__version__, platform.python_version(), platform.platform())
-        progress.info(_PROG["diagnostics_log_hint"].format(path=diag_path))
+    diag_path = diagnostics.configure()
+    diagnostics.session_start(__version__, platform.python_version(), platform.platform(), mode=mode)
+    progress.info(_PROG["diagnostics_log_hint"].format(path=diag_path))
 
     try:
         if interactive:

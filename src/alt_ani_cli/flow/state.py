@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any
 
+from alt_ani_cli.health import ResolverHealth
+
 
 class Screen(Enum):
     START_MODE = auto()
@@ -76,6 +78,9 @@ class FlowState:
     # cached user choices
     quality: str | None = None
     episode_action: str | None = None
+
+    # observability only — never gates player choice, order, or skipping
+    health: ResolverHealth = field(default_factory=ResolverHealth)
 
     @property
     def current_ep(self):

@@ -73,8 +73,8 @@ def _emit(event: str, **fields: object) -> None:
     _logger.info(" ".join(parts))
 
 
-def session_start(version: str, python_version: str, platform: str) -> None:
-    _emit("session_start", version=version, python=python_version, platform=platform)
+def session_start(version: str, python_version: str, platform: str, *, mode: str | None = None) -> None:
+    _emit("session_start", version=version, python=python_version, platform=platform, mode=mode)
 
 
 def session_end(outcome: str, exc: str | None) -> None:
@@ -125,6 +125,52 @@ def resolve_result(
         fallback_category=fallback_category,
         fallback_http_status=fallback_http_status,
         elapsed=f"{elapsed:.3f}",
+    )
+
+
+def host_health(
+    host: str,
+    from_state: str,
+    to_state: str,
+    signal: str,
+    online_id: str | None,
+    category: str | None,
+    http_status: int | None,
+    resolver: str | None,
+    evidence_expired: bool,
+) -> None:
+    _emit(
+        "host_health",
+        host=host,
+        from_state=from_state,
+        to_state=to_state,
+        signal=signal,
+        online_id=online_id,
+        category=category,
+        http_status=http_status,
+        resolver=resolver,
+        evidence_expired=evidence_expired,
+    )
+
+
+def health_defer(
+    action: str,
+    host: str,
+    online_id: str | None,
+    player: str | None,
+    state: str,
+    category: str | None,
+    http_status: int | None,
+) -> None:
+    _emit(
+        "health_defer",
+        action=action,
+        host=host,
+        online_id=online_id,
+        player=player,
+        state=state,
+        category=category,
+        http_status=http_status,
     )
 
 

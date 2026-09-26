@@ -11,7 +11,7 @@ from yt_dlp.networking.exceptions import HTTPError as YtdlpHTTPError
 from yt_dlp.networking.exceptions import TransportError
 
 from alt_ani_cli.errors import JavaScriptRequiredError, NoStreamError, UnsupportedHostError
-from alt_ani_cli.extract import HOST_RULES, HostRule, _normalize_url, resolve
+from alt_ani_cli.extract import HOST_RULES, HostRule, _normalize_url, mp4upload, resolve, resolver_family
 from alt_ani_cli.extract.common import CATEGORY_NO_STREAM_URL, CATEGORY_PARSER_DRIFT, ExtractError, Stream
 
 _REFERER = "https://shinden.pl/"
@@ -399,3 +399,38 @@ class TestRealYtdlpFailureDiagnostics:
         assert exc_info.value.category == CATEGORY_PARSER_DRIFT
         assert exc_info.value.fallback_category == "http_error"
         assert exc_info.value.fallback_http_status == 503
+
+
+@pytest.mark.unit
+class TestResolverFamily:
+    @pytest.mark.parametrize(
+        ("host", "family"),
+        [
+            ("dood.la", "dood"),
+            ("dood.yt", "dood"),
+            ("vidawra.cc", "vidara"),
+            ("morningmarkets.art", "vidara"),
+            ("streamtape.to", "streamtape"),
+            ("mp4upload.com", "mp4upload"),
+            ("lycoris.cafe", "lycoris"),
+            ("playmate.to", "playmate"),
+            ("uqload.is", "uqload"),
+            ("flyf.lat", "flyf"),
+            ("streamwish.com", "jwplayer"),
+            ("filemoon.sx", "jwplayer"),
+            ("cda.pl", "ytdlp"),
+            ("sibnet.ru", "ytdlp"),
+            ("voe.sx", "unsupported"),
+            ("mega.nz", "unsupported"),
+            ("completely-unknown-host.example", "generic"),
+        ],
+    )
+    def test_known_and_unknown_hosts(self, host, family):
+        assert resolver_family(host) == family
+
+    def test_falls_back_to_www_variant_when_bare_host_missing(self):
+        with patch.dict("alt_ani_cli.extract.HOST_RULES", {"www.onlywww.example": HostRule("custom", mp4upload.resolve)}):
+            assert resolver_family("onlywww.example") == "mp4upload"
+
+    def test_bare_host_takes_priority_over_www_variant(self):
+        assert resolver_family("mp4upload.com") == "mp4upload"
