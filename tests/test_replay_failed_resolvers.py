@@ -298,6 +298,51 @@ class TestParseDiagnosticsLog:
         assert cases[1].player_name == "Vidara"
         assert cases[1].host_before == "vidawra.cc"
 
+    def test_deferred_and_dropped_health_defer_events_never_create_cases(self, tmp_path):
+        """deferred/dropped never extract, so they must never surface as replayable cases — only real attempts do."""
+        lines = [
+            _line("player_selected", online_id="a1", player="APlayer"),
+            _line(
+                "health_defer", action="deferred", host="hostx.example", online_id="a1", player="APlayer", state="unavailable"
+            ),
+            _line("player_selected", online_id="b1", player="BPlayer"),
+            _line(
+                "resolve_result",
+                host="hosty.example",
+                ok=False,
+                exc="NoStreamError",
+                layer="custom",
+                category="http_error",
+                http_status=403,
+                elapsed=0.5,
+            ),
+            _line("player_selected", online_id="a1", player="APlayer"),
+            _line("health_defer", action="retry", host="hostx.example", online_id="a1", player="APlayer", state="unavailable"),
+            _line(
+                "resolve_result",
+                host="hostx.example",
+                ok=False,
+                exc="NoStreamError",
+                layer="custom",
+                category="network_error",
+                elapsed=0.3,
+            ),
+            _line(
+                "health_defer", action="dropped", host="hostx.example", online_id="c1", player="CPlayer", state="unavailable"
+            ),
+        ]
+        log = tmp_path / "session.log"
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        cases, skipped = parse_diagnostics_log(log)
+
+        assert skipped == 0
+        assert len(cases) == 2
+        assert cases[0].online_id == "b1"
+        assert cases[0].host_before == "hosty.example"
+        assert cases[1].online_id == "a1"
+        assert cases[1].host_before == "hostx.example"
+
     def test_quoted_values_with_spaces_round_trip(self, tmp_path):
         lines = [
             _line("episode_selected", number=1, title="A Title With Spaces"),

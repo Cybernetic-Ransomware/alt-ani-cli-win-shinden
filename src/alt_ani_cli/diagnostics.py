@@ -1,4 +1,4 @@
-"""Local-only session diagnostics log for interactive soak testing.
+"""Local-only session diagnostics log for interactive and noninteractive runs.
 
 Never sent over the network — written to a plain-text file under
 ``CACHE_DIR/diagnostics``. Every public function here accepts only

@@ -229,3 +229,243 @@ class TestResolveWithFallbackHealthObservationOnly:
             _resolve_with_fallback(MagicMock(), [_PLAYER], _PLAYER, False, 1.0)
 
         mock_player_selected.assert_not_called()
+
+
+_PLAYER_A = PlayerEntry(online_id="a1", player="PlayerA", lang_audio="pl", lang_subs="pl")
+_PLAYER_B = PlayerEntry(online_id="b1", player="PlayerB", lang_audio="pl", lang_subs="pl")
+_EMBED_HOST_A = EmbedURL(url="https://hosta.example/e/a1", referer="https://shinden.pl/")
+_EMBED_HOST_B = EmbedURL(url="https://hostb.example/e/b1", referer="https://shinden.pl/")
+
+
+def _resolve_embed_from(embeds: dict[str, EmbedURL], calls: list[str] | None = None):
+    def _side_effect(_client, online_id):
+        if calls is not None:
+            calls.append(online_id)
+        return embeds[online_id]
+
+    return _side_effect
+
+
+def _extract_by_url(outcomes: dict[str, object]):
+    """outcomes maps embed url -> Stream (success) or Exception instance (failure)."""
+
+    def _side_effect(url, _referer, **_kwargs):
+        outcome = outcomes[url]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    return _side_effect
+
+
+@pytest.mark.unit
+class TestResolveWithFallbackDeferAndLastResort:
+    """auto=True defers a candidate whose host is already UNAVAILABLE; last-resort retries it once."""
+
+    def test_deferred_host_skips_extraction_while_alternative_succeeds(self):
+        health = ResolverHealth()
+        health.record("hosta.example", "seed", Signal.HARD)
+        assert health.should_defer("hosta.example") is True
+
+        stream_b = MagicMock()
+        resolve_embed_calls: list[str] = []
+        with (
+            patch(
+                "alt_ani_cli.cli.shinden_api.resolve_embed",
+                side_effect=_resolve_embed_from({"a1": _EMBED_HOST_A, "b1": _EMBED_HOST_B}, resolve_embed_calls),
+            ),
+            patch(
+                "alt_ani_cli.cli.extract.resolve",
+                side_effect=_extract_by_url({_EMBED_HOST_B.url: stream_b}),
+            ) as mock_extract,
+            patch("alt_ani_cli.cli.diagnostics.resolve_result") as mock_result,
+            patch("alt_ani_cli.cli.diagnostics.health_defer") as mock_defer,
+        ):
+            result, embed = _resolve_with_fallback(MagicMock(), [_PLAYER_A, _PLAYER_B], _PLAYER_A, True, 1.0, health=health)
+
+        assert result is stream_b
+        assert embed is _EMBED_HOST_B
+        assert resolve_embed_calls == ["a1", "b1"]  # host A's embed IS resolved — only extraction is skipped
+        mock_extract.assert_called_once()
+        assert mock_extract.call_args.args[0] == _EMBED_HOST_B.url
+        mock_defer.assert_called_once()
+        _, kwargs = mock_defer.call_args
+        assert kwargs["action"] == "deferred"
+        assert kwargs["host"] == "hosta.example"
+        assert kwargs["online_id"] == "a1"
+        hosts_recorded = [c.args[0] for c in mock_result.call_args_list]
+        assert hosts_recorded == ["hostb.example"]  # no resolve_result for the deferred host
+
+    def test_last_resort_retries_deferred_candidate_on_the_same_embed(self):
+        health = ResolverHealth()
+        health.record("hosta.example", "seed", Signal.HARD)
+
+        stream_a = MagicMock()
+        exc_b = NoStreamError("b failed")
+        for name, value in dict(
+            layer="custom",
+            category="http_error",
+            http_status=403,
+            used_fallback=False,
+            fallback_category=None,
+            fallback_http_status=None,
+        ).items():
+            setattr(exc_b, name, value)
+
+        resolve_embed_calls: list[str] = []
+        with (
+            patch(
+                "alt_ani_cli.cli.shinden_api.resolve_embed",
+                side_effect=_resolve_embed_from({"a1": _EMBED_HOST_A, "b1": _EMBED_HOST_B}, resolve_embed_calls),
+            ),
+            patch(
+                "alt_ani_cli.cli.extract.resolve",
+                side_effect=_extract_by_url({_EMBED_HOST_B.url: exc_b, _EMBED_HOST_A.url: stream_a}),
+            ),
+            patch("alt_ani_cli.cli.diagnostics.resolve_result") as mock_result,
+            patch("alt_ani_cli.cli.diagnostics.health_defer") as mock_defer,
+            patch("alt_ani_cli.cli.diagnostics.player_selected") as mock_player_selected,
+        ):
+            result, embed = _resolve_with_fallback(MagicMock(), [_PLAYER_A, _PLAYER_B], _PLAYER_A, True, 1.0, health=health)
+
+        assert result is stream_a
+        assert embed is _EMBED_HOST_A
+        assert resolve_embed_calls.count("a1") == 1  # no second resolve_embed for the last-resort retry
+        actions = [c.kwargs["action"] for c in mock_defer.call_args_list]
+        assert actions == ["deferred", "retry"]
+        player_ids_selected = [c.args[0] for c in mock_player_selected.call_args_list]
+        assert player_ids_selected == ["a1", "b1", "a1"]  # A re-selected before its last-resort retry
+        hosts_recorded = [c.args[0] for c in mock_result.call_args_list]
+        assert hosts_recorded == ["hostb.example", "hosta.example"]
+
+    def test_second_deferred_candidate_dropped_when_host_still_unavailable_after_retry(self):
+        embed_a = EmbedURL(url="https://hostx.example/e/a1", referer="https://shinden.pl/")
+        embed_b = EmbedURL(url="https://hostx.example/e/b1", referer="https://shinden.pl/")
+        health = ResolverHealth()
+        health.record("hostx.example", "seed", Signal.HARD)
+
+        exc = NoStreamError("still down")
+        for name, value in dict(
+            layer="custom",
+            category="network_error",
+            http_status=None,
+            used_fallback=True,
+            fallback_category="network_error",
+            fallback_http_status=None,
+        ).items():
+            setattr(exc, name, value)
+
+        with (
+            patch(
+                "alt_ani_cli.cli.shinden_api.resolve_embed",
+                side_effect=_resolve_embed_from({"a1": embed_a, "b1": embed_b}),
+            ),
+            patch("alt_ani_cli.cli.extract.resolve", side_effect=exc),
+            patch("alt_ani_cli.cli.diagnostics.resolve_result") as mock_result,
+            patch("alt_ani_cli.cli.diagnostics.health_defer") as mock_defer,
+        ):
+            result, embed = _resolve_with_fallback(MagicMock(), [_PLAYER_A, _PLAYER_B], _PLAYER_A, True, 1.0, health=health)
+
+        assert result is None
+        actions = [c.kwargs["action"] for c in mock_defer.call_args_list]
+        assert actions == ["deferred", "deferred", "retry", "dropped"]
+        assert mock_result.call_count == 1  # only the real retry attempt on A — B was dropped, not extracted
+
+    def test_second_deferred_candidate_attempted_normally_once_host_recovers(self):
+        embed_a = EmbedURL(url="https://hostx.example/e/a1", referer="https://shinden.pl/")
+        embed_b = EmbedURL(url="https://hostx.example/e/b1", referer="https://shinden.pl/")
+        health = ResolverHealth()
+        health.record("hostx.example", "seed", Signal.HARD)
+
+        exc_a = NoStreamError("gone")
+        for name, value in dict(
+            layer="custom",
+            category="http_error",
+            http_status=404,
+            used_fallback=False,
+            fallback_category=None,
+            fallback_http_status=None,
+        ).items():
+            setattr(exc_a, name, value)
+        stream_b = MagicMock()
+
+        with (
+            patch(
+                "alt_ani_cli.cli.shinden_api.resolve_embed",
+                side_effect=_resolve_embed_from({"a1": embed_a, "b1": embed_b}),
+            ),
+            patch(
+                "alt_ani_cli.cli.extract.resolve",
+                side_effect=_extract_by_url({embed_a.url: exc_a, embed_b.url: stream_b}),
+            ),
+            patch("alt_ani_cli.cli.diagnostics.resolve_result") as mock_result,
+            patch("alt_ani_cli.cli.diagnostics.health_defer") as mock_defer,
+        ):
+            result, embed = _resolve_with_fallback(MagicMock(), [_PLAYER_A, _PLAYER_B], _PLAYER_A, True, 1.0, health=health)
+
+        assert result is stream_b
+        assert embed is embed_b
+        actions = [c.kwargs["action"] for c in mock_defer.call_args_list]
+        assert actions == ["deferred", "deferred", "retry", "retry"]  # B not dropped — host recovered after A's retry
+        assert mock_result.call_count == 2
+
+    def test_auto_false_never_defers_even_when_host_unavailable(self):
+        health = ResolverHealth()
+        health.record("hosta.example", "seed", Signal.HARD)
+
+        stream = MagicMock()
+        with (
+            patch("alt_ani_cli.cli.shinden_api.resolve_embed", return_value=_EMBED_HOST_A),
+            patch("alt_ani_cli.cli.extract.resolve", return_value=stream) as mock_extract,
+            patch("alt_ani_cli.cli.diagnostics.resolve_result"),
+            patch("alt_ani_cli.cli.diagnostics.health_defer") as mock_defer,
+        ):
+            result, embed = _resolve_with_fallback(MagicMock(), [_PLAYER_A], _PLAYER_A, False, 1.0, health=health)
+
+        mock_extract.assert_called_once()
+        mock_defer.assert_not_called()
+        assert result is stream
+
+    def test_health_none_never_defers(self):
+        stream = MagicMock()
+        with (
+            patch("alt_ani_cli.cli.shinden_api.resolve_embed", return_value=_EMBED_HOST_A),
+            patch("alt_ani_cli.cli.extract.resolve", return_value=stream) as mock_extract,
+            patch("alt_ani_cli.cli.diagnostics.resolve_result"),
+            patch("alt_ani_cli.cli.diagnostics.health_defer") as mock_defer,
+        ):
+            result, embed = _resolve_with_fallback(MagicMock(), [_PLAYER_A, _PLAYER_B], _PLAYER_A, True, 1.0, health=None)
+
+        mock_extract.assert_called_once()
+        mock_defer.assert_not_called()
+        assert result is stream
+
+    def test_unsupported_host_is_never_deferred(self):
+        health = ResolverHealth()
+        health.record("unsupported.example", "seed", Signal.UNSUPPORTED)
+        assert health.should_defer("unsupported.example") is False
+
+        embed = EmbedURL(url="https://unsupported.example/e/a1", referer="https://shinden.pl/")
+        exc = NoStreamError("unsupported host")
+        for name, value in dict(
+            layer="unsupported",
+            category="unsupported_host",
+            http_status=None,
+            used_fallback=False,
+            fallback_category=None,
+            fallback_http_status=None,
+        ).items():
+            setattr(exc, name, value)
+
+        with (
+            patch("alt_ani_cli.cli.shinden_api.resolve_embed", return_value=embed),
+            patch("alt_ani_cli.cli.extract.resolve", side_effect=exc) as mock_extract,
+            patch("alt_ani_cli.cli.diagnostics.resolve_result") as mock_result,
+            patch("alt_ani_cli.cli.diagnostics.health_defer") as mock_defer,
+        ):
+            result, _embed = _resolve_with_fallback(MagicMock(), [_PLAYER_A], _PLAYER_A, True, 1.0, health=health)
+
+        assert result is None
+        mock_extract.assert_called_once()
+        mock_defer.assert_not_called()
+        mock_result.assert_called_once()

@@ -5,6 +5,7 @@ import contextlib
 import platform
 import sys
 import time
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
@@ -231,6 +232,54 @@ def _emit_health_transition(transition: HealthTransition | None, *, category: st
     )
 
 
+def _record_extraction_success(host: str | None, candidate: PlayerEntry, health: ResolverHealth | None, start: float) -> None:
+    if health is not None and host is not None:
+        transition = health.record(host, candidate.online_id, Signal.SUCCESS)
+        _emit_health_transition(transition, category=None, http_status=None)
+    diagnostics.resolve_result(host, True, None, time.monotonic() - start)
+
+
+def _record_extraction_failure(
+    host: str | None,
+    candidate: PlayerEntry,
+    exc: Exception,
+    health: ResolverHealth | None,
+    start: float,
+    ep_number: float,
+) -> None:
+    fields = {name: getattr(exc, name, None) for name in _RESOLVE_DIAG_FIELDS}
+    if isinstance(exc, AntiBotError):
+        fields.update(layer="shinden_api", category="anti_bot")
+    if health is not None and host is not None:
+        signal = classify_failure(
+            host,
+            layer=fields.get("layer") or "",
+            category=fields.get("category"),
+            http_status=fields.get("http_status"),
+            used_fallback=bool(fields.get("used_fallback")),
+            fallback_category=fields.get("fallback_category"),
+            fallback_http_status=fields.get("fallback_http_status"),
+        )
+        transition = health.record(host, candidate.online_id, signal)
+        _emit_health_transition(transition, category=fields.get("category"), http_status=fields.get("http_status"))
+    diagnostics.resolve_result(host, False, type(exc).__name__, time.monotonic() - start, **fields)
+    progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=exc))
+
+
+@dataclass
+class _DeferredCandidate:
+    """A candidate whose embed is already resolved but whose extraction was postponed.
+
+    Carries the resolved ``embed`` so last-resort can retry extraction without a second
+    resolve_embed call — the host is only known after resolving, so deferral can never
+    happen earlier than this.
+    """
+
+    candidate: PlayerEntry
+    embed: EmbedURL
+    host: str
+
+
 def _resolve_with_fallback(
     client,
     players: list[PlayerEntry],
@@ -250,8 +299,10 @@ def _resolve_with_fallback(
     A candidate found in embed_cache skips the 5 s resolve; if extraction on the
     cached embed fails, one fresh resolve is attempted before giving up on it.
 
-    ``health``, when given, only records outcomes for diagnostics — it never
-    skips, reorders, or defers a candidate (that lands in a later stage).
+    ``health``, when given, records outcomes for diagnostics and — in auto mode only —
+    gates *when* a candidate's extraction runs: a host already known UNAVAILABLE in this
+    session is deferred to the end of the candidate list, then given at least one real
+    attempt in a last-resort pass if nothing else worked. Player order itself never changes.
     """
     candidates = players if auto else [chosen]
     # Always start with the explicitly chosen player
@@ -259,6 +310,7 @@ def _resolve_with_fallback(
         candidates = [chosen] + [p for p in candidates if p is not chosen]
 
     cache = embed_cache if embed_cache is not None else {}
+    deferred: list[_DeferredCandidate] = []
 
     for candidate in candidates:
         if auto:
@@ -273,6 +325,21 @@ def _resolve_with_fallback(
                 embed = _resolve_embed_with_spinner(client, candidate.online_id)
                 cache[candidate.online_id] = embed
             host_hint = _host_of_url(embed.url)
+
+            if auto and health is not None and health.should_defer(host_hint):
+                deferred.append(_DeferredCandidate(candidate=candidate, embed=embed, host=host_hint))
+                diagnostics.health_defer(
+                    action="deferred",
+                    host=host_hint,
+                    online_id=candidate.online_id,
+                    player=candidate.player,
+                    state=health.state(host_hint).value,
+                    category=None,
+                    http_status=None,
+                )
+                progress.warn(_PROG["host_deferred"].format(host=host_hint))
+                continue
+
             try:
                 stream = _extract_stream(embed, cookies_file, cookies_browser)
             except NoStreamError:
@@ -282,30 +349,48 @@ def _resolve_with_fallback(
                 cache[candidate.online_id] = embed
                 host_hint = _host_of_url(embed.url)
                 stream = _extract_stream(embed, cookies_file, cookies_browser)
-            elapsed = time.monotonic() - start
-            if health is not None and host_hint is not None:
-                transition = health.record(host_hint, candidate.online_id, Signal.SUCCESS)
-                _emit_health_transition(transition, category=None, http_status=None)
-            diagnostics.resolve_result(host_hint, True, None, elapsed)
+            _record_extraction_success(host_hint, candidate, health, start)
             return stream, embed
         except (NoStreamError, AntiBotError) as exc:
-            fields = {name: getattr(exc, name, None) for name in _RESOLVE_DIAG_FIELDS}
-            if isinstance(exc, AntiBotError):
-                fields.update(layer="shinden_api", category="anti_bot")
-            if health is not None and host_hint is not None:
-                signal = classify_failure(
-                    host_hint,
-                    layer=fields.get("layer") or "",
-                    category=fields.get("category"),
-                    http_status=fields.get("http_status"),
-                    used_fallback=bool(fields.get("used_fallback")),
-                    fallback_category=fields.get("fallback_category"),
-                    fallback_http_status=fields.get("fallback_http_status"),
+            _record_extraction_failure(host_hint, candidate, exc, health, start, ep_number)
+
+    if deferred and health is not None:
+        retried_hosts: set[str] = set()
+        for entry in deferred:
+            if entry.host in retried_hosts and health.should_defer(entry.host):
+                diagnostics.health_defer(
+                    action="dropped",
+                    host=entry.host,
+                    online_id=entry.candidate.online_id,
+                    player=entry.candidate.player,
+                    state=health.state(entry.host).value,
+                    category=None,
+                    http_status=None,
                 )
-                transition = health.record(host_hint, candidate.online_id, signal)
-                _emit_health_transition(transition, category=fields.get("category"), http_status=fields.get("http_status"))
-            diagnostics.resolve_result(host_hint, False, type(exc).__name__, time.monotonic() - start, **fields)
-            progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=exc))
+                progress.warn(_PROG["host_dropped"].format(host=entry.host))
+                continue
+
+            diagnostics.player_selected(entry.candidate.online_id, entry.candidate.player, None)
+            diagnostics.health_defer(
+                action="retry",
+                host=entry.host,
+                online_id=entry.candidate.online_id,
+                player=entry.candidate.player,
+                state=health.state(entry.host).value,
+                category=None,
+                http_status=None,
+            )
+            progress.warn(_PROG["host_last_resort"].format(host=entry.host))
+            retried_hosts.add(entry.host)
+
+            retry_start = time.monotonic()
+            try:
+                stream = _extract_stream(entry.embed, cookies_file, cookies_browser)
+            except NoStreamError as exc:
+                _record_extraction_failure(entry.host, entry.candidate, exc, health, retry_start, ep_number)
+                continue
+            _record_extraction_success(entry.host, entry.candidate, health, retry_start)
+            return stream, entry.embed
 
     return None, None
 

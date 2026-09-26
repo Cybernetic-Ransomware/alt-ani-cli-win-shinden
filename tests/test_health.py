@@ -285,9 +285,11 @@ class TestHealthTransitionContinuity:
         ]
 
         observed = [t for t in transitions if t is not None]
-        assert len(observed) >= 2
-        for previous, following in zip(observed, observed[1:], strict=False):
-            assert following.before == previous.after
+        assert [(t.before, t.after) for t in observed] == [
+            (HostState.UNKNOWN, HostState.DEGRADED),
+            (HostState.DEGRADED, HostState.UNAVAILABLE),
+            (HostState.UNAVAILABLE, HostState.HEALTHY),
+        ]
 
 
 @pytest.mark.unit
@@ -358,21 +360,27 @@ class TestCategoryLiteralsMatchExtractCommon:
     def test_known_category_constants_are_classified(self):
         from alt_ani_cli.extract import common as extract_common
 
-        assert classify_failure(
-            host="example.com",
-            layer="custom",
-            category=extract_common.CATEGORY_NO_STREAM_URL,
-            http_status=None,
-            used_fallback=False,
-            fallback_category=None,
-            fallback_http_status=None,
-        ) == Signal.FILE
-        assert classify_failure(
-            host="example.com",
-            layer="custom",
-            category=extract_common.CATEGORY_PARSER_DRIFT,
-            http_status=None,
-            used_fallback=False,
-            fallback_category=None,
-            fallback_http_status=None,
-        ) == Signal.SOFT
+        assert (
+            classify_failure(
+                host="example.com",
+                layer="custom",
+                category=extract_common.CATEGORY_NO_STREAM_URL,
+                http_status=None,
+                used_fallback=False,
+                fallback_category=None,
+                fallback_http_status=None,
+            )
+            == Signal.FILE
+        )
+        assert (
+            classify_failure(
+                host="example.com",
+                layer="custom",
+                category=extract_common.CATEGORY_PARSER_DRIFT,
+                http_status=None,
+                used_fallback=False,
+                fallback_category=None,
+                fallback_http_status=None,
+            )
+            == Signal.SOFT
+        )
