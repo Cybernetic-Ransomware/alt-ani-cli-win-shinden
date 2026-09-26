@@ -273,6 +273,24 @@ class TestTtlRegression:
 
 
 @pytest.mark.unit
+class TestHealthTransitionContinuity:
+    def test_chained_transitions_before_matches_previous_after(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        transitions = [
+            h.record("host.com", "a", Signal.SOFT),
+            h.record("host.com", "c", Signal.TRANSIENT),
+            h.record("host.com", "d", Signal.TRANSIENT),
+            h.record("host.com", "e", Signal.SUCCESS),
+        ]
+
+        observed = [t for t in transitions if t is not None]
+        assert len(observed) >= 2
+        for previous, following in zip(observed, observed[1:], strict=False):
+            assert following.before == previous.after
+
+
+@pytest.mark.unit
 class TestTtlBoundaries:
     def test_exactly_at_ttl_still_active(self):
         clock = _FakeClock()
@@ -328,9 +346,10 @@ class TestModulePurity:
                 for alias in node.names:
                     imported.add(alias.name.split(".")[0])
             elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module.split(".")[0])
                 for part in node.module.split("."):
                     imported.add(part)
+                for alias in node.names:
+                    imported.add(alias.name.split(".")[0])
         assert imported.isdisjoint(forbidden), imported & forbidden
 
 
