@@ -325,6 +325,8 @@ def _resolve_with_fallback(
                 embed = _resolve_embed_with_spinner(client, candidate.online_id)
                 cache[candidate.online_id] = embed
             host_hint = _host_of_url(embed.url)
+            if health is not None:
+                health.learn_label(candidate.player, host_hint)
 
             if auto and health is not None and health.should_defer(host_hint):
                 deferred.append(_DeferredCandidate(candidate=candidate, embed=embed, host=host_hint))
@@ -348,6 +350,8 @@ def _resolve_with_fallback(
                 embed = _resolve_embed_with_spinner(client, candidate.online_id)
                 cache[candidate.online_id] = embed
                 host_hint = _host_of_url(embed.url)
+                if health is not None:
+                    health.learn_label(candidate.player, host_hint)
                 stream = _extract_stream(embed, cookies_file, cookies_browser)
             _record_extraction_success(host_hint, candidate, health, start)
             return stream, embed
@@ -559,6 +563,16 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
             progress.warn(_PROG["filter_fallback"].format(filters=filters))
         else:
             players = filtered
+
+        ordered = health.order(players)
+        if [p.online_id for p in ordered] != [p.online_id for p in players]:
+            diagnostics.health_reorder(
+                number=ep.number,
+                before=",".join(p.online_id for p in players),
+                after=",".join(p.online_id for p in ordered),
+                states=",".join(health.predict(p.player).value for p in ordered),
+            )
+        players = ordered
 
         chosen = players[0]
         stream, embed = _resolve_with_fallback(

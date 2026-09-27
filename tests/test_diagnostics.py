@@ -287,6 +287,30 @@ class TestEventEmission:
         content = log_path.read_text(encoding="utf-8")
         assert "http_status=" not in content
 
+    def test_health_reorder_records_number_before_after_states_without_urls(self, log_path):
+        diagnostics.health_reorder(number=3.0, before="1,2,3", after="2,1,3", states="healthy,unknown,unavailable")
+
+        content = log_path.read_text(encoding="utf-8")
+        assert "number=3.0" in content
+        assert "before=1,2,3" in content
+        assert "after=2,1,3" in content
+        assert "states=healthy,unknown,unavailable" in content
+        assert "http://" not in content
+        assert "https://" not in content
+
+    def test_health_reorder_comma_lists_round_trip_through_shlex(self, log_path):
+        diagnostics.health_reorder(number=1.0, before="a1,b1,c1", after="c1,a1,b1", states="healthy,unknown,degraded")
+
+        line = log_path.read_text(encoding="utf-8").splitlines()[0]
+        _date, _time, rest = line.split(" ", 2)
+        tokens = shlex.split(rest)
+        (before_token,) = [t for t in tokens if t.startswith("before=")]
+        (after_token,) = [t for t in tokens if t.startswith("after=")]
+        (states_token,) = [t for t in tokens if t.startswith("states=")]
+        assert before_token == "before=a1,b1,c1"
+        assert after_token == "after=c1,a1,b1"
+        assert states_token == "states=healthy,unknown,degraded"
+
     def test_all_public_events_can_be_emitted_without_raising(self, log_path):
         diagnostics.session_start("1.0.0", "3.14.0", "Windows", mode="interactive")
         diagnostics.series_selected("s1", "Test Series")
@@ -313,12 +337,13 @@ class TestEventEmission:
             category="parser_drift",
             http_status=None,
         )
+        diagnostics.health_reorder(number=1.0, before="p1,p2", after="p2,p1", states="healthy,unknown")
         diagnostics.playback_result("mpv", 0, 10.0, True, None)
         diagnostics.history_update("s1", 1.0)
         diagnostics.session_end("ok", None)
 
         lines = log_path.read_text(encoding="utf-8").splitlines()
-        assert len(lines) == 10
+        assert len(lines) == 11
 
 
 @pytest.mark.unit

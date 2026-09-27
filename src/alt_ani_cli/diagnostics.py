@@ -174,6 +174,11 @@ def health_defer(
     )
 
 
+def health_reorder(number: float, before: str, after: str, states: str) -> None:
+    """``before``/``after`` are comma-joined online_id sequences; ``states`` aligns with ``after``."""
+    _emit("health_reorder", number=number, before=before, after=after, states=states)
+
+
 def playback_result(kind: str, rc: int, elapsed: float, confirmed: bool, mpv_log: str | None) -> None:
     _emit("playback_result", kind=kind, rc=rc, elapsed=f"{elapsed:.3f}", confirmed=confirmed, mpv_log=mpv_log)
 

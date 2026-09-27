@@ -343,6 +343,41 @@ class TestParseDiagnosticsLog:
         assert cases[1].online_id == "a1"
         assert cases[1].host_before == "hostx.example"
 
+    def test_health_reorder_is_parsed_without_creating_a_case_or_disturbing_context(self, tmp_path):
+        """health_reorder never carries an online_id/host of its own — replay must ignore its payload."""
+        lines = [
+            _line("episode_selected", number=5, title="Ep Five"),
+            _line(
+                "health_reorder",
+                number=5,
+                before="a1,b1",
+                after="b1,a1",
+                states="healthy,degraded",
+            ),
+            _line("player_selected", online_id="b1", player="BPlayer"),
+            _line(
+                "resolve_result",
+                host="hostb.example",
+                ok=False,
+                exc="NoStreamError",
+                layer="custom",
+                category="http_error",
+                http_status=403,
+                elapsed=0.5,
+            ),
+        ]
+        log = tmp_path / "session.log"
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        cases, skipped = parse_diagnostics_log(log)
+
+        assert skipped == 0
+        assert len(cases) == 1
+        assert cases[0].online_id == "b1"
+        assert cases[0].player_name == "BPlayer"
+        assert cases[0].episode_number == 5.0
+        assert cases[0].host_before == "hostb.example"
+
     def test_quoted_values_with_spaces_round_trip(self, tmp_path):
         lines = [
             _line("episode_selected", number=1, title="A Title With Spaces"),

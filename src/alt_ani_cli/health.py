@@ -9,6 +9,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 
+from alt_ani_cli.models import PlayerEntry
+
 EVIDENCE_TTL_SEC = 600.0
 
 
@@ -17,6 +19,15 @@ class HostState(StrEnum):
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     UNAVAILABLE = "unavailable"
+
+
+# Order() tie-break rank, best first. Never used by should_defer() — ordering only.
+_ORDER_RANK: dict[HostState, int] = {
+    HostState.HEALTHY: 0,
+    HostState.UNKNOWN: 1,
+    HostState.DEGRADED: 2,
+    HostState.UNAVAILABLE: 3,
+}
 
 
 class Signal(StrEnum):
@@ -131,6 +142,11 @@ class ResolverHealth:
         self._clock = clock
         self._ttl = ttl
         self._hosts: dict[str, _HostRecord] = {}
+        self._labels: dict[str, set[str]] = {}
+
+    @staticmethod
+    def _normalize_label(label: str) -> str:
+        return label.strip().casefold()
 
     def _evidence_active(self, record: _HostRecord, now: float) -> bool:
         return record.last_failure_at is not None and (now - record.last_failure_at) <= self._ttl
@@ -158,6 +174,49 @@ class ResolverHealth:
         if record is None or record.unsupported:
             return False
         return self._compute_state(record, self._clock()) == HostState.UNAVAILABLE
+
+    def learn_label(self, label: str, host: str | None) -> None:
+        """Feeds predict()/order() only — never should_defer(), which always gates on the exact host."""
+        if host is None or host == "unknown-host":
+            return
+        self._labels.setdefault(self._normalize_label(label), set()).add(host)
+
+    def predict(self, label: str) -> HostState:
+        """Ordering hint only, never gates extraction; re-queries state() per host so TTL applies live."""
+        hosts = self._labels.get(self._normalize_label(label))
+        if not hosts:
+            return HostState.UNKNOWN
+        states = {self.state(host) for host in hosts}
+        if HostState.HEALTHY in states:
+            return HostState.HEALTHY
+        if states == {HostState.UNAVAILABLE}:
+            return HostState.UNAVAILABLE
+        if HostState.DEGRADED in states or HostState.UNAVAILABLE in states:
+            return HostState.DEGRADED
+        return HostState.UNKNOWN
+
+    @staticmethod
+    def _group_key(player: PlayerEntry) -> tuple[str, str, str]:
+        return (
+            player.lang_audio.strip().casefold(),
+            player.lang_subs.strip().casefold(),
+            (player.max_res or "").strip().casefold(),
+        )
+
+    def order(self, players: list[PlayerEntry]) -> list[PlayerEntry]:
+        """Stable tie-break within contiguous (lang_audio, lang_subs, max_res) runs — never across them."""
+        if not players:
+            return []
+        groups: list[list[PlayerEntry]] = [[players[0]]]
+        for player in players[1:]:
+            if self._group_key(player) == self._group_key(groups[-1][-1]):
+                groups[-1].append(player)
+            else:
+                groups.append([player])
+        ordered: list[PlayerEntry] = []
+        for group in groups:
+            ordered.extend(sorted(group, key=lambda p: _ORDER_RANK[self.predict(p.player)]))
+        return ordered
 
     def _apply(self, record: _HostRecord, signal: Signal, online_id: str, now: float) -> None:
         if signal is Signal.SUCCESS:

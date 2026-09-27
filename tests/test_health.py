@@ -15,6 +15,23 @@ from alt_ani_cli.health import (
     _LayerEffect,
     classify_failure,
 )
+from alt_ani_cli.models import PlayerEntry
+
+
+def _player(
+    online_id: str,
+    player: str = "Vidoza",
+    lang_audio: str = "jp",
+    lang_subs: str = "pl",
+    max_res: str | None = "1080p",
+) -> PlayerEntry:
+    return PlayerEntry(
+        online_id=online_id,
+        player=player,
+        lang_audio=lang_audio,
+        lang_subs=lang_subs,
+        max_res=max_res,
+    )
 
 
 class _FakeClock:
@@ -334,6 +351,240 @@ class TestHostIsolation:
         h.record("dood.la", "a", Signal.HARD)
         assert h.state("dood.la") == HostState.UNAVAILABLE
         assert h.state("dood.re") == HostState.UNKNOWN
+
+
+@pytest.mark.unit
+class TestLearnLabel:
+    def test_label_to_one_host(self):
+        h = ResolverHealth(clock=_FakeClock())
+        h.learn_label("Vidoza", "vidoza.net")
+        assert h.predict("Vidoza") == HostState.UNKNOWN  # no evidence yet, just a mapping
+
+    def test_label_to_many_hosts(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        h.learn_label("Vidoza", "vidoza.net")
+        h.learn_label("Vidoza", "vidoza.biz")
+        h.record("vidoza.net", "a", Signal.SUCCESS)
+        assert h.predict("Vidoza") == HostState.HEALTHY
+
+    def test_relearning_same_host_is_idempotent(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        h.record("vidoza.net", "a", Signal.HARD)
+        h.learn_label("Vidoza", "vidoza.net")
+        h.learn_label("Vidoza", "vidoza.net")
+        assert h.predict("Vidoza") == HostState.UNAVAILABLE
+
+    def test_label_normalized_case_and_whitespace(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        h.record("vidoza.net", "a", Signal.SUCCESS)
+        h.learn_label("  Vidoza  ", "vidoza.net")
+        assert h.predict("vidoza") == HostState.HEALTHY
+        assert h.predict("VIDOZA") == HostState.HEALTHY
+
+    def test_different_labels_do_not_share_mapping(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        h.record("vidoza.net", "a", Signal.SUCCESS)
+        h.learn_label("Vidoza", "vidoza.net")
+        assert h.predict("Streamtape") == HostState.UNKNOWN
+
+    def test_none_host_is_ignored(self):
+        h = ResolverHealth(clock=_FakeClock())
+        h.learn_label("Vidoza", None)
+        assert h.predict("Vidoza") == HostState.UNKNOWN
+
+    def test_unknown_host_sentinel_is_ignored(self):
+        h = ResolverHealth(clock=_FakeClock())
+        h.learn_label("Vidoza", "unknown-host")
+        assert h.predict("Vidoza") == HostState.UNKNOWN
+
+
+@pytest.mark.unit
+class TestPredict:
+    def test_no_data_is_unknown(self):
+        h = ResolverHealth(clock=_FakeClock())
+        assert h.predict("Vidoza") == HostState.UNKNOWN
+
+    def test_healthy(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        h.record("a.com", "1", Signal.SUCCESS)
+        h.learn_label("Vidoza", "a.com")
+        assert h.predict("Vidoza") == HostState.HEALTHY
+
+    def test_degraded(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        h.record("a.com", "1", Signal.SOFT)
+        h.learn_label("Vidoza", "a.com")
+        assert h.predict("Vidoza") == HostState.DEGRADED
+
+    def test_unavailable(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        h.record("a.com", "1", Signal.HARD)
+        h.learn_label("Vidoza", "a.com")
+        assert h.predict("Vidoza") == HostState.UNAVAILABLE
+
+    def test_healthy_plus_degraded_is_healthy(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        h.record("a.com", "1", Signal.SUCCESS)
+        h.record("b.com", "1", Signal.SOFT)
+        h.learn_label("Vidoza", "a.com")
+        h.learn_label("Vidoza", "b.com")
+        assert h.predict("Vidoza") == HostState.HEALTHY
+
+    def test_healthy_plus_unavailable_is_healthy(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        h.record("a.com", "1", Signal.SUCCESS)
+        h.record("b.com", "1", Signal.HARD)
+        h.learn_label("Vidoza", "a.com")
+        h.learn_label("Vidoza", "b.com")
+        assert h.predict("Vidoza") == HostState.HEALTHY
+
+    def test_unknown_plus_degraded_is_degraded(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        h.record("b.com", "1", Signal.SOFT)
+        h.learn_label("Vidoza", "a.com")  # never recorded -> UNKNOWN
+        h.learn_label("Vidoza", "b.com")
+        assert h.predict("Vidoza") == HostState.DEGRADED
+
+    def test_degraded_plus_unavailable_is_degraded(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        h.record("a.com", "1", Signal.SOFT)
+        h.record("b.com", "1", Signal.HARD)
+        h.learn_label("Vidoza", "a.com")
+        h.learn_label("Vidoza", "b.com")
+        assert h.predict("Vidoza") == HostState.DEGRADED
+
+    def test_all_unavailable_is_unavailable(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        h.record("a.com", "1", Signal.HARD)
+        h.record("b.com", "1", Signal.HARD)
+        h.learn_label("Vidoza", "a.com")
+        h.learn_label("Vidoza", "b.com")
+        assert h.predict("Vidoza") == HostState.UNAVAILABLE
+
+    def test_unsupported_stays_unavailable(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        h.record("a.com", "1", Signal.UNSUPPORTED)
+        h.learn_label("Vidoza", "a.com")
+        assert h.predict("Vidoza") == HostState.UNAVAILABLE
+
+    def test_ttl_changes_prediction_without_relearning(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        h.record("a.com", "1", Signal.HARD)
+        h.learn_label("Vidoza", "a.com")
+        assert h.predict("Vidoza") == HostState.UNAVAILABLE
+        clock.advance(EVIDENCE_TTL_SEC + 1)
+        assert h.predict("Vidoza") == HostState.UNKNOWN
+
+
+@pytest.mark.unit
+class TestOrder:
+    def test_empty_list(self):
+        h = ResolverHealth(clock=_FakeClock())
+        assert h.order([]) == []
+
+    def test_single_element_unchanged(self):
+        h = ResolverHealth(clock=_FakeClock())
+        p = _player("1")
+        assert h.order([p]) == [p]
+
+    def test_no_evidence_returns_identical_order(self):
+        h = ResolverHealth(clock=_FakeClock())
+        players = [_player("1", player="A"), _player("2", player="B"), _player("3", player="C")]
+        assert h.order(players) == players
+
+    def test_stable_within_same_rank(self):
+        h = ResolverHealth(clock=_FakeClock())
+        players = [_player("1", player="A"), _player("2", player="B")]
+        assert [p.online_id for p in h.order(players)] == ["1", "2"]
+
+    def test_healthy_moves_before_unknown_within_group(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        players = [_player("1", player="A"), _player("2", player="B")]
+        h.record("b-host.com", "x", Signal.SUCCESS)
+        h.learn_label("B", "b-host.com")
+        assert [p.online_id for p in h.order(players)] == ["2", "1"]
+
+    def test_degraded_between_healthy_and_unavailable(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        players = [_player("1", player="A"), _player("2", player="B"), _player("3", player="C")]
+        h.record("a-host.com", "x", Signal.HARD)
+        h.learn_label("A", "a-host.com")
+        h.record("c-host.com", "x", Signal.SUCCESS)
+        h.learn_label("C", "c-host.com")
+        # B stays UNKNOWN
+        assert [p.online_id for p in h.order(players)] == ["3", "2", "1"]
+
+    def test_healthy_480p_does_not_outrank_unknown_1080p(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        p_1080 = _player("1", player="A", max_res="1080p")
+        p_480 = _player("2", player="B", max_res="480p")
+        players = [p_1080, p_480]
+        h.record("b-host.com", "x", Signal.SUCCESS)
+        h.learn_label("B", "b-host.com")
+        assert [p.online_id for p in h.order(players)] == ["1", "2"]
+
+    def test_unavailable_1080p_does_not_fall_behind_720p(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        p_1080 = _player("1", player="A", max_res="1080p")
+        p_720 = _player("2", player="B", max_res="720p")
+        players = [p_1080, p_720]
+        h.record("a-host.com", "x", Signal.HARD)
+        h.learn_label("A", "a-host.com")
+        assert [p.online_id for p in h.order(players)] == ["1", "2"]
+
+    def test_never_crosses_a_sort_players_group_boundary(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        group1 = [_player("1", player="A", max_res="1080p"), _player("2", player="B", max_res="1080p")]
+        group2 = [_player("3", player="C", max_res="720p")]
+        players = group1 + group2
+        h.record("b-host.com", "x", Signal.SUCCESS)
+        h.learn_label("B", "b-host.com")
+        ordered = h.order(players)
+        assert {p.online_id for p in ordered[:2]} == {"1", "2"}
+        assert ordered[2].online_id == "3"
+
+    def test_does_not_merge_two_identical_groups_split_by_another_group(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        a = _player("A", player="A", max_res="1080p")
+        b = _player("B", player="B", max_res="1080p")
+        c = _player("C", player="C", max_res="720p")
+        d = _player("D", player="D", max_res="1080p")
+        players = [a, b, c, d]
+        h.record("d-host.com", "x", Signal.SUCCESS)
+        h.learn_label("D", "d-host.com")
+        ordered = h.order(players)
+        # D must stay in its own trailing group and never jump in front of C.
+        assert [p.online_id for p in ordered] == ["A", "B", "C", "D"]
+
+    def test_same_length_and_online_id_set(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        players = [_player("1", player="A"), _player("2", player="B"), _player("3", player="C")]
+        h.record("a-host.com", "x", Signal.HARD)
+        h.learn_label("A", "a-host.com")
+        ordered = h.order(players)
+        assert len(ordered) == len(players)
+        assert {p.online_id for p in ordered} == {p.online_id for p in players}
 
 
 @pytest.mark.unit

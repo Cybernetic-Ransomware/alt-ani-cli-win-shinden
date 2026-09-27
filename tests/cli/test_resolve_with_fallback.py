@@ -469,3 +469,146 @@ class TestResolveWithFallbackDeferAndLastResort:
         mock_extract.assert_called_once()
         mock_defer.assert_not_called()
         mock_result.assert_called_once()
+
+
+def _spy_learn_label(health: ResolverHealth) -> MagicMock:
+    health.learn_label = MagicMock(wraps=health.learn_label)
+    return health.learn_label
+
+
+@pytest.mark.unit
+class TestResolveWithFallbackLearnLabel:
+    """learn_label is called on every real host discovery — before should_defer, never in last-resort."""
+
+    def test_learn_label_called_with_host_before_extraction(self):
+        health = ResolverHealth()
+        spy = _spy_learn_label(health)
+        with (
+            patch("alt_ani_cli.cli.shinden_api.resolve_embed", return_value=_EMBED),
+            patch("alt_ani_cli.cli.extract.resolve", return_value=MagicMock()),
+            patch("alt_ani_cli.cli.diagnostics.resolve_result"),
+            patch("alt_ani_cli.cli.diagnostics.host_health"),
+        ):
+            _resolve_with_fallback(MagicMock(), [_PLAYER], _PLAYER, False, 1.0, health=health)
+
+        spy.assert_called_once_with(_PLAYER.player, "vidawra.cc")
+
+    def test_learn_label_called_on_cache_hit(self):
+        health = ResolverHealth()
+        spy = _spy_learn_label(health)
+        with (
+            patch("alt_ani_cli.cli.shinden_api.resolve_embed") as mock_resolve_embed,
+            patch("alt_ani_cli.cli.extract.resolve", return_value=MagicMock()),
+            patch("alt_ani_cli.cli.diagnostics.resolve_result"),
+            patch("alt_ani_cli.cli.diagnostics.host_health"),
+        ):
+            _resolve_with_fallback(
+                MagicMock(),
+                [_PLAYER],
+                _PLAYER,
+                False,
+                1.0,
+                embed_cache={_PLAYER.online_id: _EMBED},
+                health=health,
+            )
+
+        mock_resolve_embed.assert_not_called()
+        spy.assert_called_once_with(_PLAYER.player, "vidawra.cc")
+
+    def test_learn_label_called_before_should_defer_for_deferred_candidate(self):
+        health = ResolverHealth()
+        health.record("hosta.example", "seed", Signal.HARD)
+        spy = _spy_learn_label(health)
+        stream_b = MagicMock()
+        with (
+            patch(
+                "alt_ani_cli.cli.shinden_api.resolve_embed",
+                side_effect=_resolve_embed_from({"a1": _EMBED_HOST_A, "b1": _EMBED_HOST_B}),
+            ),
+            patch(
+                "alt_ani_cli.cli.extract.resolve",
+                side_effect=_extract_by_url({_EMBED_HOST_B.url: stream_b}),
+            ),
+            patch("alt_ani_cli.cli.diagnostics.resolve_result"),
+            patch("alt_ani_cli.cli.diagnostics.health_defer"),
+        ):
+            _resolve_with_fallback(MagicMock(), [_PLAYER_A, _PLAYER_B], _PLAYER_A, True, 1.0, health=health)
+
+        assert call(_PLAYER_A.player, "hosta.example") in spy.call_args_list
+
+    def test_learn_label_not_called_again_in_last_resort_retry(self):
+        health = ResolverHealth()
+        health.record("hosta.example", "seed", Signal.HARD)
+        spy = _spy_learn_label(health)
+        stream_a = MagicMock()
+        exc_b = _tagged_no_stream_error(
+            layer="custom", category="http_error", http_status=403, used_fallback=False,
+            fallback_category=None, fallback_http_status=None,
+        )
+        with (
+            patch(
+                "alt_ani_cli.cli.shinden_api.resolve_embed",
+                side_effect=_resolve_embed_from({"a1": _EMBED_HOST_A, "b1": _EMBED_HOST_B}),
+            ),
+            patch(
+                "alt_ani_cli.cli.extract.resolve",
+                side_effect=_extract_by_url({_EMBED_HOST_B.url: exc_b, _EMBED_HOST_A.url: stream_a}),
+            ),
+            patch("alt_ani_cli.cli.diagnostics.resolve_result"),
+            patch("alt_ani_cli.cli.diagnostics.health_defer"),
+            patch("alt_ani_cli.cli.diagnostics.player_selected"),
+        ):
+            _resolve_with_fallback(MagicMock(), [_PLAYER_A, _PLAYER_B], _PLAYER_A, True, 1.0, health=health)
+
+        # exactly one learn_label per candidate across the initial pass + last-resort retry
+        assert spy.call_args_list == [
+            call(_PLAYER_A.player, "hosta.example"),
+            call(_PLAYER_B.player, "hostb.example"),
+        ]
+
+    def test_stale_cache_refresh_relearns_new_host_when_it_differs(self):
+        health = ResolverHealth()
+        spy = _spy_learn_label(health)
+        refreshed_embed = EmbedURL(url="https://otherhost.example/e/123", referer="https://shinden.pl/")
+        stream = MagicMock()
+
+        extract_calls = {"n": 0}
+
+        def _extract_side_effect(url, _referer, **_kwargs):
+            extract_calls["n"] += 1
+            if extract_calls["n"] == 1:
+                raise NoStreamError("stale token")
+            return stream
+
+        with (
+            patch("alt_ani_cli.cli.shinden_api.resolve_embed", return_value=refreshed_embed),
+            patch("alt_ani_cli.cli.extract.resolve", side_effect=_extract_side_effect),
+            patch("alt_ani_cli.cli.diagnostics.resolve_result"),
+            patch("alt_ani_cli.cli.diagnostics.host_health"),
+        ):
+            _resolve_with_fallback(
+                MagicMock(),
+                [_PLAYER],
+                _PLAYER,
+                False,
+                1.0,
+                embed_cache={_PLAYER.online_id: _EMBED},
+                health=health,
+            )
+
+        assert spy.call_args_list == [
+            call(_PLAYER.player, "vidawra.cc"),
+            call(_PLAYER.player, "otherhost.example"),
+        ]
+
+    def test_health_none_never_calls_learn_label(self):
+        # trivially true, but guards against an accidental unconditional learn_label call.
+        with (
+            patch("alt_ani_cli.cli.shinden_api.resolve_embed", return_value=_EMBED),
+            patch("alt_ani_cli.cli.extract.resolve", return_value=MagicMock()),
+            patch("alt_ani_cli.cli.diagnostics.resolve_result"),
+        ):
+            result, embed = _resolve_with_fallback(MagicMock(), [_PLAYER], _PLAYER, False, 1.0, health=None)
+
+        assert result is not None
+        assert embed is _EMBED
