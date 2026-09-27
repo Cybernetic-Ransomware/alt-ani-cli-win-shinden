@@ -519,16 +519,23 @@ class TestOrder:
         h.learn_label("B", "b-host.com")
         assert [p.online_id for p in h.order(players)] == ["2", "1"]
 
-    def test_degraded_between_healthy_and_unavailable(self):
+    def test_degraded_ranks_between_unknown_and_unavailable(self):
         clock = _FakeClock()
         h = ResolverHealth(clock=clock)
-        players = [_player("1", player="A"), _player("2", player="B"), _player("3", player="C")]
+        players = [
+            _player("1", player="A"),
+            _player("2", player="B"),
+            _player("3", player="C"),
+            _player("4", player="D"),
+        ]
         h.record("a-host.com", "x", Signal.HARD)
         h.learn_label("A", "a-host.com")
         h.record("c-host.com", "x", Signal.SUCCESS)
         h.learn_label("C", "c-host.com")
-        # B stays UNKNOWN
-        assert [p.online_id for p in h.order(players)] == ["3", "2", "1"]
+        h.record("d-host.com", "x", Signal.SOFT)
+        h.learn_label("D", "d-host.com")
+        # B stays UNKNOWN (no learn_label call at all)
+        assert [p.online_id for p in h.order(players)] == ["3", "2", "4", "1"]
 
     def test_healthy_480p_does_not_outrank_unknown_1080p(self):
         clock = _FakeClock()
@@ -548,6 +555,28 @@ class TestOrder:
         players = [p_1080, p_720]
         h.record("a-host.com", "x", Signal.HARD)
         h.learn_label("A", "a-host.com")
+        assert [p.online_id for p in h.order(players)] == ["1", "2"]
+
+    def test_never_crosses_lang_audio_boundary(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        p_jp = _player("1", player="A", lang_audio="jp")
+        p_pl = _player("2", player="B", lang_audio="pl")
+        players = [p_jp, p_pl]
+        h.record("b-host.com", "x", Signal.SUCCESS)
+        h.learn_label("B", "b-host.com")
+        # B is HEALTHY but has a different lang_audio, so it forms its own group and cannot outrank A.
+        assert [p.online_id for p in h.order(players)] == ["1", "2"]
+
+    def test_never_crosses_lang_subs_boundary(self):
+        clock = _FakeClock()
+        h = ResolverHealth(clock=clock)
+        p_pl_subs = _player("1", player="A", lang_subs="pl")
+        p_en_subs = _player("2", player="B", lang_subs="en")
+        players = [p_pl_subs, p_en_subs]
+        h.record("b-host.com", "x", Signal.SUCCESS)
+        h.learn_label("B", "b-host.com")
+        # Same reasoning as lang_audio: a different lang_subs is a different group.
         assert [p.online_id for p in h.order(players)] == ["1", "2"]
 
     def test_never_crosses_a_sort_players_group_boundary(self):
