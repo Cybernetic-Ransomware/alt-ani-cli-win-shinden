@@ -129,6 +129,9 @@ class TestTemplatePlaceholders:
             (("progress", "extractor_fallback"), ("{host}", "{exc}")),
             (("progress", "jwplayer_fallback"), ("{host}", "{exc}")),
             (("progress", "prefetch_sources"), ("{count}",)),
+            (("progress", "host_deferred"), ("{host}",)),
+            (("progress", "host_last_resort"), ("{host}",)),
+            (("progress", "host_dropped"), ("{host}",)),
         ],
     )
     def test_template_has_required_placeholders(self, path, placeholders):

@@ -136,6 +136,20 @@ HOST_RULES: dict[str, HostRule] = {
 }
 
 
+def resolver_family(host: str) -> str:
+    """Diagnostics-only family label for a hostname — never influences health decisions."""
+    rule = HOST_RULES.get(host) or HOST_RULES.get(f"www.{host}")
+    if rule is None:
+        return "generic"
+    if rule.mode == "unsupported":
+        return "unsupported"
+    if rule.mode == "ytdlp":
+        return "ytdlp"
+    if rule.resolver is None:
+        return "jwplayer"
+    return rule.resolver.__module__.rsplit(".", 1)[-1]
+
+
 def _exc_text(exc: Exception, embed_url: str, host: str) -> str:
     """Format an exception for user-facing messages, replacing the embed URL with its host."""
     return f"{type(exc).__name__}: {exc}".replace(repr(embed_url), host).replace(embed_url, host)

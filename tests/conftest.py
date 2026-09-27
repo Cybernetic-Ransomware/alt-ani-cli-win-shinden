@@ -1,4 +1,18 @@
+import logging
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_diagnostics_dir(tmp_path, monkeypatch):
+    """Every test gets its own DIAG_DIR — main() now configures diagnostics in noninteractive runs too."""
+    from alt_ani_cli import diagnostics
+
+    monkeypatch.setattr(diagnostics, "DIAG_DIR", tmp_path / "diagnostics")
+    yield
+    for handler in [h for h in diagnostics._logger.handlers if not isinstance(h, logging.NullHandler)]:
+        diagnostics._logger.removeHandler(handler)
+        handler.close()
 
 
 @pytest.fixture

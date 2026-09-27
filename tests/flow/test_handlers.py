@@ -1144,3 +1144,26 @@ class TestResolveStreamFailureRecordsHost:
         assert _PLAYER.online_id in state.failed_ids
         assert _PLAYER.online_id not in state.player_embeds
         assert _PLAYER.online_id not in state.player_sources
+
+
+@pytest.mark.unit
+class TestResolveStreamNeverReorders:
+    """order() is an auto-mode, noninteractive-only concern — the interactive picker must never trigger it."""
+
+    def test_health_order_is_never_called(self):
+        state = _make_state(
+            ref=_SERIES_REF,
+            targets=[_EP1],
+            ep_idx=0,
+            players=[_PLAYER],
+            chosen_player=_PLAYER,
+        )
+        with (
+            patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=AntiBotError("blocked")),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn"),
+            patch("alt_ani_cli.health.ResolverHealth.order") as mock_order,
+        ):
+            HANDLERS[Screen.RESOLVE_STREAM](state)
+
+        mock_order.assert_not_called()
