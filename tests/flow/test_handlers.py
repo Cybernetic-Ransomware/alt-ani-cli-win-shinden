@@ -446,7 +446,7 @@ class TestInteractiveFlow:
         client = MagicMock()
         call_count = {"n": 0}
 
-        def _fake_start(has_history, history_count=0):
+        def _fake_start(**kw):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 return "search"
@@ -468,7 +468,7 @@ class TestInteractiveFlow:
         query_calls = {"n": 0}
         start_calls = {"n": 0}
 
-        def _fake_start(has_history, history_count=0):
+        def _fake_start(**kw):
             start_calls["n"] += 1
             if start_calls["n"] == 1:
                 return "search"
@@ -1330,3 +1330,243 @@ class TestResolveStreamNeverReorders:
             HANDLERS[Screen.RESOLVE_STREAM](state)
 
         mock_order.assert_not_called()
+
+
+_EP4 = EpisodeRow(number=4.0, title="Ep 4", url="http://shinden.pl/ep/4")
+_EP5 = EpisodeRow(number=5.0, title="Ep 5", url="http://shinden.pl/ep/5")
+_EP6 = EpisodeRow(number=6.0, title="Ep 6", url="http://shinden.pl/ep/6")
+
+
+@pytest.mark.unit
+class TestStartModeHistoryOptions:
+    def _run(self, choice, watch=(), downloads=(), state=None):
+        state = state or _make_state()
+        with (
+            patch("alt_ani_cli.history.list_all", return_value=list(watch)),
+            patch("alt_ani_cli.history.list_downloads", return_value=list(downloads)),
+            patch("alt_ani_cli.ui.menus.select_start_mode", return_value=choice) as mock_menu,
+        ):
+            result = HANDLERS[Screen.START_MODE](state)
+        return state, result, mock_menu.call_args.kwargs
+
+    def test_menu_receives_both_counts(self):
+        _, _, kwargs = self._run(
+            None,
+            watch=[(_SERIES_REF, 1.0)] * 22,
+            downloads=[(_SERIES_REF, frozenset({1.0}))] * 3,
+        )
+        assert kwargs == {"watch_count": 22, "download_count": 3}
+
+    def test_resume_watch_goes_to_resume_pick(self):
+        _, result, _ = self._run("resume_watch", watch=[(_SERIES_REF, 1.0)])
+        assert result is Screen.RESUME_PICK
+
+    def test_resume_download_goes_to_download_resume_pick(self):
+        _, result, _ = self._run("resume_download", downloads=[(_SERIES_REF, frozenset({1.0}))])
+        assert result is Screen.DOWNLOAD_RESUME_PICK
+
+    @pytest.mark.parametrize(
+        "choice, expected",
+        [("search", Screen.SEARCH_QUERY), ("url", Screen.URL_INPUT), ("resume_watch", Screen.RESUME_PICK)],
+    )
+    def test_leaving_download_resume_clears_its_state(self, choice, expected):
+        state = _make_state(resume_mode="download", downloaded_eps={1.0}, episode_action="download")
+        _, result, _ = self._run(choice, state=state)
+        assert result is expected
+        assert state.resume_mode is None
+        assert state.downloaded_eps == set()
+        assert state.episode_action is None
+
+    def test_cached_download_action_outside_resume_mode_is_kept(self):
+        state = _make_state(episode_action="download")
+        self._run("search", state=state)
+        assert state.episode_action == "download"
+
+    def test_args_resume_with_download_skips_menu_to_download_resume(self):
+        state = _make_state(args=_make_args(resume=True, download=True))
+        assert HANDLERS[Screen.START_MODE](state) is Screen.DOWNLOAD_RESUME_PICK
+
+
+@pytest.mark.unit
+class TestHandleResumePickModes:
+    def test_resume_watch_keeps_last_ep(self):
+        state = _make_state(resume_mode="download", downloaded_eps={1.0}, episode_action="download")
+        with (
+            patch("alt_ani_cli.history.list_all", return_value=[(_SERIES_REF, 5.0)]),
+            patch("alt_ani_cli.ui.menus.select_series_from_history", return_value=(_SERIES_REF, 5.0)),
+        ):
+            result = HANDLERS[Screen.RESUME_PICK](state)
+        assert result is Screen.FETCH_EPISODES
+        assert state.ref == _SERIES_REF
+        assert state.last_ep == 5.0
+        assert state.resume_mode == "watch"
+        assert state.downloaded_eps == set()
+        assert state.episode_action is None
+
+    def test_resume_download_sets_download_state(self):
+        state = _make_state(last_ep=3.0)
+        with (
+            patch("alt_ani_cli.history.list_downloads", return_value=[(_SERIES_REF, frozenset({1.0, 2.0}))]),
+            patch(
+                "alt_ani_cli.ui.menus.select_series_from_download_history",
+                return_value=(_SERIES_REF, frozenset({1.0, 2.0})),
+            ),
+        ):
+            result = HANDLERS[Screen.DOWNLOAD_RESUME_PICK](state)
+        assert result is Screen.FETCH_EPISODES
+        assert state.ref == _SERIES_REF
+        assert state.resume_mode == "download"
+        assert state.downloaded_eps == {1.0, 2.0}
+        assert state.episode_action == "download"
+        assert state.last_ep == 0.0
+
+    def test_resume_download_esc_returns_back(self):
+        state = _make_state()
+        with (
+            patch("alt_ani_cli.history.list_downloads", return_value=[(_SERIES_REF, frozenset({1.0}))]),
+            patch("alt_ani_cli.ui.menus.select_series_from_download_history", return_value=None),
+        ):
+            result = HANDLERS[Screen.DOWNLOAD_RESUME_PICK](state)
+        assert isinstance(result, _BackSentinel)
+        assert state.resume_mode is None
+        assert state.episode_action is None
+
+    def test_resume_download_empty_history_returns_back(self):
+        state = _make_state()
+        with (
+            patch("alt_ani_cli.history.list_downloads", return_value=[]),
+            patch("alt_ani_cli.ui.progress.error") as mock_err,
+        ):
+            result = HANDLERS[Screen.DOWNLOAD_RESUME_PICK](state)
+        assert isinstance(result, _BackSentinel)
+        mock_err.assert_called_once()
+
+
+@pytest.mark.unit
+class TestEpisodesPickDownloadResume:
+    def _pick(self, episodes, downloaded):
+        state = _make_state(ref=_SERIES_REF, episodes=episodes, resume_mode="download", downloaded_eps=set(downloaded))
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=[episodes[-1]]) as mock_sel:
+            HANDLERS[Screen.EPISODES_PICK](state)
+        return mock_sel.call_args
+
+    def test_passes_downloaded_numbers_and_cursor_on_first_missing(self):
+        args, kwargs = self._pick([_EP1, _EP2, _EP3], {1.0, 2.0})
+        assert args[0] == [_EP1, _EP2, _EP3]
+        assert kwargs["downloaded_numbers"] == {1.0, 2.0}
+        assert kwargs["default_index"] == 2
+        assert kwargs["watched_numbers"] == set()
+
+    def test_gap_in_downloads_puts_cursor_on_gap_not_after_max(self):
+        _, kwargs = self._pick([_EP1, _EP2, _EP3, _EP4, _EP5, _EP6], {1.0, 2.0, 3.0, 5.0})
+        assert kwargs["default_index"] == 3
+
+    def test_all_downloaded_shows_full_list_with_cursor_on_last(self):
+        args, kwargs = self._pick([_EP1, _EP2, _EP3], {1.0, 2.0, 3.0})
+        assert args[0] == [_EP1, _EP2, _EP3]
+        assert kwargs["default_index"] == 2
+
+    def test_watch_resume_does_not_pass_downloaded_numbers(self):
+        state = _make_state(
+            ref=_SERIES_REF, episodes=[_EP1, _EP2, _EP3], last_ep=1.0, resume_mode="watch", downloaded_eps={2.0}
+        )
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP2]) as mock_sel:
+            HANDLERS[Screen.EPISODES_PICK](state)
+        kwargs = mock_sel.call_args.kwargs
+        assert kwargs["downloaded_numbers"] == set()
+        assert kwargs["watched_numbers"] == {1.0}
+        assert kwargs["default_index"] == 1
+
+
+@pytest.mark.unit
+class TestRunActionDownloadHistory:
+    def test_success_records_download_and_updates_state(self):
+        state = _download_state(downloaded_eps={5.0})
+        with (
+            patch("alt_ani_cli.download.run"),
+            patch("alt_ani_cli.history.record_download") as mock_record,
+            patch("alt_ani_cli.history.upsert") as mock_upsert,
+        ):
+            handle_run_action(state)
+        mock_record.assert_called_once_with(_SERIES_REF, _EP1.number)
+        mock_upsert.assert_not_called()
+        assert state.downloaded_eps == {5.0, _EP1.number}
+        assert state.completed_eps == set()
+
+    def test_failure_does_not_record_download(self):
+        state = _download_state()
+        with (
+            patch("alt_ani_cli.download.run", side_effect=DownloadFailedError("x")),
+            patch("alt_ani_cli.history.record_download") as mock_record,
+            patch("alt_ani_cli.ui.progress.error"),
+        ):
+            handle_run_action(state)
+        mock_record.assert_not_called()
+        assert state.downloaded_eps == set()
+
+    def test_success_is_persisted_without_touching_watch_history(self):
+        from alt_ani_cli import history
+
+        state = _download_state()
+        with patch("alt_ani_cli.download.run"):
+            handle_run_action(state)
+        assert history.list_downloads() == [(_SERIES_REF, frozenset({_EP1.number}))]
+        assert history.list_all() == []
+
+
+@pytest.mark.unit
+class TestEpisodeDispatchDownloadSorting:
+    def test_cached_download_action_uses_download_ranking(self):
+        state = _make_ep_dispatch_state()
+        state.episode_action = "download"
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]) as mock_sort,
+        ):
+            HANDLERS[Screen.EPISODE_DISPATCH](state)
+        assert mock_sort.call_args.kwargs["download"] is True
+
+    def test_play_action_keeps_playback_ranking(self):
+        state = _make_ep_dispatch_state()
+        state.episode_action = "play"
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]) as mock_sort,
+        ):
+            HANDLERS[Screen.EPISODE_DISPATCH](state)
+        assert mock_sort.call_args.kwargs["download"] is False
+
+
+@pytest.mark.unit
+class TestDownloadResumeBackToSearchRegression:
+    def test_back_from_download_resume_to_search_clears_download_mode(self):
+        """START→resume_download→pick→EPISODES_PICK(ESC)→DOWNLOAD_RESUME_PICK(ESC)→START→search."""
+        captured: dict = {}
+        seen_at_search: dict = {}
+        starts = iter(["resume_download", "search", None])
+        download_picks = iter([(_SERIES_REF, frozenset({1.0})), None])
+
+        def _factory(**kw):
+            captured["state"] = FlowState(**kw)
+            return captured["state"]
+
+        def _fake_search_query():
+            s = captured["state"]
+            seen_at_search.update(
+                resume_mode=s.resume_mode, episode_action=s.episode_action, downloaded_eps=set(s.downloaded_eps)
+            )
+            return None
+
+        with (
+            patch("alt_ani_cli.flow.state.FlowState", side_effect=_factory),
+            patch("alt_ani_cli.history.list_all", return_value=[]),
+            patch("alt_ani_cli.history.list_downloads", return_value=[(_SERIES_REF, frozenset({1.0}))]),
+            patch("alt_ani_cli.ui.menus.select_start_mode", side_effect=lambda **kw: next(starts)),
+            patch("alt_ani_cli.ui.menus.select_series_from_download_history", side_effect=lambda e: next(download_picks)),
+            patch("alt_ani_cli.shinden.series.list_episodes", return_value=(_SERIES_REF, [_EP1, _EP2])),
+            patch("alt_ani_cli.ui.menus.select_episodes", return_value=None),
+            patch("alt_ani_cli.ui.menus.prompt_search_query", side_effect=_fake_search_query),
+        ):
+            _run_interactive_wrapped(_make_args(), MagicMock())
+
+        assert seen_at_search == {"resume_mode": None, "episode_action": None, "downloaded_eps": set()}

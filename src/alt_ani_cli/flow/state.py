@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any
+from typing import Any, Literal
 
 from alt_ani_cli.health import ResolverHealth
 
@@ -12,6 +12,7 @@ class Screen(Enum):
     SEARCH_QUERY = auto()
     URL_INPUT = auto()
     RESUME_PICK = auto()
+    DOWNLOAD_RESUME_PICK = auto()
     SERIES_PICK = auto()
     FETCH_EPISODES = auto()  # wirtualny — I/O bez UI
     EPISODES_PICK = auto()
@@ -59,6 +60,8 @@ class FlowState:
     hits: list = field(default_factory=list)
     ref: Any = None
     last_ep: float = 0.0
+    resume_mode: Literal["watch", "download"] | None = None
+    downloaded_eps: set[float] = field(default_factory=set)
 
     # episodes
     episodes: list = field(default_factory=list)

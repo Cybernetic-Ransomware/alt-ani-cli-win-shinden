@@ -377,6 +377,19 @@ def select_series_from_history(
     )
 
 
+def select_series_from_download_history(
+    entries: list[tuple[SeriesRef, frozenset[float]]],
+    prompt: str = _M["download_resume"]["default_prompt"],
+) -> tuple[SeriesRef, frozenset[float]] | None:
+    _dr = _M["download_resume"]
+    return _run_simple_picker(
+        entries,
+        lambda e: _dr["label"].format(title=e[0].title, count=len(e[1])),
+        prompt=prompt,
+        instruction=_dr["instruction"],
+    )
+
+
 _EP_WINDOW_MAX_ROWS = 15
 
 
@@ -410,12 +423,19 @@ def select_episodes(
     multi: bool = False,
     watched_numbers: set[float] | None = None,
     default_index: int | None = None,
+    downloaded_numbers: set[float] | None = None,
 ) -> list[EpisodeRow] | None:
     _watched = watched_numbers or set()
+    _downloaded = downloaded_numbers or set()
     _ep = _M["episodes"]
 
     def _label(ep: EpisodeRow) -> str:
-        tmpl = _ep["label_watched"] if ep.number in _watched else _ep["label_unwatched"]
+        if ep.number in _watched:
+            tmpl = _ep["label_watched"]
+        elif ep.number in _downloaded:
+            tmpl = _ep["label_downloaded"]
+        else:
+            tmpl = _ep["label_unwatched"]
         return tmpl.format(number=ep.number, title=ep.title)
 
     if not _use_inquirer():
@@ -588,15 +608,16 @@ def select_player_once(
 
 
 def select_start_mode(
-    has_history: bool, history_count: int = 0
-) -> Literal["search", "resume", "url", "quit", "version"] | None:
+    watch_count: int = 0, download_count: int = 0
+) -> Literal["search", "resume_watch", "resume_download", "url", "quit", "version"] | None:
     _sm = _M["start_mode"]
     _opts = _sm["options"]
 
     options_plain: list[tuple[str, str]] = [("search", _opts["search"])]
-    if has_history:
-        resume_label = _opts["resume_with_count"].format(count=history_count) if history_count else _opts["resume"]
-        options_plain.append(("resume", resume_label))
+    if watch_count:
+        options_plain.append(("resume_watch", _opts["resume_watch"].format(count=watch_count)))
+    if download_count:
+        options_plain.append(("resume_download", _opts["resume_download"].format(count=download_count)))
     options_plain.append(("url", _opts["url"]))
     options_plain.append(("quit", _opts["quit"]))
 

@@ -16,7 +16,7 @@ cli:
   help:
     query: "Tytuł do wyszukania na shinden.pl (pomijany gdy --url lub -c)."
     url: "Bezpośredni URL serii (https://shinden.pl/series/...)."
-    resume: "Kontynuuj oglądanie z historii."
+    resume: "Kontynuuj oglądanie z historii (z -d: kontynuuj pobieranie)."
     download: "Pobierz odcinek zamiast odtwarzać."
     delete_history: "Wyczyść historię i wyjdź."
     episode: 'Numer odcinka lub zakres: "5", "1-5", "-1" (ostatni).'
@@ -58,6 +58,8 @@ progress:
   host_last_resort: "Pozostałe źródła zawiodły — próbuję odłożonego hosta {host}."
   host_dropped: "Host {host} nadal jest niedostępny po próbie last-resort — pomijam kolejnego playera na tym hoście."
   history_empty: "Historia jest pusta."
+  download_history_empty: "Historia pobierania jest pusta."
+  downloaded_all: "Wszystkie dostępne odcinki są już pobrane ({title})."
   history_cleared: "Historia wyczyszczona."
   interrupted: "Przerwano przez użytkownika."
   http_error: "Błąd HTTP {status} — {url}"
@@ -83,8 +85,8 @@ menu:
     question: "Co chcesz zrobić?"
     options:
       search: "Szukaj nowego anime"
-      resume: "Kontynuuj z historii"
-      resume_with_count: "Kontynuuj z historii ({count} pozycji)"
+      resume_watch: "Kontynuuj oglądanie ({count} pozycji)"
+      resume_download: "Kontynuuj pobieranie ({count} pozycji)"
       url: "Wklej URL serii"
       quit: "Wyjdź"
     instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  Ctrl+O = wersja  |  ESC = wyjście"
@@ -124,10 +126,15 @@ menu:
     default_prompt: "Kontynuuj oglądanie"
     label: "{title}  — ostatni ep {last_ep:g}"
     instruction: "Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz"
+  download_resume:
+    default_prompt: "Kontynuuj pobieranie"
+    label: "{title}  — pobrano {count} odc."
+    instruction: "Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz"
   episodes:
     default_prompt: "Wybierz odcinek"
     label_unwatched: "  {number:g}.  {title}"
     label_watched: "✓ {number:g}.  {title}"
+    label_downloaded: "↓ {number:g}.  {title}"
     instruction_single: "Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz"
     instruction_multi: "Wpisz aby filtrować  |  Spacja = zaznacz/odznacz  |  Ctrl+R = wszystkie  |  Enter = potwierdź  |  ESC = wstecz"
     invalid_multi: "Zaznacz co najmniej jeden odcinek — użyj Spacji."

@@ -74,9 +74,9 @@ Run without arguments for an interactive wizard (search → select series → pi
 |------|-------------|
 | `QUERY` | Title to search on shinden.pl |
 | `--url URL` | Skip search — use a direct series URL |
-| `-c`, `--continue` | Resume from watch history |
+| `-c`, `--continue` | Resume from watch history (with `-d`: resume from download history — first episode not yet downloaded) |
 | `-d`, `--download` | Download instead of playing |
-| `-D`, `--delete-history` | Clear watch history and exit |
+| `-D`, `--delete-history` | Clear watch and download history and exit |
 | `-e RANGE` | Episode number or range: `5`, `1-5`, `-1` (last), `1 5 7` |
 | `-q QUALITY` | Quality: `best`, `worst`, `1080p`, `720p` … (default: interactive menu) |
 | `-S N` | Auto-select N-th search result (1-based, skips menus) |
@@ -111,6 +111,9 @@ alt-ani-cli -d -e 1-3 -q 720p --url https://shinden.pl/series/65137-fate-strange
 
 # Resume from history
 alt-ani-cli -c
+
+# Download the next missing episode of the most recently downloaded series
+alt-ani-cli -c -d
 
 # Polish dub only
 alt-ani-cli --lang pl vinland saga

@@ -485,7 +485,15 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
 
         _ap.ArgumentParser(prog="alt-ani-cli").error(_CLI["errors"]["missing_input"])
 
-    if args.resume:
+    downloaded_eps: frozenset[float] = frozenset()
+    if args.resume and args.download:
+        downloads = history.list_downloads()
+        if not downloads:
+            progress.error(_PROG["download_history_empty"])
+            sys.exit(1)
+        ref, downloaded_eps = downloads[0]
+        last_ep = 0.0
+    elif args.resume:
         all_entries = history.list_all()
         if not all_entries:
             progress.error(_PROG["history_empty"])
@@ -523,6 +531,12 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         if not targets:
             progress.error(_PROG["range_not_found"].format(range=repr(args.episode)))
             sys.exit(1)
+    elif args.resume and args.download:
+        remaining = [ep for ep in episodes if ep.number not in downloaded_eps]
+        if not remaining:
+            progress.info(_PROG["downloaded_all"].format(title=ref.title))
+            return
+        targets = [remaining[0]]
     elif args.resume and last_ep > 0:
         remaining = [ep for ep in episodes if ep.number > last_ep]
         if not remaining:
@@ -605,6 +619,7 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         completed = False
         if _action == "download":
             download.run(stream, ep, ref)
+            history.record_download(ref, ep.number)
         elif _action == "debug":
             _print_debug(stream, embed)
         else:
