@@ -10,6 +10,7 @@ from alt_ani_cli.content import CONTENT, EXCEPTIONS_PL
 from alt_ani_cli.errors import DownloadFailedError, DownloadTargetError
 from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.models import EpisodeRow, SeriesRef
+from alt_ani_cli.redaction import redact_text
 from alt_ani_cli.ui import progress
 
 _SUPPRESS_PREFIXES = (
@@ -28,6 +29,7 @@ class _TruncLogger:
     def _emit(self, msg: str) -> None:
         if any(msg.startswith(p) for p in _SUPPRESS_PREFIXES):
             return
+        msg = redact_text(msg)
         cols = shutil.get_terminal_size((120, 24)).columns
         if len(msg) > cols:
             msg = msg[: cols - 1] + "…"

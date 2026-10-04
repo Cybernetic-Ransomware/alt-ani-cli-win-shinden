@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.models import EpisodeRow, PlayerEntry, PlayerSource, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_cli.redaction import redact_text
 from alt_ani_cli.ui import progress
 
 _RES_RE = re.compile(r"(\d+)")
@@ -540,9 +541,9 @@ def format_player_source(p: PlayerEntry, resolved: PlayerSource | None) -> tuple
     if p.subs_author:
         lines.append(_pl["source_author"].format(author=p.subs_author))
     if p.source:
-        lines.append(_pl["source_url"].format(url=p.source))
+        lines.append(_pl["source_url"].format(url=redact_text(p.source)))
     if resolved:
-        lines.append(_pl["source_embed"].format(url=resolved.embed_url))
+        lines.append(_pl["source_embed"].format(url=redact_text(resolved.embed_url)))
     body = "\n".join(lines) or _pl["source_empty"]
     return _pl["source_header"].format(player=p.player), body
 

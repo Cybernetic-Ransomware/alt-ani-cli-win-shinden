@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -487,3 +488,76 @@ class TestStrictStagingPreflight:
         with _unlink_fails_for("Show - ep1.redownload.mp4.part"), pytest.raises(DownloadFailedError):
             _overwrite(tmp_path)
         assert final.read_bytes() == _OLD
+
+
+def _terminal(columns: int):
+    return patch("alt_ani_cli.download.shutil.get_terminal_size", return_value=os.terminal_size((columns, 24)))
+
+
+@pytest.mark.unit
+class TestTruncLoggerRedaction:
+    def test_secret_query_value_never_printed(self, capsys):
+        with _terminal(200):
+            download._TruncLogger().info("[hlsnative] Downloading m3u8 manifest https://cdn.example/hls/master.m3u8?token=SECRET")
+        out = capsys.readouterr().out
+        assert "SECRET" not in out
+        assert "<redacted>" in out
+        assert "cdn.example/hls/master.m3u8?token=" in out
+
+    def test_redaction_happens_before_truncation(self, capsys):
+        head = "x" * 40 + " https://h.example/m.m3u8?token="
+        # Truncating first would keep "token=SECRET_…" — and a cut value no longer looks like a full query.
+        with _terminal(len(head) + 8):
+            download._TruncLogger().info(head + "SECRET_TAIL_VALUE_THAT_IS_LONG")
+        out = capsys.readouterr().out
+        assert "SECRET" not in out
+        assert out.rstrip("\n") == head + "<redact…"
+
+    @pytest.mark.parametrize(("method", "prefix"), [("warning", "[warn] "), ("error", "[error] ")])
+    def test_warning_and_error_redacted(self, capsys, method, prefix):
+        with _terminal(200):
+            getattr(download._TruncLogger(), method)("fragment failed: master.m3u8?token=SECRET&expires=123")
+        out = capsys.readouterr().out
+        assert out.startswith(prefix)
+        assert "SECRET" not in out and "123" not in out
+        assert "master.m3u8?token=<redacted>&expires=<redacted>" in out
+
+    def test_suppressed_prefixes_still_suppressed(self, capsys):
+        download._TruncLogger().info("[generic] Extracting URL: https://h/m?token=SECRET")
+        assert capsys.readouterr().out == ""
+
+    def test_real_ytdlp_timeout_message_does_not_leak(self, capsys):
+        msg = (
+            "ERROR: [generic] master: Unable to download webpage: "
+            "https://host.example/hls/master.m3u8?token=THIS_MUST_NOT_LEAK&expires=999 (caused by TransportError('timed out'))"
+        )
+        with _terminal(400):
+            download._TruncLogger().error(msg)
+        out = capsys.readouterr().out
+        assert "THIS_MUST_NOT_LEAK" not in out
+        assert "999" not in out
+        assert "host.example/hls/master.m3u8?token=<redacted>&expires=<redacted>" in out
+        assert "timed out" in out
+
+    def test_local_paths_untouched(self, capsys):
+        with _terminal(200):
+            download._TruncLogger().info(r"[download] Destination: C:\Users\Test\Videos\Show - ep4.mp4")
+        assert r"C:\Users\Test\Videos\Show - ep4.mp4" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+class TestRedactionDoesNotTouchTransport:
+    def test_signed_url_and_headers_reach_ytdlp_verbatim(self, fake_ydl, tmp_path):
+        url = "https://cdn.example/hls/master.m3u8?token=SECRET&expires=999"
+        headers = {"Referer": "https://embed.example/e/1?token=REF", "Cookie": "session=S", "User-Agent": "UA/1.0"}
+        seen: list[str] = []
+        original = _FakeYDL.extract_info
+
+        def spy(self, u, download=True):
+            seen.append(u)
+            return original(self, u, download)
+
+        with patch.object(_FakeYDL, "extract_info", spy):
+            ydl = _run(Stream(url=url, headers=dict(headers), ext="m3u8"), tmp_path)
+        assert seen == [url]
+        assert ydl.opts["http_headers"] == headers

@@ -478,6 +478,19 @@ class TestFormatPlayerSource:
         assert "https://miorosubs.com/" in body
         assert "https://ebd.cda.pl/620x395/xyz" in body
 
+    def test_query_values_redacted_for_display_only(self):
+        source = "https://subs.example/release?id=7&token=SRC_SECRET"
+        embed_url = "https://player.example/e/abc123?sig=EMBED_SECRET"
+        p = PlayerEntry(online_id="p1", player="CDA", lang_audio="jp", lang_subs="pl", subs_author="Mioro-Subs", source=source)
+        resolved = PlayerSource(online_id="p1", host="player.example", embed_url=embed_url)
+        title, body = format_player_source(p, resolved)
+        assert "SRC_SECRET" not in body and "EMBED_SECRET" not in body and "=7" not in body
+        assert "Mioro-Subs" in body
+        assert "subs.example/release?id=<redacted>&token=<redacted>" in body
+        assert "player.example/e/abc123?sig=<redacted>" in body
+        assert "Źródło:" in body and "Embed:" in body
+        assert p.source == source and resolved.embed_url == embed_url
+
     def test_no_info_renders_empty_message(self):
         title, body = format_player_source(_PLAYER, None)
         assert "CDA" in title

@@ -612,3 +612,21 @@ class TestResolveWithFallbackLearnLabel:
 
         assert result is not None
         assert embed is _EMBED
+
+
+@pytest.mark.unit
+class TestResolveWithFallbackRedaction:
+    def test_embed_and_failure_output_redact_query_values(self, capsys):
+        embed = EmbedURL(url="https://vidawra.cc/e/abc123?t=EMBED_SECRET", referer="https://shinden.pl/")
+        exc = NoStreamError("all extractors failed: https://cdn.example/master.m3u8?token=SECRET")
+        with (
+            patch("alt_ani_cli.cli.shinden_api.resolve_embed", return_value=embed),
+            patch("alt_ani_cli.cli.extract.resolve", side_effect=exc) as mock_resolve,
+            patch("alt_ani_cli.cli.diagnostics.resolve_result"),
+        ):
+            _resolve_with_fallback(MagicMock(), [_PLAYER], _PLAYER, False, 1.0)
+        combined = "".join(capsys.readouterr())
+        assert "EMBED_SECRET" not in combined and "SECRET" not in combined
+        assert "vidawra.cc/e/abc123?t=<redacted>" in combined
+        assert "cdn.example/master.m3u8?token=<redacted>" in combined
+        assert mock_resolve.call_args[0][0] == "https://vidawra.cc/e/abc123?t=EMBED_SECRET"

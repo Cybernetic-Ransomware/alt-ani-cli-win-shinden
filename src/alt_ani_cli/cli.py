@@ -28,6 +28,7 @@ from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.health import HealthTransition, ResolverHealth, Signal, classify_failure
 from alt_ani_cli.models import EmbedURL, EpisodeRow, PlayerEntry, SeriesRef
 from alt_ani_cli.player import runner as player_runner
+from alt_ani_cli.redaction import redact_headers, redact_text
 from alt_ani_cli.shinden import api as shinden_api
 from alt_ani_cli.shinden import episode as shinden_episode
 from alt_ani_cli.shinden import http as shinden_http
@@ -196,8 +197,8 @@ def _resolve_embed_with_spinner(client, online_id: str) -> EmbedURL:
 
 
 def _extract_stream(embed: EmbedURL, cookies_file: str | None, cookies_browser: str | None) -> Stream:
-    # the only place the full embed URL is shown — failure messages use the host only
-    progress.info(_PROG["embed"].format(url=embed.url))
+    # the only place the embed URL is shown — failure messages use the host only
+    progress.info(_PROG["embed"].format(url=redact_text(embed.url)))
     return extract.resolve(
         embed.url,
         embed.referer,
@@ -265,7 +266,7 @@ def _record_extraction_failure(
         transition = health.record(host, candidate.online_id, signal)
         _emit_health_transition(transition, category=fields.get("category"), http_status=fields.get("http_status"))
     diagnostics.resolve_result(host, False, type(exc).__name__, time.monotonic() - start, **fields)
-    progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=exc))
+    progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=redact_text(exc)))
 
 
 @dataclass
@@ -463,19 +464,20 @@ def _print_debug(stream: Stream, embed) -> None:
     from alt_ani_cli.ui.progress import _get
 
     con = _get()
-    con.print(f"\n[bold]Embed URL:[/bold] {embed.url}")
-    con.print(f"[bold]Direct URL:[/bold] {stream.url}")
+    con.print(f"\n[bold]Embed URL:[/bold] {redact_text(embed.url)}")
+    con.print(f"[bold]Direct URL:[/bold] {redact_text(stream.url)}")
     con.print(f"[bold]Ext:[/bold] {stream.ext}")
 
     if stream.headers:
         t = Table("Header", "Value", title="HTTP headers")
-        for k, v in stream.headers.items():
+        for k, v in redact_headers(stream.headers).items():
             t.add_row(k, v)
         con.print(t)
 
     if stream.qualities:
         t = Table("Quality", "URL", title="Available qualities")
-        for q, u in sorted(stream.qualities.items(), key=lambda kv: kv[0]):
+        for q, raw in sorted(stream.qualities.items(), key=lambda kv: kv[0]):
+            u = redact_text(raw)
             t.add_row(q, u[:80] + "..." if len(u) > 80 else u)
         con.print(t)
 
@@ -691,18 +693,18 @@ def main() -> None:  # noqa: C901
         if exc.response is not None:
             status = exc.response.status_code
             url = str(exc.response.url)
-            progress.error(_PROG["http_error"].format(status=status, url=url))
+            progress.error(_PROG["http_error"].format(status=status, url=redact_text(url)))
             if status == 403 and SHINDEN_BASE in url:
                 if FLARESOLVERR_URL:
-                    progress.warn(_PROG["flaresolverr_unreachable"].format(url=FLARESOLVERR_URL))
+                    progress.warn(_PROG["flaresolverr_unreachable"].format(url=redact_text(FLARESOLVERR_URL)))
                 else:
                     progress.warn(_PROG["cloudflare_hint"])
         else:
-            progress.error(str(exc))
+            progress.error(redact_text(exc))
         sys.exit(1)
     except (AntiBotError, NoStreamError, ParseError, FilterMismatchError, DownloadFailedError, DownloadTargetError) as exc:
         diagnostics.session_end("error", type(exc).__name__)
-        progress.error(str(exc))
+        progress.error(redact_text(exc))
         sys.exit(1)
     except PlayerNotFoundError as exc:
         diagnostics.session_end("error", type(exc).__name__)
@@ -710,7 +712,7 @@ def main() -> None:  # noqa: C901
         sys.exit(1)
     except ShindenError as exc:
         diagnostics.session_end("error", type(exc).__name__)
-        progress.error(_PROG["shinden_error"].format(exc=exc))
+        progress.error(_PROG["shinden_error"].format(exc=redact_text(exc)))
         sys.exit(1)
     else:
         diagnostics.session_end("ok", None)

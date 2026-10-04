@@ -11,7 +11,7 @@ from yt_dlp.networking.exceptions import HTTPError as YtdlpHTTPError
 from yt_dlp.networking.exceptions import TransportError
 
 from alt_ani_cli.errors import JavaScriptRequiredError, NoStreamError, UnsupportedHostError
-from alt_ani_cli.extract import HOST_RULES, HostRule, _normalize_url, mp4upload, resolve, resolver_family
+from alt_ani_cli.extract import HOST_RULES, HostRule, _exc_text, _normalize_url, mp4upload, resolve, resolver_family
 from alt_ani_cli.extract.common import CATEGORY_NO_STREAM_URL, CATEGORY_PARSER_DRIFT, ExtractError, Stream
 
 _REFERER = "https://shinden.pl/"
@@ -238,6 +238,29 @@ class TestResolveDispatch:
         exc_text = on_fallback.call_args[0][2]
         assert embed_url not in exc_text
         assert "unknownhost.tv" in exc_text
+
+    def test_exc_text_redacts_other_signed_urls(self):
+        embed_url = "https://player.example/e/abc"
+        exc = TimeoutError(f"Timeout while fetching {embed_url} -> https://cdn.example/master.m3u8?token=SECRET")
+        text = _exc_text(exc, embed_url, "player.example")
+        assert embed_url not in text
+        assert "-> " in text and text.startswith("TimeoutError: Timeout while fetching player.example")
+        assert "SECRET" not in text
+        assert "cdn.example/master.m3u8?token=<redacted>" in text
+
+    def test_signed_url_in_failure_messages_redacted(self):
+        embed_url = "https://unknownhost.tv/embed/abc"
+        signed = "https://cdn.example/master.m3u8?token=SECRET&expires=999"
+        on_fallback = MagicMock()
+        with (
+            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ValueError(f"Timeout while fetching {signed}")),
+            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception(f"HTTP 403 for {signed}")),
+            pytest.raises(NoStreamError) as exc_info,
+        ):
+            resolve(embed_url, _REFERER, on_fallback=on_fallback)
+        for text in (str(exc_info.value), on_fallback.call_args[0][2]):
+            assert "SECRET" not in text and "999" not in text
+            assert "cdn.example/master.m3u8?token=<redacted>&expires=<redacted>" in text
 
 
 def _http_error(status_code: int) -> cffi_exceptions.HTTPError:

@@ -21,6 +21,7 @@ from alt_ani_cli.extract import (
     ytdlp_resolver,
 )
 from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.redaction import redact_text
 
 # ebd.cda.pl/800x450/{id} → yt-dlp does not understand the embed URL; rewrite to www.cda.pl/video/{id}
 _EBD_CDA_RE = re.compile(r"/\d+x\d+/([0-9a-z]+)$", re.IGNORECASE)
@@ -155,7 +156,8 @@ def resolver_family(host: str) -> str:
 
 def _exc_text(exc: Exception, embed_url: str, host: str) -> str:
     """Format an exception for user-facing messages, replacing the embed URL with its host."""
-    return f"{type(exc).__name__}: {exc}".replace(repr(embed_url), host).replace(embed_url, host)
+    text = f"{type(exc).__name__}: {exc}".replace(repr(embed_url), host).replace(embed_url, host)
+    return redact_text(text)
 
 
 # Classify by ExtractError.category or exception type only — messages may carry URLs/tokens.
