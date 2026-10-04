@@ -80,7 +80,7 @@ def run(
             **stream.headers,
             "User-Agent": stream.headers.get("User-Agent", USER_AGENT),
         },
-        # The Python API defaults to zero retries and silently skips failed HLS fragments, unlike the yt-dlp CLI.
+        # Match yt-dlp CLI retry counts, but fail instead of silently skipping unavailable HLS fragments.
         "retries": 10,
         "fragment_retries": 10,
         "skip_unavailable_fragments": False,
