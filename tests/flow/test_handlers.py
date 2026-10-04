@@ -1466,16 +1466,24 @@ class TestEpisodesPickDownloadResume:
         assert args[0] == [_EP1, _EP2, _EP3]
         assert kwargs["default_index"] == 2
 
-    def test_watch_resume_does_not_pass_downloaded_numbers(self):
+    def test_watch_resume_cursor_and_watched_ignore_downloads(self):
         state = _make_state(
             ref=_SERIES_REF, episodes=[_EP1, _EP2, _EP3], last_ep=1.0, resume_mode="watch", downloaded_eps={2.0}
         )
         with patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP2]) as mock_sel:
             HANDLERS[Screen.EPISODES_PICK](state)
         kwargs = mock_sel.call_args.kwargs
-        assert kwargs["downloaded_numbers"] == set()
         assert kwargs["watched_numbers"] == {1.0}
         assert kwargs["default_index"] == 1
+
+    def test_manual_download_outside_resume_marks_episode_without_moving_cursor(self):
+        state = _make_state(ref=_SERIES_REF, episodes=[_EP1, _EP2, _EP3], downloaded_eps={1.0})
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP2]) as mock_sel:
+            HANDLERS[Screen.EPISODES_PICK](state)
+        kwargs = mock_sel.call_args.kwargs
+        assert kwargs["downloaded_numbers"] == {1.0}
+        assert kwargs["watched_numbers"] == set()
+        assert kwargs["default_index"] is None
 
 
 @pytest.mark.unit

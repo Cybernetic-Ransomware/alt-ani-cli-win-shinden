@@ -318,9 +318,8 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
 
     default_index = None
     watched = set(state.completed_eps)
-    downloaded: set[float] = set()
+    downloaded = set(state.downloaded_eps)
     if state.resume_mode == "download":
-        downloaded = set(state.downloaded_eps)
         default_index = _first_missing_index(state.episodes, downloaded)
     elif state.last_ep > 0:
         watched |= {ep.number for ep in state.episodes if ep.number <= state.last_ep}
