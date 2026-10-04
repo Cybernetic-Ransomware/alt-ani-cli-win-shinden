@@ -79,6 +79,26 @@ class TestDownloadOptions:
 
 
 @pytest.mark.unit
+class TestRetryPolicy:
+    def test_request_retries_set_explicitly(self, fake_ydl, tmp_path):
+        ydl = _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        assert ydl.opts["retries"] == 10
+
+    def test_fragment_retries_set_explicitly(self, fake_ydl, tmp_path):
+        ydl = _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        assert ydl.opts["fragment_retries"] == 10
+
+    def test_failed_fragments_are_not_skipped(self, fake_ydl, tmp_path):
+        ydl = _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        assert ydl.opts["skip_unavailable_fragments"] is False
+
+    def test_policy_applies_to_direct_downloads(self, fake_ydl, tmp_path):
+        fake_ydl.info = {"ext": "mp4", "protocol": "https"}
+        ydl = _run(Stream(url="https://cdn.example/video.mp4", ext="mp4"), tmp_path)
+        assert (ydl.opts["retries"], ydl.opts["fragment_retries"], ydl.opts["skip_unavailable_fragments"]) == (10, 10, False)
+
+
+@pytest.mark.unit
 class TestOutputExtension:
     def test_direct_mp4_without_url_extension_avoids_unknown_video(self, fake_ydl, tmp_path):
         fake_ydl.info = {"ext": "unknown_video", "protocol": "https"}
