@@ -10,7 +10,7 @@ from alt_ani_cli.extract.playmate import resolve
 _EMBED = "https://playmate.to/embed/MFyuwmxvBGiUE"
 _REFERER = "https://shinden.pl/"
 
-_M3U8_URL = "https://cdn.playmate.to/hls/abc/master.m3u8?token=deadbeef"
+_M3U8_URL = "https://cdn.playmate.to/hls/abc/master.txt?token=deadbeef"
 
 _API_RESPONSE = {"sx": _M3U8_URL}
 
@@ -51,6 +51,7 @@ class TestResolvePlaymate:
         assert call.kwargs["json"] == {"c": "MFyuwmxvBGiUE", "d": "web"}
         assert call.kwargs["headers"]["Origin"] == "https://playmate.to"
         assert call.kwargs["headers"]["Referer"] == _EMBED
+        assert call.kwargs["headers"]["Sec-Fetch-Site"] == "same-origin"
 
     def test_missing_sx_raises_value_error(self):
         with _make_session_patch({"status": 404}):
