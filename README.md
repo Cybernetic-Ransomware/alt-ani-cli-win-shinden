@@ -18,7 +18,8 @@ Python CLI for watching and downloading anime from [shinden.pl](https://shinden.
   ```powershell
   winget install mpv.net   # or: scoop install mpv
   ```
-- [ffmpeg](https://ffmpeg.org/) (optional) — enables HLS merging during downloads
+- [ffmpeg](https://ffmpeg.org/) (optional) — yt-dlp downloads HLS natively; when ffmpeg is available it remuxes
+  the result into a proper MP4. Without it, an HLS download stays an MPEG-TS stream despite the `.mp4` extension.
   ```powershell
   winget install ffmpeg    # or: scoop install ffmpeg
   ```

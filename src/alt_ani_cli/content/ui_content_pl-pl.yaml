@@ -75,6 +75,7 @@ progress:
 download:
   starting: "Pobieranie: {title} ep{ep_label} → {dir}"
   saved: "Zapisano: {path}"
+  legacy_part_moved: "Niedokończone pobieranie ze starszej wersji (ffmpeg) przeniesiono do: {path} — pobieranie zacznie się od nowa."
 
 menu:
   start_mode:
