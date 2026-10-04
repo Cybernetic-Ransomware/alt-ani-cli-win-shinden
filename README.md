@@ -171,14 +171,8 @@ just replay-failures "PATH_TO_LOG"  # replay resolve_result failures from a diag
 
 ## Supported video hosts
 
-Native extractors: mp4upload, streamtape, dood, Lycoris Cafe, Vidara/Viewdara, Uqload, Flyf,
+Native extractors: mp4upload, streamtape, dood, Lycoris Cafe, Vidara/Viewdara, Playmate, Uqload, Flyf,
 streamwish/filemoon/morencius family (JWPlayer), CDA, sibnet, VK.
-
-**Playmate is currently broken.** The extractor exists (`extract/playmate.py`), but a live
-replay (see `tools/replay_failed_resolvers.py` below) confirmed the upstream protocol has
-changed: the current request now gets HTTP 403, and the additional request elements it needs
-have not been reverse-engineered yet. Playmate links fall back to yt-dlp, which also cannot
-resolve them.
 
 Lycoris Cafe embeds are resolved through the host API and expose the available direct qualities (`1080p`, `720p`, `480p`) plus `source-mkv` when the API provides it.
 

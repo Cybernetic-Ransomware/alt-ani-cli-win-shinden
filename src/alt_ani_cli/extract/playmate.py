@@ -23,6 +23,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
                 "Origin": base,
                 "Referer": embed_url,
                 "User-Agent": USER_AGENT,
+                "Sec-Fetch-Site": "same-origin",
             },
         )
         resp.raise_for_status()

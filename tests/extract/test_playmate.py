@@ -51,6 +51,7 @@ class TestResolvePlaymate:
         assert call.kwargs["json"] == {"c": "MFyuwmxvBGiUE", "d": "web"}
         assert call.kwargs["headers"]["Origin"] == "https://playmate.to"
         assert call.kwargs["headers"]["Referer"] == _EMBED
+        assert call.kwargs["headers"]["Sec-Fetch-Site"] == "same-origin"
 
     def test_missing_sx_raises_value_error(self):
         with _make_session_patch({"status": 404}):
