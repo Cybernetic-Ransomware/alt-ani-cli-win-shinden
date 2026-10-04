@@ -6,13 +6,14 @@ All external I/O (menus, shinden API, history) is mocked.
 
 import argparse
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from alt_ani_cli.content import CONTENT
-from alt_ani_cli.errors import AntiBotError, DownloadFailedError, NoStreamError, ShindenError
+from alt_ani_cli.errors import AntiBotError, DownloadFailedError, DownloadTargetError, NoStreamError, ShindenError
 from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.flow.handlers import (
     HANDLERS,
@@ -888,10 +889,11 @@ class TestDownloadRetryOnAnotherPlayer:
         def fake_resolve(client, players, chosen, **kwargs):
             return streams[chosen.online_id], _EMBED
 
-        def fake_download(stream, ep, ref):
+        def fake_download(stream, ep, ref, **kwargs):
             downloaded.append(stream.url)
             if stream is _STREAM:
                 raise DownloadFailedError("x")
+            return True
 
         with (
             patch("alt_ani_cli.cli._resolve_with_fallback", side_effect=fake_resolve),
@@ -1578,3 +1580,382 @@ class TestDownloadResumeBackToSearchRegression:
             _run_interactive_wrapped(_make_args(), MagicMock())
 
         assert seen_at_search == {"resume_mode": None, "episode_action": None, "downloaded_eps": set()}
+
+
+_EP7 = EpisodeRow(number=7.0, title="Ep 7", url="http://shinden.pl/ep/7")
+
+
+class _FakeDownloads:
+    """Stands in for download.run: consults confirm_overwrite for 'existing' episodes like the real one does."""
+
+    def __init__(self, existing=(), fail_urls=()):
+        self.existing = set(existing)
+        self.fail_urls = set(fail_urls)
+        self.events: list[tuple[str, float]] = []
+
+    def path(self, ep) -> Path:
+        return Path(f"C:/dl/Fate - ep{ep.number:g}.mp4")
+
+    def __call__(self, stream, ep, ref, *, confirm_overwrite=None):
+        replacing = False
+        if confirm_overwrite is not None and ep.number in self.existing:
+            if not confirm_overwrite(self.path(ep)):
+                self.events.append(("kept", ep.number))
+                return False
+            replacing = True
+        if stream.url in self.fail_urls:
+            self.events.append(("failed", ep.number))
+            raise DownloadFailedError("x")
+        self.events.append(("replaced" if replacing else "downloaded", ep.number))
+        return True
+
+
+def _batch_state(targets, **overrides) -> FlowState:
+    return _download_state(targets=list(targets), **overrides)
+
+
+def _run_download(state, fake, choice=None):
+    with (
+        patch("alt_ani_cli.download.run", side_effect=fake),
+        patch("alt_ani_cli.ui.menus.select_existing_download_action", return_value=choice) as mock_prompt,
+        patch("alt_ani_cli.history.record_download") as mock_record,
+        patch("alt_ani_cli.ui.progress.error"),
+        patch("alt_ani_cli.ui.progress.warn"),
+        patch("alt_ani_cli.ui.progress.info"),
+    ):
+        result = handle_run_action(state)
+    return result, mock_prompt, mock_record
+
+
+@pytest.mark.unit
+class TestRunActionExistingFile:
+    def test_missing_file_downloads_without_prompt(self):
+        state = _batch_state([_EP4, _EP5])
+        fake = _FakeDownloads()
+        result, prompt, record = _run_download(state, fake)
+        prompt.assert_not_called()
+        assert fake.events == [("downloaded", 4.0)]
+        record.assert_called_once_with(_SERIES_REF, 4.0)
+        assert (result, state.ep_idx) == (Screen.EPISODE_DISPATCH, 1)
+
+    def test_skip_keeps_file_and_records_download(self):
+        state = _batch_state([_EP4, _EP5])
+        fake = _FakeDownloads(existing={4.0})
+        result, _, record = _run_download(state, fake, "skip")
+        assert fake.events == [("kept", 4.0)]
+        record.assert_called_once_with(_SERIES_REF, 4.0)
+        assert state.downloaded_eps == {4.0}
+        assert (result, state.ep_idx) == (Screen.EPISODE_DISPATCH, 1)
+        assert state.overwrite_existing_batch is False
+
+    def test_skip_does_not_report_download_result(self):
+        state = _batch_state([_EP4])
+        with patch("alt_ani_cli.diagnostics.download_result") as mock_diag:
+            _run_download(state, _FakeDownloads(existing={4.0}), "skip")
+        mock_diag.assert_not_called()
+
+    def test_overwrite_replaces_and_records_without_batch_policy(self):
+        state = _batch_state([_EP4, _EP5])
+        fake = _FakeDownloads(existing={4.0})
+        result, _, record = _run_download(state, fake, "overwrite")
+        assert fake.events == [("replaced", 4.0)]
+        record.assert_called_once_with(_SERIES_REF, 4.0)
+        assert state.downloaded_eps == {4.0}
+        assert (result, state.ep_idx) == (Screen.EPISODE_DISPATCH, 1)
+        assert state.overwrite_existing_batch is False
+
+    def test_cancel_returns_to_episode_pick_without_history(self):
+        state = _batch_state([_EP4, _EP5, _EP6])
+        fake = _FakeDownloads(existing={4.0})
+        result, _, record = _run_download(state, fake, "cancel")
+        assert result is Screen.EPISODES_PICK
+        assert fake.events == [("kept", 4.0)]
+        record.assert_not_called()
+        assert state.downloaded_eps == set()
+        assert state.ep_idx == 0
+        assert state.overwrite_existing_batch is False
+        assert state.stream is None
+
+    def test_overwrite_remaining_sets_batch_policy(self):
+        state = _batch_state([_EP4, _EP5])
+        fake = _FakeDownloads(existing={4.0})
+        _run_download(state, fake, "overwrite_remaining")
+        assert fake.events == [("replaced", 4.0)]
+        assert state.overwrite_existing_batch is True
+
+    def test_policy_skips_prompt_for_next_existing_episode(self):
+        state = _batch_state([_EP4, _EP5], ep_idx=1, overwrite_existing_batch=True)
+        fake = _FakeDownloads(existing={5.0})
+        _, prompt, record = _run_download(state, fake)
+        prompt.assert_not_called()
+        assert fake.events == [("replaced", 5.0)]
+        record.assert_called_once_with(_SERIES_REF, 5.0)
+
+    def test_policy_downloads_missing_episode_normally(self):
+        state = _batch_state([_EP4, _EP5], ep_idx=1, overwrite_existing_batch=True)
+        fake = _FakeDownloads()
+        _, prompt, _ = _run_download(state, fake)
+        prompt.assert_not_called()
+        assert fake.events == [("downloaded", 5.0)]
+
+    def test_failed_overwrite_returns_to_player_pick_and_keeps_policy(self):
+        state = _batch_state([_EP4, _EP5], overwrite_existing_batch=True)
+        fake = _FakeDownloads(existing={4.0}, fail_urls={_STREAM.url})
+        result, _, record = _run_download(state, fake)
+        assert result is Screen.PLAYER_PICK
+        assert state.ep_idx == 0
+        record.assert_not_called()
+        assert state.downloaded_eps == set()
+        assert state.overwrite_existing_batch is True
+
+    @pytest.mark.parametrize(
+        ("targets", "ep_idx", "has_remaining"),
+        [([_EP4], 0, False), ([_EP4, _EP5], 0, True), ([_EP4, _EP5], 1, False)],
+    )
+    def test_batch_option_offered_only_with_remaining_episodes(self, targets, ep_idx, has_remaining):
+        state = _batch_state(targets, ep_idx=ep_idx)
+        ep = targets[ep_idx]
+        _, prompt, _ = _run_download(state, _FakeDownloads(existing={ep.number}), "skip")
+        assert prompt.call_args.args == (str(_FakeDownloads().path(ep)),)
+        assert prompt.call_args.kwargs == {"has_remaining": has_remaining}
+
+    def test_already_downloaded_episode_still_prompts(self):
+        state = _batch_state([_EP4], downloaded_eps={4.0})
+        _, prompt, _ = _run_download(state, _FakeDownloads(existing={4.0}), "skip")
+        prompt.assert_called_once()
+
+
+@pytest.mark.unit
+class TestOverwriteBatchScenario:
+    def test_remaining_policy_survives_player_retry(self):
+        """ep4 existing → overwrite remaining; ep5 missing; ep6 fails on player A, retried on B; ep7 auto."""
+        state = _batch_state([_EP4, _EP5, _EP6, _EP7])
+        stream_b = Stream(url="https://cdn.example.com/b.mp4", ext="mp4")
+        fake = _FakeDownloads(existing={4.0, 6.0, 7.0})
+        prompts: list[float] = []
+
+        def answer(path, *, has_remaining):
+            prompts.append(state.current_ep.number)
+            return "overwrite_remaining"
+
+        screens = []
+        with (
+            patch("alt_ani_cli.download.run", side_effect=fake),
+            patch("alt_ani_cli.ui.menus.select_existing_download_action", side_effect=answer),
+            patch("alt_ani_cli.history.record_download") as mock_record,
+            patch("alt_ani_cli.ui.progress.error"),
+            patch("alt_ani_cli.ui.progress.info"),
+        ):
+            for stream in (_STREAM, _STREAM):
+                state.stream = stream
+                screens.append(handle_run_action(state))
+            fake.fail_urls = {_STREAM.url}
+            state.stream = _STREAM
+            screens.append(handle_run_action(state))
+            state.chosen_player = _PLAYER2
+            state.stream = stream_b
+            screens.append(handle_run_action(state))
+            fake.fail_urls = set()
+            state.stream = _STREAM
+            screens.append(handle_run_action(state))
+
+        assert prompts == [4.0]
+        assert fake.events == [
+            ("replaced", 4.0),
+            ("downloaded", 5.0),
+            ("failed", 6.0),
+            ("replaced", 6.0),
+            ("replaced", 7.0),
+        ]
+        assert screens == [Screen.EPISODE_DISPATCH, Screen.EPISODE_DISPATCH, Screen.PLAYER_PICK] + [Screen.EPISODE_DISPATCH] * 2
+        assert [c.args[1] for c in mock_record.call_args_list] == [4.0, 5.0, 6.0, 7.0]
+
+    def test_skip_in_batch_continues_with_next_episode(self):
+        state = _batch_state([_EP4, _EP5, _EP6])
+        fake = _FakeDownloads(existing={4.0})
+        with (
+            patch("alt_ani_cli.download.run", side_effect=fake),
+            patch("alt_ani_cli.ui.menus.select_existing_download_action", return_value="skip"),
+            patch("alt_ani_cli.history.record_download") as mock_record,
+            patch("alt_ani_cli.ui.progress.info"),
+        ):
+            handle_run_action(state)
+            state.stream = _STREAM
+            handle_run_action(state)
+        assert fake.events == [("kept", 4.0), ("downloaded", 5.0)]
+        assert [c.args[1] for c in mock_record.call_args_list] == [4.0, 5.0]
+        assert state.ep_idx == 2
+
+
+@pytest.mark.unit
+class TestOverwriteBatchPolicyReset:
+    def test_new_episode_selection_resets_policy(self):
+        state = _make_state(ref=_SERIES_REF, episodes=[_EP4, _EP5], overwrite_existing_batch=True)
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP5]):
+            HANDLERS[Screen.EPISODES_PICK](state)
+        assert state.overwrite_existing_batch is False
+
+    def test_cli_episode_range_batch_resets_policy(self):
+        state = _make_state(
+            ref=_SERIES_REF, episodes=[_EP4, _EP5], overwrite_existing_batch=True, args=_make_args(episode="4-5")
+        )
+        HANDLERS[Screen.EPISODES_PICK](state)
+        assert state.overwrite_existing_batch is False
+
+    def test_new_series_resets_policy(self):
+        state = _make_state(ref=_SERIES_REF, overwrite_existing_batch=True)
+        with patch("alt_ani_cli.shinden.series.list_episodes", return_value=(_SERIES_REF, [_EP1])):
+            HANDLERS[Screen.FETCH_EPISODES](state)
+        assert state.overwrite_existing_batch is False
+
+    def test_player_pick_after_failure_keeps_policy(self):
+        state = _batch_state([_EP4, _EP5], overwrite_existing_batch=True, failed_ids={_PLAYER.online_id})
+        with (
+            patch("alt_ani_cli.ui.menus.select_player_once", return_value=("pick", _PLAYER2)),
+            patch("alt_ani_cli.ui.progress.warn"),
+        ):
+            HANDLERS[Screen.PLAYER_PICK](state)
+        assert state.overwrite_existing_batch is True
+
+
+@pytest.mark.unit
+class TestSkipBackfillsDownloadHistory:
+    def test_skip_on_file_unknown_to_history_marks_it_downloaded(self):
+        from alt_ani_cli import history
+
+        state = _batch_state([_EP4])
+        assert history.list_downloads() == []
+        with (
+            patch("alt_ani_cli.download.run", side_effect=_FakeDownloads(existing={4.0})),
+            patch("alt_ani_cli.ui.menus.select_existing_download_action", return_value="skip"),
+            patch("alt_ani_cli.ui.progress.info"),
+        ):
+            handle_run_action(state)
+        assert history.list_downloads() == [(_SERIES_REF, frozenset({4.0}))]
+
+    def test_skipped_episode_is_marked_on_next_download_resume(self):
+        from alt_ani_cli import history
+
+        state = _batch_state([_EP4])
+        with (
+            patch("alt_ani_cli.download.run", side_effect=_FakeDownloads(existing={4.0})),
+            patch("alt_ani_cli.ui.menus.select_existing_download_action", return_value="skip"),
+            patch("alt_ani_cli.ui.progress.info"),
+        ):
+            handle_run_action(state)
+        resumed = _make_state()
+        with patch("alt_ani_cli.ui.menus.select_series_from_download_history", side_effect=lambda e: e[0]):
+            HANDLERS[Screen.DOWNLOAD_RESUME_PICK](resumed)
+        assert resumed.downloaded_eps == {4.0}
+
+
+@pytest.mark.unit
+class TestEpisodeArgConsumedOnce:
+    def _state(self, **overrides) -> FlowState:
+        return _make_state(
+            ref=_SERIES_REF,
+            episodes=[_EP4, _EP5, _EP6, _EP7],
+            args=_make_args(episode="4-7"),
+            **overrides,
+        )
+
+    def test_first_entry_auto_selects_range_without_picker(self):
+        state = self._state()
+        with patch("alt_ani_cli.ui.menus.select_episodes") as mock_sel:
+            result = HANDLERS[Screen.EPISODES_PICK](state)
+        mock_sel.assert_not_called()
+        assert result is Screen.EPISODE_DISPATCH
+        assert state.targets == [_EP4, _EP5, _EP6, _EP7]
+        assert state.episode_arg_consumed is True
+
+    def test_cancel_on_existing_file_then_shows_picker(self):
+        state = self._state()
+        HANDLERS[Screen.EPISODES_PICK](state)
+        state.players = [_PLAYER, _PLAYER2]
+        state.chosen_player = _PLAYER
+        state.stream = _STREAM
+        state.episode_action = "download"
+        fake = _FakeDownloads(existing={4.0})
+        result, _, record = _run_download(state, fake, "cancel")
+        assert result is Screen.EPISODES_PICK
+        assert state.overwrite_existing_batch is False
+        record.assert_not_called()
+        assert fake.events == [("kept", 4.0)]
+        assert state.ep_idx == 0
+
+        with (
+            patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP5]) as mock_sel,
+            patch("alt_ani_cli.cli._parse_range") as mock_parse,
+        ):
+            result = HANDLERS[Screen.EPISODES_PICK](state)
+        mock_sel.assert_called_once()
+        mock_parse.assert_not_called()
+        assert result is Screen.EPISODE_DISPATCH
+        assert state.targets == [_EP5]
+
+    def test_esc_from_player_pick_then_shows_picker(self):
+        state = self._state()
+        HANDLERS[Screen.EPISODES_PICK](state)
+        state.players = [_PLAYER, _PLAYER2]
+        with patch("alt_ani_cli.ui.menus.select_player_once", return_value=("back", None)):
+            assert HANDLERS[Screen.PLAYER_PICK](state) is Screen.EPISODES_PICK
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=None) as mock_sel:
+            HANDLERS[Screen.EPISODES_PICK](state)
+        mock_sel.assert_called_once()
+
+    def test_new_series_reapplies_episode_arg(self):
+        state = self._state(episode_arg_consumed=True)
+        with patch("alt_ani_cli.shinden.series.list_episodes", return_value=(_SERIES_REF, [_EP4, _EP5, _EP6, _EP7])):
+            HANDLERS[Screen.FETCH_EPISODES](state)
+        assert state.episode_arg_consumed is False
+        with patch("alt_ani_cli.ui.menus.select_episodes") as mock_sel:
+            assert HANDLERS[Screen.EPISODES_PICK](state) is Screen.EPISODE_DISPATCH
+        mock_sel.assert_not_called()
+
+    def test_without_episode_arg_picker_always_shown(self):
+        state = _make_state(ref=_SERIES_REF, episodes=[_EP4, _EP5])
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP4]) as mock_sel:
+            HANDLERS[Screen.EPISODES_PICK](state)
+            HANDLERS[Screen.EPISODES_PICK](state)
+        assert mock_sel.call_count == 2
+        assert state.episode_arg_consumed is False
+
+
+@pytest.mark.unit
+class TestRunActionDownloadTargetError:
+    def _run(self, state):
+        with (
+            patch("alt_ani_cli.download.run", side_effect=DownloadTargetError("C:/dl/Fate - ep4.mp4 locked")),
+            patch("alt_ani_cli.history.record_download") as mock_record,
+            patch("alt_ani_cli.diagnostics.download_result") as mock_diag,
+            patch("alt_ani_cli.ui.progress.error") as mock_error,
+        ):
+            result = handle_run_action(state)
+        return result, mock_record, mock_diag, mock_error
+
+    def test_local_file_error_does_not_fail_the_player(self):
+        state = _batch_state([_EP4, _EP5], overwrite_existing_batch=True)
+        result, record, diag, error = self._run(state)
+        assert result is Screen.PLAYER_PICK
+        assert state.failed_ids == set()
+        assert state.ep_idx == 0
+        assert state.overwrite_existing_batch is True
+        assert state.stream is None
+        record.assert_not_called()
+        diag.assert_not_called()
+        assert error.call_args.args[0] == "C:/dl/Fate - ep4.mp4 locked"
+
+    def test_single_player_episode_is_not_skipped(self):
+        state = _batch_state([_EP4, _EP5], players=(_PLAYER,))
+        result, *_ = self._run(state)
+        assert result is Screen.PLAYER_PICK
+        assert state.ep_idx == 0
+        assert state.failed_ids == set()
+
+    def test_player_pick_offers_same_player_again(self):
+        state = _batch_state([_EP4])
+        self._run(state)
+        with patch("alt_ani_cli.ui.menus.select_player_once", return_value=("pick", _PLAYER)) as mock_pick:
+            assert HANDLERS[Screen.PLAYER_PICK](state) is Screen.RESOLVE_STREAM
+        assert mock_pick.call_args.kwargs["failed"] == set()
+        assert state.chosen_player is _PLAYER

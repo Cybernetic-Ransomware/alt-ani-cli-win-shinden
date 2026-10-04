@@ -1,10 +1,13 @@
 import gc
+import os
 import shutil
+from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 
 from alt_ani_cli.config import DOWNLOADS, USER_AGENT
 from alt_ani_cli.content import CONTENT, EXCEPTIONS_PL
-from alt_ani_cli.errors import DownloadFailedError
+from alt_ani_cli.errors import DownloadFailedError, DownloadTargetError
 from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.models import EpisodeRow, SeriesRef
 from alt_ani_cli.ui import progress
@@ -16,6 +19,7 @@ _SUPPRESS_PREFIXES = (
 )
 
 _LEGACY_PART_SUFFIX = ".legacy-ffmpeg"
+_STAGING_INFIX = ".redownload"
 
 
 class _TruncLogger:
@@ -64,12 +68,53 @@ def _quarantine_legacy_hls_part(final_path: Path) -> Path | None:
     return backup
 
 
+def _staging_path(final_path: Path) -> Path:
+    return final_path.with_name(f"{final_path.stem}{_STAGING_INFIX}{final_path.suffix}")
+
+
+def _staging_artifacts(final_path: Path) -> list[Path]:
+    prefix = f"{final_path.stem}{_STAGING_INFIX}."
+    return [path for path in final_path.parent.iterdir() if path.name.startswith(prefix)]
+
+
+def _discard_staging(final_path: Path) -> list[Path]:
+    """Remove every artifact of a redownload attempt (staged file, .part/.ytdl, fragments, fixup temp); return leftovers."""
+    for path in _staging_artifacts(final_path):
+        if path.is_file():
+            with suppress(OSError):
+                path.unlink()
+    return _staging_artifacts(final_path)
+
+
+def _redirect_to_staging(ydl, info: dict, final_path: Path) -> Path:
+    """Point yt-dlp at a sibling staging file so the existing final stays intact until the new copy is complete."""
+    # A staging partial may come from another source or a crashed run; resuming or promoting it could splice stale data.
+    if leftovers := _discard_staging(final_path):
+        raise DownloadTargetError(EXCEPTIONS_PL["download"]["staging_locked"].format(path=leftovers[0]))
+    staging = _staging_path(final_path)
+    ydl.params["outtmpl"]["default"] = str(staging).replace("%", "%%")
+    if Path(ydl.prepare_filename(info)) != staging:
+        raise DownloadTargetError(EXCEPTIONS_PL["download"]["staging_mismatch"].format(path=final_path))
+    return staging
+
+
+def _promote_staging(staging: Path, final_path: Path) -> None:
+    try:
+        os.replace(staging, final_path)
+    except OSError:
+        _discard_staging(final_path)
+        raise DownloadTargetError(EXCEPTIONS_PL["download"]["replace_failed"].format(path=final_path)) from None
+
+
 def run(
     stream: Stream,
     ep: EpisodeRow,
     series: SeriesRef,
     dest_dir: Path = DOWNLOADS,
-) -> None:
+    *,
+    confirm_overwrite: Callable[[Path], bool] | None = None,
+) -> bool:
+    """Returns False when an existing final was kept; without confirm_overwrite an existing final is never replaced."""
     from yt_dlp import YoutubeDL
     from yt_dlp.utils import DownloadError
 
@@ -94,11 +139,17 @@ def run(
 
     progress.info(CONTENT["download"]["starting"].format(title=safe_title, ep_label=ep_label, dir=dest_dir))
     failed = False
+    staging: Path | None = None
     try:
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(stream.url, download=False)
             final_path = Path(ydl.prepare_filename(info))
-            if str(info.get("protocol", "")).startswith("m3u8") and (backup := _quarantine_legacy_hls_part(final_path)):
+            if confirm_overwrite is not None and final_path.exists():
+                if not confirm_overwrite(final_path):
+                    return False
+                staging = _redirect_to_staging(ydl, info, final_path)
+            target = staging or final_path
+            if str(info.get("protocol", "")).startswith("m3u8") and (backup := _quarantine_legacy_hls_part(target)):
                 progress.warn(CONTENT["download"]["legacy_part_moved"].format(path=backup))
             ydl.process_ie_result(info, download=True)
     except DownloadError:
@@ -107,7 +158,16 @@ def run(
     if failed:
         # Outside except on purpose: yt-dlp's leaked .part handle sits in a traceback cycle (WinError 32 on reuse).
         gc.collect()
+        if staging is not None:
+            _discard_staging(final_path)
         raise DownloadFailedError(EXCEPTIONS_PL["download"]["failed"])
+
+    if staging is not None:
+        if not staging.is_file():
+            _discard_staging(final_path)
+            raise DownloadFailedError(EXCEPTIONS_PL["download"]["failed"])
+        _promote_staging(staging, final_path)
 
     if final_path.exists():
         progress.success(CONTENT["download"]["saved"].format(path=final_path))
+    return True

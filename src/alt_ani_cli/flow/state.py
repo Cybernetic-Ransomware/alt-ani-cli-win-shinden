@@ -68,6 +68,9 @@ class FlowState:
     targets: list = field(default_factory=list)
     ep_idx: int = 0
     completed_eps: set[float] = field(default_factory=set)
+    # replace already-downloaded files without asking — scoped to the current targets batch only
+    overwrite_existing_batch: bool = False
+    episode_arg_consumed: bool = False
 
     # player / stream
     players: list = field(default_factory=list)

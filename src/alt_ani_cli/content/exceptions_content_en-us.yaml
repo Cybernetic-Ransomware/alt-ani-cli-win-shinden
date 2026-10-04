@@ -75,3 +75,6 @@ player:
 
 download:
   failed: "Download failed."
+  replace_failed: "Could not replace {path} — the previous file was kept unchanged (is it open in another program?)."
+  staging_locked: "Could not remove leftovers of a previous attempt: {path} — redownload aborted, the previous file was kept unchanged."
+  staging_mismatch: "Could not prepare a temporary file next to {path} — redownload aborted, the previous file was kept unchanged."
