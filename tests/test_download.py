@@ -1,10 +1,13 @@
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from yt_dlp.utils import DownloadError
 
 from alt_ani_cli import download
 from alt_ani_cli.config import USER_AGENT
+from alt_ani_cli.errors import DownloadFailedError
 from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.models import EpisodeRow, SeriesRef
 
@@ -17,21 +20,26 @@ class _FakeYDL:
 
     instances: list[_FakeYDL] = []
     info: dict = {}
+    fail_in: str | None = None
 
     def __init__(self, opts: dict) -> None:
         self.opts = opts
         self.final_path: Path | None = None
         self.part_existed_at_download: bool | None = None
+        self.exited = False
         _FakeYDL.instances.append(self)
 
     def __enter__(self) -> _FakeYDL:
         return self
 
     def __exit__(self, *exc) -> None:
+        self.exited = True
         return None
 
     def extract_info(self, url: str, download: bool = True) -> dict:
         assert download is False
+        if self.fail_in == "extract_info":
+            raise DownloadError("ERROR: [generic] master: Unable to download webpage: timed out (https://h/m?token=SECRET)")
         return dict(self.info)
 
     def prepare_filename(self, info: dict) -> str:
@@ -40,6 +48,8 @@ class _FakeYDL:
     def process_ie_result(self, info: dict, download: bool = True) -> dict:
         self.final_path = Path(self.prepare_filename(info))
         self.part_existed_at_download = self.final_path.with_name(self.final_path.name + ".part").exists()
+        if self.fail_in == "process_ie_result":
+            raise DownloadError("ERROR: fragment 2 not found, unable to continue (https://h/s2.ts?token=SECRET)")
         return info
 
 
@@ -47,6 +57,7 @@ class _FakeYDL:
 def fake_ydl():
     _FakeYDL.instances = []
     _FakeYDL.info = {"ext": "mp4", "protocol": "m3u8_native"}
+    _FakeYDL.fail_in = None
     with patch("yt_dlp.YoutubeDL", _FakeYDL):
         yield _FakeYDL
 
@@ -158,3 +169,57 @@ class TestLegacyHlsPartGuard:
         assert backup.read_bytes() == b"newer legacy"
         assert Path(f"{final}.part.legacy-ffmpeg").read_bytes() == b"older legacy"
         assert not Path(f"{final}.part").exists()
+
+
+@pytest.mark.unit
+class TestDownloadFailure:
+    @pytest.mark.parametrize("stage", ["extract_info", "process_ie_result"])
+    def test_ytdlp_error_becomes_download_failed_error(self, fake_ydl, tmp_path, stage):
+        fake_ydl.fail_in = stage
+        with pytest.raises(DownloadFailedError) as info:
+            _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        assert "token" not in str(info.value)
+        assert "http" not in str(info.value)
+
+    @pytest.mark.parametrize("stage", ["extract_info", "process_ie_result"])
+    def test_failure_does_not_report_saved(self, fake_ydl, tmp_path, stage):
+        fake_ydl.fail_in = stage
+        (tmp_path / "Show - ep1.mp4").write_bytes(b"older complete file")
+        with patch.object(download.progress, "success") as success, pytest.raises(DownloadFailedError):
+            _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        success.assert_not_called()
+
+    def test_original_ytdlp_exception_is_not_chained(self, fake_ydl, tmp_path):
+        fake_ydl.fail_in = "process_ie_result"
+        with pytest.raises(DownloadFailedError) as info:
+            _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        assert info.value.__cause__ is None
+        assert info.value.__context__ is None
+
+    def test_gc_runs_after_context_exit_with_no_active_exception(self, fake_ydl, tmp_path):
+        fake_ydl.fail_in = "process_ie_result"
+        seen: list[tuple[bool, object]] = []
+
+        def collect() -> int:
+            seen.append((_FakeYDL.instances[-1].exited, sys.exception()))
+            return 0
+
+        with patch.object(download.gc, "collect", side_effect=collect), pytest.raises(DownloadFailedError):
+            _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        assert seen == [(True, None)]
+
+    def test_success_does_not_force_gc(self, fake_ydl, tmp_path):
+        with patch.object(download.gc, "collect") as collect:
+            _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        collect.assert_not_called()
+
+    def test_success_reports_saved_path(self, fake_ydl, tmp_path):
+        class _WritingYDL(_FakeYDL):
+            def process_ie_result(self, info: dict, download: bool = True) -> dict:
+                super().process_ie_result(info, download)
+                self.final_path.write_bytes(b"mp4")
+                return info
+
+        with patch("yt_dlp.YoutubeDL", _WritingYDL), patch.object(download.progress, "success") as success:
+            download.run(Stream(url="https://h/master.m3u8", ext="m3u8"), _EP, _SERIES, dest_dir=tmp_path)
+        assert str(tmp_path / "Show - ep1.mp4") in success.call_args.args[0]

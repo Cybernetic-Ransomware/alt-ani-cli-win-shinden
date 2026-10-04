@@ -6,7 +6,7 @@ import pytest
 from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
 
 from alt_ani_cli.cli import main
-from alt_ani_cli.errors import FilterMismatchError
+from alt_ani_cli.errors import DownloadFailedError, FilterMismatchError
 
 
 def _make_http_error(status_code: int, url: str = "https://shinden.pl/series/1-test") -> CurlHTTPError:
@@ -90,3 +90,20 @@ class TestFilterMismatchErrorHandler:
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
         assert "--lang=xx" in captured.err + captured.out
+
+
+@pytest.mark.unit
+class TestDownloadFailedErrorHandler:
+    def test_download_failure_exits_1_with_plain_message(self, capsys):
+        exc = DownloadFailedError("Pobieranie nie powiodło się.")
+        with (
+            patch("sys.argv", ["alt-ani-cli", "--url", "https://shinden.pl/series/1-test", "-S", "1", "-d"]),
+            patch("alt_ani_cli.cli._run_noninteractive", side_effect=exc),
+            patch("alt_ani_cli.cli.shinden_http.make_client"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+        combined = "".join(capsys.readouterr())
+        assert "Pobieranie nie powiodło się." in combined
+        assert "Błąd shinden" not in combined

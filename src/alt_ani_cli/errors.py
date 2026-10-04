@@ -28,3 +28,7 @@ class ParseError(ShindenError):
 
 class FilterMismatchError(ShindenError):
     """--lang/--subs/--player-name matched no players and --allow-fallback was not set."""
+
+
+class DownloadFailedError(ShindenError):
+    """yt-dlp could not download the stream; carries no library exception or URL."""

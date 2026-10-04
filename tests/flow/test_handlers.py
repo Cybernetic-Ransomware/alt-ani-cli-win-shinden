@@ -11,7 +11,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
-from alt_ani_cli.errors import AntiBotError, NoStreamError, ShindenError
+from alt_ani_cli.content import CONTENT
+from alt_ani_cli.errors import AntiBotError, DownloadFailedError, NoStreamError, ShindenError
 from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.flow.handlers import (
     HANDLERS,
@@ -22,7 +23,7 @@ from alt_ani_cli.flow.handlers import (
     handle_run_action,
 )
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, _BackSentinel
-from alt_ani_cli.models import EmbedURL, RelatedSeries, SeriesMetadata
+from alt_ani_cli.models import EmbedURL, PlayerSource, RelatedSeries, SeriesMetadata
 from alt_ani_cli.player.runner import PlayResult
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesRef
 
@@ -560,6 +561,8 @@ class TestHandleRunActionPlaybackReporting:
             stream=Stream(url="https://cdn.example.com/v.m3u8", headers={}, ext="m3u8"),
             embed=EmbedURL(url="https://morencius.com/embed/abc", referer="https://shinden.pl/"),
             episode_action=episode_action,
+            players=[_PLAYER],
+            chosen_player=_PLAYER,
             **overrides,
         )
         return state
@@ -671,6 +674,8 @@ class TestHandleRunActionHistoryTracking:
             stream=Stream(url="https://cdn.example.com/v.m3u8", headers={}, ext="m3u8"),
             embed=EmbedURL(url="https://morencius.com/embed/abc", referer="https://shinden.pl/"),
             episode_action=episode_action,
+            players=[_PLAYER],
+            chosen_player=_PLAYER,
             **overrides,
         )
         return state
@@ -756,6 +761,164 @@ class TestHandleRunActionHistoryTracking:
         ):
             handle_run_action(state)
         assert state.ep_idx == 1
+
+
+_STREAM = Stream(url="https://cdn.example.com/v.m3u8", headers={}, ext="m3u8")
+_EMBED = EmbedURL(url="https://vidara.to/e/abc", referer="https://shinden.pl/")
+
+
+def _download_state(players=(_PLAYER, _PLAYER2), **overrides) -> FlowState:
+    state = _make_state(
+        ref=_SERIES_REF,
+        targets=[_EP1, _EP2],
+        ep_idx=0,
+        players=list(players),
+        chosen_player=players[0],
+        stream=_STREAM,
+        embed=_EMBED,
+        episode_action="download",
+    )
+    for k, v in overrides.items():
+        setattr(state, k, v)
+    return state
+
+
+@pytest.mark.unit
+class TestHandleRunActionDownloadFailure:
+    def test_success_advances_episode_without_history(self):
+        state = _download_state()
+        with (
+            patch("alt_ani_cli.download.run") as mock_download,
+            patch("alt_ani_cli.history.upsert") as mock_upsert,
+            patch("alt_ani_cli.diagnostics.download_result") as mock_diag,
+        ):
+            result = handle_run_action(state)
+        mock_download.assert_called_once()
+        mock_upsert.assert_not_called()
+        mock_diag.assert_called_once_with(None, ok=True, exc=None)
+        assert result is Screen.EPISODE_DISPATCH
+        assert state.ep_idx == 1
+        assert state.failed_ids == set()
+
+    def test_failure_with_other_players_returns_to_player_pick(self):
+        state = _download_state()
+        with (
+            patch("alt_ani_cli.download.run", side_effect=DownloadFailedError("x")),
+            patch("alt_ani_cli.history.upsert") as mock_upsert,
+            patch("alt_ani_cli.ui.progress.error") as mock_error,
+        ):
+            result = handle_run_action(state)
+        assert result is Screen.PLAYER_PICK
+        assert state.ep_idx == 0
+        assert state.failed_ids == {_PLAYER.online_id}
+        assert state.stream is None
+        assert state.embed is None
+        assert state.completed_eps == set()
+        assert state.episode_action == "download"
+        mock_upsert.assert_not_called()
+        assert _PLAYER.player in mock_error.call_args.args[0]
+
+    def test_failure_logs_redacted_diagnostics(self):
+        state = _download_state()
+        state.player_sources = {_PLAYER.online_id: PlayerSource(_PLAYER.online_id, "vidara.to", _EMBED.url)}
+        with (
+            patch("alt_ani_cli.download.run", side_effect=DownloadFailedError("x")),
+            patch("alt_ani_cli.ui.progress.error"),
+            patch("alt_ani_cli.diagnostics.download_result") as mock_diag,
+        ):
+            handle_run_action(state)
+        mock_diag.assert_called_once_with("vidara.to", ok=False, exc="DownloadFailedError")
+
+    def test_failure_on_last_remaining_player_skips_episode(self):
+        state = _download_state(failed_ids={_PLAYER.online_id}, chosen_player=_PLAYER2)
+        with (
+            patch("alt_ani_cli.download.run", side_effect=DownloadFailedError("x")),
+            patch("alt_ani_cli.history.upsert") as mock_upsert,
+            patch("alt_ani_cli.ui.progress.error"),
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            result = handle_run_action(state)
+        assert result is Screen.EPISODE_DISPATCH
+        assert state.ep_idx == 1
+        assert state.completed_eps == set()
+        mock_upsert.assert_not_called()
+        assert mock_warn.call_args.args[0] == CONTENT["progress"]["no_player_worked"].format(number=_EP1.number)
+
+    def test_failure_with_single_player_skips_episode(self):
+        state = _download_state(players=(_PLAYER,))
+        with (
+            patch("alt_ani_cli.download.run", side_effect=DownloadFailedError("x")),
+            patch("alt_ani_cli.ui.progress.error"),
+            patch("alt_ani_cli.ui.progress.warn"),
+        ):
+            result = handle_run_action(state)
+        assert result is Screen.EPISODE_DISPATCH
+        assert state.ep_idx == 1
+
+    def test_args_download_failure_also_returns_to_player_pick(self):
+        state = _download_state(episode_action=None, args=_make_args(download=True))
+        with (
+            patch("alt_ani_cli.download.run", side_effect=DownloadFailedError("x")),
+            patch("alt_ani_cli.ui.progress.error"),
+        ):
+            result = handle_run_action(state)
+        assert result is Screen.PLAYER_PICK
+        assert state.ep_idx == 0
+
+
+@pytest.mark.unit
+class TestDownloadRetryOnAnotherPlayer:
+    """Episode → player A → download failure → PLAYER_PICK → player B → download success → next episode."""
+
+    def _drive(self, state: FlowState, start: Screen) -> list[Screen]:
+        screens = [start]
+        screen = start
+        while not (screen is Screen.EPISODE_DISPATCH and state.ep_idx == 1):
+            screen = HANDLERS[screen](state)
+            screens.append(screen)
+            assert len(screens) < 20, screens
+        return screens
+
+    def test_failed_download_retries_on_picked_player_without_asking_action(self):
+        state = _download_state(stream=None, embed=None)
+        stream_b = Stream(url="https://cdn.example.com/b.mp4", ext="mp4")
+        streams = {_PLAYER.online_id: _STREAM, _PLAYER2.online_id: stream_b}
+        downloaded: list[str] = []
+
+        def fake_resolve(client, players, chosen, **kwargs):
+            return streams[chosen.online_id], _EMBED
+
+        def fake_download(stream, ep, ref):
+            downloaded.append(stream.url)
+            if stream is _STREAM:
+                raise DownloadFailedError("x")
+
+        with (
+            patch("alt_ani_cli.cli._resolve_with_fallback", side_effect=fake_resolve),
+            patch("alt_ani_cli.download.run", side_effect=fake_download),
+            patch("alt_ani_cli.ui.menus.select_player_once", return_value=("pick", _PLAYER2)) as mock_pick,
+            patch("alt_ani_cli.ui.menus.select_action") as mock_action,
+            patch("alt_ani_cli.history.upsert") as mock_upsert,
+            patch("alt_ani_cli.ui.progress.error"),
+            patch("alt_ani_cli.ui.progress.warn"),
+        ):
+            screens = self._drive(state, Screen.RESOLVE_STREAM)
+
+        assert screens == [
+            Screen.RESOLVE_STREAM,
+            Screen.ACTION_PICK,
+            Screen.RUN_ACTION,
+            Screen.PLAYER_PICK,
+            Screen.RESOLVE_STREAM,
+            Screen.ACTION_PICK,
+            Screen.RUN_ACTION,
+            Screen.EPISODE_DISPATCH,
+        ]
+        assert downloaded == [_STREAM.url, stream_b.url]
+        assert mock_pick.call_args.kwargs["failed"] == {_PLAYER.online_id}
+        mock_action.assert_not_called()
+        mock_upsert.assert_not_called()
+        assert state.episode_action == "download"
 
 
 @pytest.mark.unit
