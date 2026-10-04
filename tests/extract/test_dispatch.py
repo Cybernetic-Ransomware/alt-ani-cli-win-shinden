@@ -163,6 +163,13 @@ class TestResolveDispatch:
         assert HOST_RULES["morningmarkets.art"] == HostRule("custom", vidara.resolve)
         assert HOST_RULES["morningmarkets.fit"] == HostRule("custom", vidara.resolve)
 
+    def test_iosbgaigo_hosts_route_to_vidara_extractor(self):
+        """JWPlayer source comes from a runtime POST /api/stream, so generic JWPlayer sees no URL."""
+        from alt_ani_cli.extract import vidara
+
+        assert HOST_RULES["iosbgaigo.com"] == HostRule("custom", vidara.resolve)
+        assert HOST_RULES["www.iosbgaigo.com"] == HostRule("custom", vidara.resolve)
+
     def test_dood_yt_routes_to_dood_extractor(self):
         from alt_ani_cli.extract import dood
 
@@ -410,6 +417,7 @@ class TestResolverFamily:
             ("dood.yt", "dood"),
             ("vidawra.cc", "vidara"),
             ("morningmarkets.art", "vidara"),
+            ("iosbgaigo.com", "vidara"),
             ("streamtape.to", "streamtape"),
             ("mp4upload.com", "mp4upload"),
             ("lycoris.cafe", "lycoris"),

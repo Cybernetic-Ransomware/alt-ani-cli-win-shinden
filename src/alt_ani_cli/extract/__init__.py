@@ -102,6 +102,9 @@ HOST_RULES: dict[str, HostRule] = {
     # /api/stream protocol, confirmed by live replay
     "morningmarkets.art": HostRule("custom", vidara.resolve),
     "morningmarkets.fit": HostRule("custom", vidara.resolve),
+    # iosbgaigo — JWPlayer source is set from a POST /api/stream response at runtime, confirmed by live replay
+    "iosbgaigo.com": HostRule("custom", vidara.resolve),
+    "www.iosbgaigo.com": HostRule("custom", vidara.resolve),
     # lycoris
     "lycoris.cafe": HostRule("custom", lycoris.resolve),
     "www.lycoris.cafe": HostRule("custom", lycoris.resolve),
