@@ -410,14 +410,17 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
     state.player_sources = {}
     state.player_embeds = {}
 
+    if args.select_nth:
+        return _auto_pick_player(state, players[0])
+
     # matched on the final sorted/filtered list from the episode HTML alone — no resolve_embed needed
     if state.pinned_player is not None:
         pinned = find_pinned(players, state.pinned_player)
         if pinned is not None:
             return _auto_pick_player(state, pinned)
+        # a missing pinned source needs a deliberate fallback, even with a single player left
         progress.info(_PROG["pin_no_match"].format(number=ep.number))
-
-    if args.select_nth or len(players) == 1:
+    elif len(players) == 1:
         return _auto_pick_player(state, players[0])
 
     if args.show_sources:

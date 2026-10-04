@@ -2079,9 +2079,9 @@ class TestPinAutoMatch:
 
     def test_pinned_candidate_filtered_out_shows_normal_picker(self):
         state, result, _ = _pin_dispatch([_OTHER, _PIN_A2, _OTHER_EN], player_name="CDA", subs="en")
-        assert result is Screen.RESOLVE_STREAM  # single remaining player — existing auto-pick, not the pin
+        assert result is Screen.PLAYER_PICK
         assert state.players == [_OTHER_EN]
-        assert state.chosen_player is _OTHER_EN
+        assert state.chosen_player is None
         assert state.pinned_player == _PIN_FP
 
     def test_pinned_candidate_filtered_out_of_several_shows_picker(self):
@@ -2111,10 +2111,30 @@ class TestPinAutoMatch:
         no_match = CONTENT["progress"]["pin_no_match"].format(number=5.0)
         assert all(c.args[0] != no_match for c in mocks["info"].call_args_list)
 
-    def test_pin_takes_precedence_over_select_nth(self):
-        state, result, _ = _pin_dispatch([_OTHER, _PIN_A2], select_nth=1)
+    def test_select_nth_takes_precedence_over_pin(self):
+        state, result, mocks = _pin_dispatch([_OTHER, _PIN_A2], select_nth=1)
+        assert result is Screen.RESOLVE_STREAM
+        assert state.chosen_player is _OTHER
+        assert state.pinned_player == _PIN_FP
+        mocks["diag"].assert_called_once_with(_OTHER.online_id, _OTHER.player, None)
+
+    def test_pin_without_match_and_single_player_shows_picker(self):
+        state, result, mocks = _pin_dispatch([_OTHER])
+        assert result is Screen.PLAYER_PICK
+        assert state.chosen_player is None
+        assert state.pinned_player == _PIN_FP
+        mocks["diag"].assert_not_called()
+
+    def test_pin_with_match_and_single_player_auto_picks_match(self):
+        state, result, _ = _pin_dispatch([_PIN_A2])
         assert result is Screen.RESOLVE_STREAM
         assert state.chosen_player is _PIN_A2
+
+    def test_without_pin_single_player_is_still_auto_selected(self):
+        state, result, mocks = _pin_dispatch([_OTHER], state=_pin_batch_state(pinned_player=None))
+        assert result is Screen.RESOLVE_STREAM
+        assert state.chosen_player is _OTHER
+        mocks["diag"].assert_called_once_with(_OTHER.online_id, _OTHER.player, None)
 
     def test_select_nth_still_applies_when_pin_has_no_match(self):
         state, result, _ = _pin_dispatch([_OTHER, _OTHER_EN], select_nth=1)
