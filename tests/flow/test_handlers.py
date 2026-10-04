@@ -1847,3 +1847,75 @@ class TestSkipBackfillsDownloadHistory:
         with patch("alt_ani_cli.ui.menus.select_series_from_download_history", side_effect=lambda e: e[0]):
             HANDLERS[Screen.DOWNLOAD_RESUME_PICK](resumed)
         assert resumed.downloaded_eps == {4.0}
+
+
+@pytest.mark.unit
+class TestEpisodeArgConsumedOnce:
+    def _state(self, **overrides) -> FlowState:
+        return _make_state(
+            ref=_SERIES_REF,
+            episodes=[_EP4, _EP5, _EP6, _EP7],
+            args=_make_args(episode="4-7"),
+            **overrides,
+        )
+
+    def test_first_entry_auto_selects_range_without_picker(self):
+        state = self._state()
+        with patch("alt_ani_cli.ui.menus.select_episodes") as mock_sel:
+            result = HANDLERS[Screen.EPISODES_PICK](state)
+        mock_sel.assert_not_called()
+        assert result is Screen.EPISODE_DISPATCH
+        assert state.targets == [_EP4, _EP5, _EP6, _EP7]
+        assert state.episode_arg_consumed is True
+
+    def test_cancel_on_existing_file_then_shows_picker(self):
+        state = self._state()
+        HANDLERS[Screen.EPISODES_PICK](state)
+        state.players = [_PLAYER, _PLAYER2]
+        state.chosen_player = _PLAYER
+        state.stream = _STREAM
+        state.episode_action = "download"
+        fake = _FakeDownloads(existing={4.0})
+        result, _, record = _run_download(state, fake, "cancel")
+        assert result is Screen.EPISODES_PICK
+        assert state.overwrite_existing_batch is False
+        record.assert_not_called()
+        assert fake.events == [("kept", 4.0)]
+        assert state.ep_idx == 0
+
+        with (
+            patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP5]) as mock_sel,
+            patch("alt_ani_cli.cli._parse_range") as mock_parse,
+        ):
+            result = HANDLERS[Screen.EPISODES_PICK](state)
+        mock_sel.assert_called_once()
+        mock_parse.assert_not_called()
+        assert result is Screen.EPISODE_DISPATCH
+        assert state.targets == [_EP5]
+
+    def test_esc_from_player_pick_then_shows_picker(self):
+        state = self._state()
+        HANDLERS[Screen.EPISODES_PICK](state)
+        state.players = [_PLAYER, _PLAYER2]
+        with patch("alt_ani_cli.ui.menus.select_player_once", return_value=("back", None)):
+            assert HANDLERS[Screen.PLAYER_PICK](state) is Screen.EPISODES_PICK
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=None) as mock_sel:
+            HANDLERS[Screen.EPISODES_PICK](state)
+        mock_sel.assert_called_once()
+
+    def test_new_series_reapplies_episode_arg(self):
+        state = self._state(episode_arg_consumed=True)
+        with patch("alt_ani_cli.shinden.series.list_episodes", return_value=(_SERIES_REF, [_EP4, _EP5, _EP6, _EP7])):
+            HANDLERS[Screen.FETCH_EPISODES](state)
+        assert state.episode_arg_consumed is False
+        with patch("alt_ani_cli.ui.menus.select_episodes") as mock_sel:
+            assert HANDLERS[Screen.EPISODES_PICK](state) is Screen.EPISODE_DISPATCH
+        mock_sel.assert_not_called()
+
+    def test_without_episode_arg_picker_always_shown(self):
+        state = _make_state(ref=_SERIES_REF, episodes=[_EP4, _EP5])
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP4]) as mock_sel:
+            HANDLERS[Screen.EPISODES_PICK](state)
+            HANDLERS[Screen.EPISODES_PICK](state)
+        assert mock_sel.call_count == 2
+        assert state.episode_arg_consumed is False

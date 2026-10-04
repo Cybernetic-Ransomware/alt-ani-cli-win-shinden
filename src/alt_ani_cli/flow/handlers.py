@@ -295,6 +295,7 @@ def handle_fetch_episodes(state: FlowState) -> ScreenResult:
     state.targets = []
     state.ep_idx = 0
     state.overwrite_existing_batch = False
+    state.episode_arg_consumed = False
     if not episodes:
         progress.error(_PROG["no_episodes"])
         return Screen.SERIES_PICK
@@ -306,8 +307,8 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
         raise AssertionError
     args = state.args
 
-    # When --episode was passed from CLI, skip the interactive menu
-    if args.episode:
+    # --episode picks the first batch of a series only; later returns here must show the picker
+    if args.episode and not state.episode_arg_consumed:
         from alt_ani_cli.cli import _parse_range
 
         targets = _parse_range(args.episode, state.episodes)
@@ -317,6 +318,7 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
         state.targets = targets
         state.ep_idx = 0
         state.overwrite_existing_batch = False
+        state.episode_arg_consumed = True
         return Screen.EPISODE_DISPATCH
 
     default_index = None
