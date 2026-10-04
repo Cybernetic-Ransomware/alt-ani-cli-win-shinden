@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from alt_ani_cli.content import CONTENT
 from alt_ani_cli.models import PlayerSource
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, RelatedSeries, SeriesHit, SeriesRef
 from alt_ani_cli.ui.menus import (
@@ -19,6 +20,7 @@ from alt_ani_cli.ui.menus import (
     select_episodes,
     select_player_once,
     select_quality,
+    select_series_from_download_history,
     select_series_from_history,
     select_series_once,
     select_start_mode,
@@ -64,27 +66,69 @@ class TestSelectQuality:
             assert select_quality({"1080p": "u1"}) is None
 
 
+def _start_mode_options(monkeypatch, **counts) -> tuple[list[str], str | None]:
+    monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+    printed: list[str] = []
+    with (
+        patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+        patch("builtins.input", return_value="1"),
+    ):
+        choice = select_start_mode(**counts)
+    return printed, choice
+
+
+_SM_OPTS = CONTENT["menu"]["start_mode"]["options"]
+_WATCH_PREFIX = _SM_OPTS["resume_watch"].split("(")[0].strip()
+_DOWNLOAD_PREFIX = _SM_OPTS["resume_download"].split("(")[0].strip()
+
+
 @pytest.mark.unit
 class TestSelectStartMode:
     def test_search_is_first_option(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value="1"):
-            assert select_start_mode(has_history=False) == "search"
+            assert select_start_mode() == "search"
 
-    def test_resume_returns_resume(self, monkeypatch):
+    def test_resume_watch_returns_resume_watch(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value="2"):
-            assert select_start_mode(has_history=True, history_count=3) == "resume"
+            assert select_start_mode(watch_count=3) == "resume_watch"
+
+    def test_resume_download_returns_resume_download(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        with patch("builtins.input", return_value="3"):
+            assert select_start_mode(watch_count=3, download_count=2) == "resume_download"
 
     def test_quit_without_history(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value="3"):
-            assert select_start_mode(has_history=False) == "quit"
+            assert select_start_mode() == "quit"
 
     def test_empty_enter_returns_none(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value=""):
-            assert select_start_mode(has_history=False) is None
+            assert select_start_mode() is None
+
+    def test_no_history_shows_no_continue_options(self, monkeypatch):
+        printed, _ = _start_mode_options(monkeypatch)
+        assert len(printed) == 3
+        assert not any(_WATCH_PREFIX in line or _DOWNLOAD_PREFIX in line for line in printed)
+
+    def test_watch_only_shows_only_continue_watching(self, monkeypatch):
+        printed, _ = _start_mode_options(monkeypatch, watch_count=22)
+        assert any(_WATCH_PREFIX in line and "22" in line for line in printed)
+        assert not any(_DOWNLOAD_PREFIX in line for line in printed)
+
+    def test_download_only_shows_only_continue_downloading(self, monkeypatch):
+        printed, _ = _start_mode_options(monkeypatch, download_count=3)
+        assert any(_DOWNLOAD_PREFIX in line and "3" in line for line in printed)
+        assert not any(_WATCH_PREFIX in line for line in printed)
+
+    def test_both_histories_show_both_options(self, monkeypatch):
+        printed, _ = _start_mode_options(monkeypatch, watch_count=22, download_count=3)
+        assert any(_WATCH_PREFIX in line for line in printed)
+        assert any(_DOWNLOAD_PREFIX in line for line in printed)
+        assert len(printed) == 5
 
 
 @pytest.mark.unit
@@ -137,6 +181,20 @@ class TestSelectEpisodes:
             result = select_episodes(episodes, multi=True, default_index=2)
         assert result == [episodes[2]]
         assert mock_cb.call_args.kwargs["default"] == 2
+
+    def test_downloaded_marker_differs_from_watched(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        episodes = [EpisodeRow(number=n, title=f"Ep {n}", url=f"http://x/{n}") for n in (1, 2, 3)]
+        printed: list[str] = []
+        with (
+            patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+            patch("builtins.input", return_value="3"),
+        ):
+            select_episodes(episodes, watched_numbers={1.0}, downloaded_numbers={2.0})
+        _ep = CONTENT["menu"]["episodes"]
+        assert any(_ep["label_watched"].format(number=1, title="Ep 1") in line for line in printed)
+        assert any(_ep["label_downloaded"].format(number=2, title="Ep 2") in line for line in printed)
+        assert any(_ep["label_unwatched"].format(number=3, title="Ep 3") in line for line in printed)
 
 
 @pytest.fixture
@@ -254,6 +312,30 @@ class TestSelectSeriesOnce:
         entries = [(ref, 3.0), (ref, 5.0)]
         with patch("builtins.input", return_value="2"):
             assert select_series_from_history(entries) == entries[1]
+
+
+@pytest.mark.unit
+class TestSelectSeriesFromDownloadHistory:
+    _REF = SeriesRef(id="1", slug="tongari", title="Tongari Boushi no Atelier", url="https://shinden.pl/series/1-tongari")
+
+    def test_label_shows_downloaded_count_not_last_ep(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        entries = [(self._REF, frozenset({1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0}))]
+        printed: list[str] = []
+        with (
+            patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+            patch("builtins.input", return_value="1"),
+        ):
+            result = select_series_from_download_history(entries)
+        assert result == entries[0]
+        expected = CONTENT["menu"]["download_resume"]["label"].format(title=self._REF.title, count=7)
+        assert any(expected in line for line in printed)
+        assert not any("ostatni ep" in line for line in printed)
+
+    def test_empty_enter_returns_none(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        with patch("builtins.input", return_value=""):
+            assert select_series_from_download_history([(self._REF, frozenset({1.0}))]) is None
 
 
 @pytest.mark.unit

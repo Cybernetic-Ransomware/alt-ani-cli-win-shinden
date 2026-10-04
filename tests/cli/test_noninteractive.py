@@ -1,13 +1,15 @@
 """Tests for noninteractive diagnostics wiring — session lifecycle, episode/player context."""
 
 import argparse
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from alt_ani_cli import diagnostics
 from alt_ani_cli.cli import _run_noninteractive, main
-from alt_ani_cli.errors import AntiBotError, NoStreamError
+from alt_ani_cli.errors import AntiBotError, DownloadFailedError, NoStreamError
 from alt_ani_cli.models import EmbedURL, EpisodeRow, PlayerEntry, SeriesRef
 
 _REF = SeriesRef(id="1", slug="fate", title="Fate", url="http://shinden.pl/series/1-fate")
@@ -296,3 +298,87 @@ class TestNoninteractiveReorder:
         assert resolve_embed_ids[:2] == ["pa1", "pb1"]
         second_episode_resolve_ids = resolve_embed_ids[2:]
         assert second_episode_resolve_ids[0] == "qb2"
+
+
+_EPISODES = [EpisodeRow(number=float(n), title=f"Ep {n}", url=f"http://shinden.pl/ep/{n}") for n in (1, 2, 3, 4, 5)]
+_STREAM = MagicMock(qualities={})
+
+
+@contextmanager
+def _resume_env(watch=(), downloads=(), download_side_effect=None):
+    """Patch everything after series resolution so only target selection and history writes are exercised."""
+    client = MagicMock()
+    client.get.return_value = MagicMock(raise_for_status=MagicMock(), text="")
+    with (
+        patch("alt_ani_cli.cli.history.list_all", return_value=list(watch)),
+        patch("alt_ani_cli.cli.history.list_downloads", return_value=list(downloads)),
+        patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
+        patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=(_REF, _EPISODES)),
+        patch("alt_ani_cli.cli.shinden_episode.parse_players", return_value=[_PLAYER_A]),
+        patch("alt_ani_cli.cli.shinden_episode.sort_players", return_value=[_PLAYER_A]),
+        patch("alt_ani_cli.cli._resolve_with_fallback", return_value=(_STREAM, None)),
+        patch("alt_ani_cli.cli._pick_quality", return_value=_STREAM),
+        patch("alt_ani_cli.cli.download.run", side_effect=download_side_effect) as mock_download,
+        patch("alt_ani_cli.cli.player_runner.play", return_value=MagicMock(rc=0, elapsed=5.0)) as mock_play,
+        patch("alt_ani_cli.cli.history.upsert") as mock_upsert,
+        patch("alt_ani_cli.cli.history.record_download") as mock_record,
+    ):
+        yield client, SimpleNamespace(download=mock_download, play=mock_play, upsert=mock_upsert, record=mock_record)
+
+
+@pytest.mark.unit
+class TestNoninteractiveDownloadHistory:
+    def test_continue_without_download_uses_watch_history(self):
+        with _resume_env(watch=[(_REF, 2.0)], downloads=[(_REF, frozenset({1.0}))]) as (client, m):
+            _run_noninteractive(_make_args(url=None, resume=True), client)
+        played_title = m.play.call_args.kwargs["title"]
+        assert "Odcinek 3" in played_title
+        m.download.assert_not_called()
+        m.upsert.assert_called_once_with(_REF, last_ep=3.0)
+        m.record.assert_not_called()
+
+    def test_continue_with_download_uses_download_history(self):
+        with _resume_env(watch=[(_REF, 4.0)], downloads=[(_REF, frozenset({1.0, 2.0}))]) as (client, m):
+            _run_noninteractive(_make_args(url=None, resume=True, download=True), client)
+        (_, ep, _), _ = m.download.call_args
+        assert ep.number == 3.0
+        m.record.assert_called_once_with(_REF, 3.0)
+        m.upsert.assert_not_called()
+        m.play.assert_not_called()
+
+    def test_continue_with_download_picks_first_gap(self):
+        with _resume_env(downloads=[(_REF, frozenset({1.0, 2.0, 4.0}))]) as (client, m):
+            _run_noninteractive(_make_args(url=None, resume=True, download=True), client)
+        (_, ep, _), _ = m.download.call_args
+        assert ep.number == 3.0
+
+    def test_continue_with_download_all_downloaded_skips_download(self):
+        everything = frozenset(ep.number for ep in _EPISODES)
+        with (
+            _resume_env(downloads=[(_REF, everything)]) as (client, m),
+            patch("alt_ani_cli.cli.progress.info") as mock_info,
+        ):
+            _run_noninteractive(_make_args(url=None, resume=True, download=True), client)
+        m.download.assert_not_called()
+        m.record.assert_not_called()
+        assert any(_REF.title in str(c.args[0]) for c in mock_info.call_args_list)
+
+    def test_continue_with_download_empty_history_exits(self):
+        with _resume_env(watch=[(_REF, 2.0)]) as (client, m), pytest.raises(SystemExit):
+            _run_noninteractive(_make_args(url=None, resume=True, download=True), client)
+        m.download.assert_not_called()
+
+    def test_plain_download_records_download_history(self):
+        with _resume_env() as (client, m):
+            _run_noninteractive(_make_args(download=True, episode="2"), client)
+        m.record.assert_called_once_with(_REF, 2.0)
+        m.upsert.assert_not_called()
+
+    def test_failed_download_does_not_record_history(self):
+        with (
+            _resume_env(download_side_effect=DownloadFailedError("x")) as (client, m),
+            pytest.raises(DownloadFailedError),
+        ):
+            _run_noninteractive(_make_args(download=True, episode="2"), client)
+        m.record.assert_not_called()
+        m.upsert.assert_not_called()

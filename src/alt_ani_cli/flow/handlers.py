@@ -101,11 +101,23 @@ def _sorted_by_date_desc(hits: list[SeriesHit], metadata: dict[str, SeriesMetada
     return sorted(hits, key=key)
 
 
+def _reset_download_resume(state: FlowState) -> None:
+    """Leave download-resume mode so a newly picked series is not auto-downloaded."""
+    if state.resume_mode == "download" and state.episode_action == "download":
+        state.episode_action = None
+    state.resume_mode = None
+    state.downloaded_eps = set()
+
+
+def _first_missing_index(episodes: list[EpisodeRow], downloaded: set[float]) -> int:
+    return next((i for i, ep in enumerate(episodes) if ep.number not in downloaded), len(episodes) - 1)
+
+
 def handle_start_mode(state: FlowState) -> ScreenResult:
     args = state.args
     # When launched with flags, skip the interactive menu
     if args.resume:
-        return Screen.RESUME_PICK
+        return Screen.DOWNLOAD_RESUME_PICK if args.download else Screen.RESUME_PICK
     if args.url:
         ref = shinden_series.parse_series_url(args.url)
         state.ref = ref
@@ -115,12 +127,10 @@ def handle_start_mode(state: FlowState) -> ScreenResult:
         state.query = " ".join(args.query)
         return Screen.SERIES_PICK
 
-    all_entries = history.list_all()
+    watch_count = len(history.list_all())
+    download_count = len(history.list_downloads())
     while True:
-        choice = menus.select_start_mode(
-            has_history=bool(all_entries),
-            history_count=len(all_entries),
-        )
+        choice = menus.select_start_mode(watch_count=watch_count, download_count=download_count)
         if choice != "version":
             break
         _sm = _M["start_mode"]
@@ -129,7 +139,11 @@ def handle_start_mode(state: FlowState) -> ScreenResult:
         return BACK  # ESC from first screen → exit via empty history_stack
     if choice == "quit":
         return None
-    if choice == "resume":
+    if choice == "resume_download":
+        state.hits = []
+        return Screen.DOWNLOAD_RESUME_PICK
+    _reset_download_resume(state)
+    if choice == "resume_watch":
         state.hits = []
         return Screen.RESUME_PICK
     if choice == "url":
@@ -151,6 +165,7 @@ def handle_url_input(state: FlowState) -> ScreenResult:
     if url is None:
         return BACK
     ref = shinden_series.parse_series_url(url)
+    _reset_download_resume(state)
     state.ref = ref
     state.last_ep = 0.0
     return Screen.FETCH_EPISODES
@@ -164,7 +179,26 @@ def handle_resume_pick(state: FlowState) -> ScreenResult:
     result = menus.select_series_from_history(all_entries)
     if result is None:
         return BACK
+    _reset_download_resume(state)
     state.ref, state.last_ep = result
+    state.resume_mode = "watch"
+    return Screen.FETCH_EPISODES
+
+
+def handle_download_resume_pick(state: FlowState) -> ScreenResult:
+    entries = history.list_downloads()
+    if not entries:
+        progress.error(_PROG["download_history_empty"])
+        return BACK
+    result = menus.select_series_from_download_history(entries)
+    if result is None:
+        return BACK
+    ref, downloaded = result
+    state.ref = ref
+    state.last_ep = 0.0
+    state.resume_mode = "download"
+    state.downloaded_eps = set(downloaded)
+    state.episode_action = "download"
     return Screen.FETCH_EPISODES
 
 
@@ -196,6 +230,7 @@ def handle_series_pick(state: FlowState) -> ScreenResult:
         if action == "pick":
             hit = payload
             ref = shinden_series.parse_series_url(hit.url)
+            _reset_download_resume(state)
             state.ref = SeriesRef(id=ref.id, slug=ref.slug, title=hit.title, url=ref.url)
             state.last_ep = 0.0
             return Screen.FETCH_EPISODES
@@ -283,7 +318,10 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
 
     default_index = None
     watched = set(state.completed_eps)
-    if state.last_ep > 0:
+    downloaded = set(state.downloaded_eps)
+    if state.resume_mode == "download":
+        default_index = _first_missing_index(state.episodes, downloaded)
+    elif state.last_ep > 0:
         watched |= {ep.number for ep in state.episodes if ep.number <= state.last_ep}
         default_index = next(
             (i for i, ep in enumerate(state.episodes) if ep.number > state.last_ep),
@@ -295,6 +333,7 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
         prompt=CONTENT["menu"]["episodes"]["prompt_with_title"].format(title=state.ref.title),
         multi=True,
         watched_numbers=watched,
+        downloaded_numbers=downloaded,
         default_index=default_index,
     )
     if result is None:
@@ -320,7 +359,8 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
 
     args = state.args
     raw_players = shinden_episode.parse_players(ep_resp.text)
-    players = shinden_episode.sort_players(raw_players, download=args.download)
+    download_mode = args.download or state.episode_action == "download"
+    players = shinden_episode.sort_players(raw_players, download=download_mode)
 
     if not players:
         progress.warn(_PROG["no_players"].format(number=ep.number))
@@ -501,6 +541,8 @@ def handle_run_action(state: FlowState) -> ScreenResult:
             state.embed = None
             return _fail_chosen_player(state, ep)
         diagnostics.download_result(host, ok=True, exc=None)
+        history.record_download(state.ref, ep.number)
+        state.downloaded_eps.add(ep.number)
     elif args.debug or state.episode_action == "debug":
         _print_debug(stream, state.embed)
     else:
@@ -525,6 +567,7 @@ HANDLERS: dict[Screen, Callable[[FlowState], ScreenResult]] = {
     Screen.SEARCH_QUERY: handle_search_query,
     Screen.URL_INPUT: handle_url_input,
     Screen.RESUME_PICK: handle_resume_pick,
+    Screen.DOWNLOAD_RESUME_PICK: handle_download_resume_pick,
     Screen.SERIES_PICK: handle_series_pick,
     Screen.FETCH_EPISODES: handle_fetch_episodes,
     Screen.EPISODES_PICK: handle_episodes_pick,
