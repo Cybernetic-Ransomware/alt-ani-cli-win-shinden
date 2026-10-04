@@ -10,7 +10,7 @@ from alt_ani_cli.extract.playmate import resolve
 _EMBED = "https://playmate.to/embed/MFyuwmxvBGiUE"
 _REFERER = "https://shinden.pl/"
 
-_M3U8_URL = "https://cdn.playmate.to/hls/abc/master.m3u8?token=deadbeef"
+_M3U8_URL = "https://cdn.playmate.to/hls/abc/master.txt?token=deadbeef"
 
 _API_RESPONSE = {"sx": _M3U8_URL}
 
