@@ -408,6 +408,7 @@ def handle_resolve_stream(state: FlowState) -> ScreenResult:
         cookies_file=state.args.cookies_file,
         cookies_browser=state.args.cookies_browser,
         embed_cache=state.player_embeds,
+        health=state.health,
     )
 
     if stream is not None:
