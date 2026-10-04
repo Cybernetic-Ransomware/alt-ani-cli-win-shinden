@@ -54,6 +54,7 @@ progress:
   player_failed_short: "Player {player} nie zadziałał — wybierz inny:"
   no_player_worked: "Żaden player nie zadziałał dla odcinka {number:g} — pomijam."
   download_failed: "Pobieranie z playera {player} nie powiodło się."
+  pin_no_match: "Przypiętego źródła nie ma w odcinku {number:g}."
   host_deferred: "Host {host} jest chwilowo niedostępny w tej sesji — odkładam próbę."
   host_last_resort: "Pozostałe źródła zawiodły — próbuję odłożonego hosta {host}."
   host_dropped: "Host {host} nadal jest niedostępny po próbie last-resort — pomijam kolejnego playera na tym hoście."
@@ -166,10 +167,18 @@ menu:
     options:
       play: "Oglądaj w mpv/vlc"
       download: "Pobierz na dysk"
+      download_pin: "Pobierz i używaj tego źródła dla kolejnych odcinków"
       debug: "Pokaż linki (debug)"
     instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
     fallback_prompt: "Akcja [1-3, Enter=wstecz]: "
-    fallback_invalid: "  Wpisz liczbę 1–3."
+    fallback_invalid: "  Wpisz liczbę 1–{n}."
+  pin_fallback:
+    message: "Ten player różni się od przypiętego źródła. Co zrobić?"
+    options:
+      keep: "Pobierz ten odcinek i zachowaj przypięte źródło"
+      repin: "Pobierz i używaj tego źródła dla kolejnych odcinków"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
+    fallback_invalid: "  Wpisz liczbę 1–2."
   existing_file:
     header: "Plik już istnieje:
 {path}"
