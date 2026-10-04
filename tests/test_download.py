@@ -21,9 +21,13 @@ class _FakeYDL:
     instances: list[_FakeYDL] = []
     info: dict = {}
     fail_in: str | None = None
+    extract_calls = 0
+    payload: bytes | None = None
 
     def __init__(self, opts: dict) -> None:
         self.opts = opts
+        # Real YoutubeDL normalises a string outtmpl into params["outtmpl"]["default"].
+        self.params = {**opts, "outtmpl": {"default": opts["outtmpl"]}}
         self.final_path: Path | None = None
         self.part_existed_at_download: bool | None = None
         self.exited = False
@@ -38,18 +42,25 @@ class _FakeYDL:
 
     def extract_info(self, url: str, download: bool = True) -> dict:
         assert download is False
+        _FakeYDL.extract_calls += 1
         if self.fail_in == "extract_info":
             raise DownloadError("ERROR: [generic] master: Unable to download webpage: timed out (https://h/m?token=SECRET)")
         return dict(self.info)
 
     def prepare_filename(self, info: dict) -> str:
-        return self.opts["outtmpl"].replace("%(ext)s", info["ext"])
+        return self.params["outtmpl"]["default"].replace("%(ext)s", info["ext"]).replace("%%", "%")
 
     def process_ie_result(self, info: dict, download: bool = True) -> dict:
         self.final_path = Path(self.prepare_filename(info))
-        self.part_existed_at_download = self.final_path.with_name(self.final_path.name + ".part").exists()
+        part = self.final_path.with_name(self.final_path.name + ".part")
+        self.part_existed_at_download = part.exists()
+        if self.payload is not None:
+            part.write_bytes(self.payload[:2])
         if self.fail_in == "process_ie_result":
             raise DownloadError("ERROR: fragment 2 not found, unable to continue (https://h/s2.ts?token=SECRET)")
+        if self.payload is not None:
+            part.unlink()
+            self.final_path.write_bytes(self.payload)
         return info
 
 
@@ -58,6 +69,8 @@ def fake_ydl():
     _FakeYDL.instances = []
     _FakeYDL.info = {"ext": "mp4", "protocol": "m3u8_native"}
     _FakeYDL.fail_in = None
+    _FakeYDL.extract_calls = 0
+    _FakeYDL.payload = None
     with patch("yt_dlp.YoutubeDL", _FakeYDL):
         yield _FakeYDL
 
@@ -223,3 +236,213 @@ class TestDownloadFailure:
         with patch("yt_dlp.YoutubeDL", _WritingYDL), patch.object(download.progress, "success") as success:
             download.run(Stream(url="https://h/master.m3u8", ext="m3u8"), _EP, _SERIES, dest_dir=tmp_path)
         assert str(tmp_path / "Show - ep1.mp4") in success.call_args.args[0]
+
+
+_HLS = Stream(url="https://h/master.m3u8", ext="m3u8")
+_OLD = b"OLD complete episode"
+_NEW = b"NEW complete episode"
+
+
+def _existing_final(dest: Path) -> Path:
+    final = dest / "Show - ep1.mp4"
+    final.write_bytes(_OLD)
+    return final
+
+
+def _overwrite(dest: Path) -> bool:
+    return download.run(_HLS, _EP, _SERIES, dest_dir=dest, confirm_overwrite=lambda _: True)
+
+
+@pytest.mark.unit
+class TestExistingFinalWithoutOverwrite:
+    def test_no_callback_leaves_existing_final_to_ytdlp_no_overwrite(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        assert download.run(_HLS, _EP, _SERIES, dest_dir=tmp_path) is True
+        assert fake_ydl.instances[-1].final_path == final
+        assert "overwrites" not in fake_ydl.instances[-1].opts
+        assert final.read_bytes() == _OLD
+
+    def test_declined_overwrite_skips_download_and_keeps_file(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        fake_ydl.payload = _NEW
+        assert download.run(_HLS, _EP, _SERIES, dest_dir=tmp_path, confirm_overwrite=lambda _: False) is False
+        assert fake_ydl.instances[-1].final_path is None
+        assert final.read_bytes() == _OLD
+        assert [p.name for p in tmp_path.iterdir()] == [final.name]
+
+    def test_callback_receives_exact_final_path(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        seen: list[Path] = []
+        download.run(_HLS, _EP, _SERIES, dest_dir=tmp_path, confirm_overwrite=lambda p: seen.append(p) or False)
+        assert seen == [final]
+
+    def test_callback_not_consulted_when_final_missing(self, fake_ydl, tmp_path):
+        fake_ydl.payload = _NEW
+        asked: list[Path] = []
+        download.run(_HLS, _EP, _SERIES, dest_dir=tmp_path, confirm_overwrite=lambda p: asked.append(p) or True)
+        assert asked == []
+        assert (tmp_path / "Show - ep1.mp4").read_bytes() == _NEW
+
+
+@pytest.mark.unit
+class TestSafeOverwrite:
+    def test_success_replaces_final_with_new_content(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        fake_ydl.payload = _NEW
+        assert _overwrite(tmp_path) is True
+        assert final.read_bytes() == _NEW
+
+    def test_download_targets_staging_not_final(self, fake_ydl, tmp_path):
+        _existing_final(tmp_path)
+        fake_ydl.payload = _NEW
+        _overwrite(tmp_path)
+        assert fake_ydl.instances[-1].final_path == tmp_path / "Show - ep1.redownload.mp4"
+
+    def test_success_leaves_no_staging_garbage(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        fake_ydl.payload = _NEW
+        _overwrite(tmp_path)
+        assert [p.name for p in tmp_path.iterdir()] == [final.name]
+
+    def test_success_reports_final_path(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        fake_ydl.payload = _NEW
+        with patch.object(download.progress, "success") as success:
+            _overwrite(tmp_path)
+        assert str(final) in success.call_args.args[0]
+
+    def test_failure_keeps_old_final_bytes(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        fake_ydl.payload = _NEW
+        fake_ydl.fail_in = "process_ie_result"
+        with pytest.raises(DownloadFailedError):
+            _overwrite(tmp_path)
+        assert final.read_bytes() == _OLD
+
+    def test_failure_discards_staging_partials(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        fake_ydl.payload = _NEW
+        fake_ydl.fail_in = "process_ie_result"
+        with pytest.raises(DownloadFailedError):
+            _overwrite(tmp_path)
+        assert [p.name for p in tmp_path.iterdir()] == [final.name]
+
+    def test_ytdlp_error_during_overwrite_is_contained(self, fake_ydl, tmp_path):
+        _existing_final(tmp_path)
+        fake_ydl.fail_in = "process_ie_result"
+        with pytest.raises(DownloadFailedError) as info:
+            _overwrite(tmp_path)
+        assert info.value.__cause__ is None
+        assert info.value.__context__ is None
+        assert "token" not in str(info.value)
+
+    def test_gc_runs_before_staging_cleanup(self, fake_ydl, tmp_path):
+        _existing_final(tmp_path)
+        fake_ydl.payload = _NEW
+        fake_ydl.fail_in = "process_ie_result"
+        staging_part = tmp_path / "Show - ep1.redownload.mp4.part"
+        seen: list[tuple[bool, object, bool]] = []
+
+        def collect() -> int:
+            seen.append((_FakeYDL.instances[-1].exited, sys.exception(), staging_part.exists()))
+            return 0
+
+        with patch.object(download.gc, "collect", side_effect=collect), pytest.raises(DownloadFailedError):
+            _overwrite(tmp_path)
+        assert seen == [(True, None, True)]
+        assert not staging_part.exists()
+
+    def test_extract_info_runs_once_around_the_decision(self, fake_ydl, tmp_path):
+        _existing_final(tmp_path)
+        fake_ydl.payload = _NEW
+        calls_at_decision: list[int] = []
+
+        def confirm(_: Path) -> bool:
+            calls_at_decision.append(_FakeYDL.extract_calls)
+            return True
+
+        download.run(_HLS, _EP, _SERIES, dest_dir=tmp_path, confirm_overwrite=confirm)
+        assert calls_at_decision == [1]
+        assert _FakeYDL.extract_calls == 1
+        assert len(_FakeYDL.instances) == 1
+
+    def test_replace_failure_keeps_old_final_and_discards_new_copy(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        fake_ydl.payload = _NEW
+        with (
+            patch.object(download.os, "replace", side_effect=PermissionError(13, "in use")),
+            patch.object(download.progress, "error") as error,
+            pytest.raises(DownloadFailedError),
+        ):
+            _overwrite(tmp_path)
+        assert final.read_bytes() == _OLD
+        assert [p.name for p in tmp_path.iterdir()] == [final.name]
+        assert str(final) in error.call_args.args[0]
+
+    def test_staging_path_mismatch_aborts_before_download(self, fake_ydl, tmp_path):
+        class _StagingIgnoredYDL(_FakeYDL):
+            def prepare_filename(self, info: dict) -> str:
+                return self.opts["outtmpl"].replace("%(ext)s", info["ext"])
+
+        final = _existing_final(tmp_path)
+        with patch("yt_dlp.YoutubeDL", _StagingIgnoredYDL), pytest.raises(DownloadFailedError):
+            _overwrite(tmp_path)
+        assert fake_ydl.instances[-1].final_path is None
+        assert final.read_bytes() == _OLD
+
+    def test_missing_staged_file_after_success_is_a_failure(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        with pytest.raises(DownloadFailedError):
+            _overwrite(tmp_path)
+        assert final.read_bytes() == _OLD
+
+    def test_staging_template_escapes_percent(self, fake_ydl, tmp_path):
+        dest = tmp_path / "100%"
+        dest.mkdir()
+        final = _existing_final(dest)
+        fake_ydl.payload = _NEW
+        _overwrite(dest)
+        assert final.read_bytes() == _NEW
+
+
+@pytest.mark.unit
+class TestOverwritePartialFiles:
+    def test_stale_staging_partials_are_not_resumed(self, fake_ydl, tmp_path):
+        _existing_final(tmp_path)
+        (tmp_path / "Show - ep1.redownload.mp4.part").write_bytes(b"other source ts")
+        (tmp_path / "Show - ep1.redownload.mp4.ytdl").write_text("{}")
+        (tmp_path / "Show - ep1.redownload.mp4").write_bytes(b"crashed before promote")
+        fake_ydl.payload = _NEW
+        _overwrite(tmp_path)
+        assert fake_ydl.instances[-1].part_existed_at_download is False
+
+    def test_final_native_resume_state_is_left_alone(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        part = tmp_path / "Show - ep1.mp4.part"
+        ytdl = tmp_path / "Show - ep1.mp4.ytdl"
+        part.write_bytes(b"ts fragments")
+        ytdl.write_text("{}")
+        fake_ydl.payload = _NEW
+        _overwrite(tmp_path)
+        assert part.read_bytes() == b"ts fragments"
+        assert ytdl.read_text() == "{}"
+        assert final.read_bytes() == _NEW
+
+    def test_final_legacy_part_is_not_spliced_into_redownload(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        legacy = tmp_path / "Show - ep1.mp4.part"
+        legacy.write_bytes(b"legacy mp4 bytes")
+        fake_ydl.payload = _NEW
+        _overwrite(tmp_path)
+        assert fake_ydl.instances[-1].part_existed_at_download is False
+        assert legacy.read_bytes() == b"legacy mp4 bytes"
+        assert final.read_bytes() == _NEW
+
+    def test_discard_ignores_similarly_named_episodes(self, tmp_path):
+        final = tmp_path / "Show - ep1.mp4"
+        keep = [tmp_path / "Show - ep10.redownload.mp4", tmp_path / "Show - ep1.mp4.part", final]
+        for p in keep:
+            p.write_bytes(b"x")
+        (tmp_path / "Show - ep1.redownload.temp.mp4").write_bytes(b"fixup temp")
+        download._discard_staging(final)
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(p.name for p in keep)

@@ -382,3 +382,13 @@ class TestNoninteractiveDownloadHistory:
             _run_noninteractive(_make_args(download=True, episode="2"), client)
         m.record.assert_not_called()
         m.upsert.assert_not_called()
+
+    def test_download_never_offers_overwrite(self):
+        with (
+            _resume_env() as (client, m),
+            patch("alt_ani_cli.ui.menus.select_existing_download_action") as mock_prompt,
+        ):
+            _run_noninteractive(_make_args(download=True, episode="2"), client)
+        assert m.download.call_args.kwargs == {}
+        mock_prompt.assert_not_called()
+        m.record.assert_called_once_with(_REF, 2.0)

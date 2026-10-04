@@ -75,3 +75,4 @@ player:
 
 download:
   failed: "Pobieranie nie powiodło się."
+  replace_failed: "Nie udało się zastąpić pliku {path} — poprzednia wersja pozostała bez zmian (czy plik jest otwarty w innym programie?)."

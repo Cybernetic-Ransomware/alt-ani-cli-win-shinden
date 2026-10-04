@@ -725,3 +725,20 @@ def select_action() -> Literal["play", "download", "debug"] | None:
         instruction=_ac["instruction"],
         fallback_invalid=_ac["fallback_invalid"],
     )
+
+
+def select_existing_download_action(
+    path: str, *, has_remaining: bool
+) -> Literal["skip", "overwrite", "overwrite_remaining", "cancel"]:
+    """Ask what to do with an already downloaded file; ESC / empty Enter means cancel."""
+    _ef = _M["existing_file"]
+    _opts = _ef["options"]
+    keys = ["skip", "overwrite", "overwrite_remaining", "cancel"] if has_remaining else ["skip", "overwrite", "cancel"]
+    progress.warn(_ef["header"].format(path=path))
+    choice = _run_keyed_picker(
+        [(k, _opts[k]) for k in keys],
+        prompt=_ef["message"],
+        instruction=_ef["instruction"],
+        fallback_invalid=_ef["fallback_invalid"].format(n=len(keys)),
+    )
+    return choice or "cancel"

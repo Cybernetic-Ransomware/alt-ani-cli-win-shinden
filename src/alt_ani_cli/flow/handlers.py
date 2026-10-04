@@ -12,6 +12,7 @@ player filters match nothing.
 
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from urllib.parse import urlparse
 
 from curl_cffi import requests as cffi_requests
@@ -293,6 +294,7 @@ def handle_fetch_episodes(state: FlowState) -> ScreenResult:
     state.completed_eps = set()
     state.targets = []
     state.ep_idx = 0
+    state.overwrite_existing_batch = False
     if not episodes:
         progress.error(_PROG["no_episodes"])
         return Screen.SERIES_PICK
@@ -314,6 +316,7 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
             return BACK
         state.targets = targets
         state.ep_idx = 0
+        state.overwrite_existing_batch = False
         return Screen.EPISODE_DISPATCH
 
     default_index = None
@@ -343,6 +346,7 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
         return BACK
     state.targets = result
     state.ep_idx = 0
+    state.overwrite_existing_batch = False
     return Screen.EPISODE_DISPATCH
 
 
@@ -532,15 +536,36 @@ def handle_run_action(state: FlowState) -> ScreenResult:
     if args.download or state.episode_action == "download":
         source = state.player_sources.get(state.chosen_player.online_id)
         host = source.host if source else None
+        existing: dict = {}
+
+        def confirm_overwrite(path: Path) -> bool:
+            if state.overwrite_existing_batch:
+                return True
+            has_remaining = state.ep_idx < len(state.targets) - 1
+            choice = menus.select_existing_download_action(str(path), has_remaining=has_remaining)
+            existing.update(choice=choice, path=path)
+            if choice == "overwrite_remaining":
+                state.overwrite_existing_batch = True
+            return choice in ("overwrite", "overwrite_remaining")
+
         try:
-            download.run(stream, ep, state.ref)
+            downloaded = download.run(stream, ep, state.ref, confirm_overwrite=confirm_overwrite)
         except DownloadFailedError as exc:
             diagnostics.download_result(host, ok=False, exc=type(exc).__name__)
             progress.error(_PROG["download_failed"].format(player=repr(state.chosen_player.player)))
             state.stream = None
             state.embed = None
             return _fail_chosen_player(state, ep)
-        diagnostics.download_result(host, ok=True, exc=None)
+        if not downloaded and existing["choice"] == "cancel":
+            state.overwrite_existing_batch = False
+            state.stream = None
+            state.embed = None
+            progress.warn(CONTENT["download"]["batch_cancelled"])
+            return Screen.EPISODES_PICK
+        if downloaded:
+            diagnostics.download_result(host, ok=True, exc=None)
+        else:
+            progress.info(CONTENT["download"]["kept_existing"].format(path=existing["path"]))
         history.record_download(state.ref, ep.number)
         state.downloaded_eps.add(ep.number)
     elif args.debug or state.episode_action == "debug":

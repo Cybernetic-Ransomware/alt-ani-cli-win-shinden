@@ -75,3 +75,4 @@ player:
 
 download:
   failed: "Download failed."
+  replace_failed: "Could not replace {path} — the previous file was kept unchanged (is it open in another program?)."

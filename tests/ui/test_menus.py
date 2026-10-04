@@ -18,6 +18,7 @@ from alt_ani_cli.ui.menus import (
     pick_related,
     select_action,
     select_episodes,
+    select_existing_download_action,
     select_player_once,
     select_quality,
     select_series_from_download_history,
@@ -499,3 +500,67 @@ class TestConfirm:
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value=""):
             assert confirm("Kontynuować?") is None
+
+
+_EF = CONTENT["menu"]["existing_file"]
+_EXISTING = r"C:\dl\Show - ep4.mp4"
+
+
+def _existing_prompt(answer: str, *, has_remaining: bool) -> tuple[str, list[str], list[str]]:
+    printed: list[str] = []
+    with (
+        patch("builtins.input", return_value=answer),
+        patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+        patch("alt_ani_cli.ui.progress.warn") as warn,
+    ):
+        choice = select_existing_download_action(_EXISTING, has_remaining=has_remaining)
+    return choice, printed, [c.args[0] for c in warn.call_args_list]
+
+
+@pytest.mark.unit
+class TestSelectExistingDownloadAction:
+    @pytest.fixture(autouse=True)
+    def _fallback(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+
+    def test_single_episode_offers_skip_overwrite_cancel(self):
+        _, printed, _ = _existing_prompt("1", has_remaining=False)
+        opts = _EF["options"]
+        assert printed == [f"  1. {opts['skip']}", f"  2. {opts['overwrite']}", f"  3. {opts['cancel']}"]
+
+    def test_batch_with_remaining_adds_overwrite_remaining(self):
+        _, printed, _ = _existing_prompt("1", has_remaining=True)
+        opts = _EF["options"]
+        assert printed == [
+            f"  1. {opts['skip']}",
+            f"  2. {opts['overwrite']}",
+            f"  3. {opts['overwrite_remaining']}",
+            f"  4. {opts['cancel']}",
+        ]
+
+    @pytest.mark.parametrize(
+        ("answer", "expected"), [("1", "skip"), ("2", "overwrite"), ("3", "overwrite_remaining"), ("4", "cancel")]
+    )
+    def test_batch_fallback_maps_every_option(self, answer, expected):
+        assert _existing_prompt(answer, has_remaining=True)[0] == expected
+
+    @pytest.mark.parametrize(("answer", "expected"), [("1", "skip"), ("2", "overwrite"), ("3", "cancel")])
+    def test_single_fallback_maps_every_option(self, answer, expected):
+        assert _existing_prompt(answer, has_remaining=False)[0] == expected
+
+    @pytest.mark.parametrize("has_remaining", [False, True])
+    def test_empty_enter_or_esc_means_cancel(self, has_remaining):
+        assert _existing_prompt("", has_remaining=has_remaining)[0] == "cancel"
+
+    def test_header_shows_exact_path(self):
+        _, _, warned = _existing_prompt("1", has_remaining=False)
+        assert warned == [_EF["header"].format(path=_EXISTING)]
+
+    def test_inquirer_esc_means_cancel(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", True)
+        with (
+            patch("InquirerPy.inquirer.select", return_value=MagicMock()),
+            patch("alt_ani_cli.ui.menus._ask", return_value=None),
+            patch("alt_ani_cli.ui.progress.warn"),
+        ):
+            assert select_existing_download_action(_EXISTING, has_remaining=True) == "cancel"
