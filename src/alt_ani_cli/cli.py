@@ -17,6 +17,7 @@ from alt_ani_cli.diagnostics import _host_of_url
 from alt_ani_cli.errors import (
     AntiBotError,
     DownloadFailedError,
+    DownloadTargetError,
     FilterMismatchError,
     NoStreamError,
     ParseError,
@@ -699,7 +700,7 @@ def main() -> None:  # noqa: C901
         else:
             progress.error(str(exc))
         sys.exit(1)
-    except (AntiBotError, NoStreamError, ParseError, FilterMismatchError, DownloadFailedError) as exc:
+    except (AntiBotError, NoStreamError, ParseError, FilterMismatchError, DownloadFailedError, DownloadTargetError) as exc:
         diagnostics.session_end("error", type(exc).__name__)
         progress.error(str(exc))
         sys.exit(1)

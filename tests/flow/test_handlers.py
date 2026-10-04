@@ -13,7 +13,7 @@ import pytest
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from alt_ani_cli.content import CONTENT
-from alt_ani_cli.errors import AntiBotError, DownloadFailedError, NoStreamError, ShindenError
+from alt_ani_cli.errors import AntiBotError, DownloadFailedError, DownloadTargetError, NoStreamError, ShindenError
 from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.flow.handlers import (
     HANDLERS,
@@ -1919,3 +1919,43 @@ class TestEpisodeArgConsumedOnce:
             HANDLERS[Screen.EPISODES_PICK](state)
         assert mock_sel.call_count == 2
         assert state.episode_arg_consumed is False
+
+
+@pytest.mark.unit
+class TestRunActionDownloadTargetError:
+    def _run(self, state):
+        with (
+            patch("alt_ani_cli.download.run", side_effect=DownloadTargetError("C:/dl/Fate - ep4.mp4 locked")),
+            patch("alt_ani_cli.history.record_download") as mock_record,
+            patch("alt_ani_cli.diagnostics.download_result") as mock_diag,
+            patch("alt_ani_cli.ui.progress.error") as mock_error,
+        ):
+            result = handle_run_action(state)
+        return result, mock_record, mock_diag, mock_error
+
+    def test_local_file_error_does_not_fail_the_player(self):
+        state = _batch_state([_EP4, _EP5], overwrite_existing_batch=True)
+        result, record, diag, error = self._run(state)
+        assert result is Screen.PLAYER_PICK
+        assert state.failed_ids == set()
+        assert state.ep_idx == 0
+        assert state.overwrite_existing_batch is True
+        assert state.stream is None
+        record.assert_not_called()
+        diag.assert_not_called()
+        assert error.call_args.args[0] == "C:/dl/Fate - ep4.mp4 locked"
+
+    def test_single_player_episode_is_not_skipped(self):
+        state = _batch_state([_EP4, _EP5], players=(_PLAYER,))
+        result, *_ = self._run(state)
+        assert result is Screen.PLAYER_PICK
+        assert state.ep_idx == 0
+        assert state.failed_ids == set()
+
+    def test_player_pick_offers_same_player_again(self):
+        state = _batch_state([_EP4])
+        self._run(state)
+        with patch("alt_ani_cli.ui.menus.select_player_once", return_value=("pick", _PLAYER)) as mock_pick:
+            assert HANDLERS[Screen.PLAYER_PICK](state) is Screen.RESOLVE_STREAM
+        assert mock_pick.call_args.kwargs["failed"] == set()
+        assert state.chosen_player is _PLAYER

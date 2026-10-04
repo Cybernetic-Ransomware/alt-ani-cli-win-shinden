@@ -20,7 +20,7 @@ from curl_cffi.requests.exceptions import RequestException as CurlRequestExcepti
 
 from alt_ani_cli import __version__, diagnostics, download, history
 from alt_ani_cli.content import CONTENT
-from alt_ani_cli.errors import DownloadFailedError, ShindenError
+from alt_ani_cli.errors import DownloadFailedError, DownloadTargetError, ShindenError
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, ScreenResult
 from alt_ani_cli.models import EmbedURL, EpisodeRow, PlayerSource, SeriesHit, SeriesMetadata, SeriesRef
 from alt_ani_cli.shinden import api as shinden_api
@@ -558,6 +558,12 @@ def handle_run_action(state: FlowState) -> ScreenResult:
             state.stream = None
             state.embed = None
             return _fail_chosen_player(state, ep)
+        except DownloadTargetError as exc:
+            # A local file problem (e.g. the old file is open in a player): another source would hit it too.
+            progress.error(str(exc))
+            state.stream = None
+            state.embed = None
+            return Screen.PLAYER_PICK
         if not downloaded and existing["choice"] == "cancel":
             state.overwrite_existing_batch = False
             state.stream = None

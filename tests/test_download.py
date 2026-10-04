@@ -7,7 +7,7 @@ from yt_dlp.utils import DownloadError
 
 from alt_ani_cli import download
 from alt_ani_cli.config import USER_AGENT
-from alt_ani_cli.errors import DownloadFailedError
+from alt_ani_cli.errors import DownloadFailedError, DownloadTargetError
 from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.models import EpisodeRow, SeriesRef
 
@@ -371,13 +371,13 @@ class TestSafeOverwrite:
         fake_ydl.payload = _NEW
         with (
             patch.object(download.os, "replace", side_effect=PermissionError(13, "in use")),
-            patch.object(download.progress, "error") as error,
-            pytest.raises(DownloadFailedError),
+            pytest.raises(DownloadTargetError) as info,
         ):
             _overwrite(tmp_path)
         assert final.read_bytes() == _OLD
         assert [p.name for p in tmp_path.iterdir()] == [final.name]
-        assert str(final) in error.call_args.args[0]
+        assert str(final) in str(info.value)
+        assert info.value.__cause__ is None
 
     def test_staging_path_mismatch_aborts_before_download(self, fake_ydl, tmp_path):
         class _StagingIgnoredYDL(_FakeYDL):
@@ -385,7 +385,7 @@ class TestSafeOverwrite:
                 return self.opts["outtmpl"].replace("%(ext)s", info["ext"])
 
         final = _existing_final(tmp_path)
-        with patch("yt_dlp.YoutubeDL", _StagingIgnoredYDL), pytest.raises(DownloadFailedError):
+        with patch("yt_dlp.YoutubeDL", _StagingIgnoredYDL), pytest.raises(DownloadTargetError):
             _overwrite(tmp_path)
         assert fake_ydl.instances[-1].final_path is None
         assert final.read_bytes() == _OLD
@@ -471,14 +471,13 @@ class TestStrictStagingPreflight:
         fake_ydl.payload = _NEW
         with (
             _unlink_fails_for(locked),
-            patch.object(download.progress, "error") as error,
-            pytest.raises(DownloadFailedError),
+            pytest.raises(DownloadTargetError) as info,
         ):
             _overwrite(tmp_path)
         assert fake_ydl.instances[-1].final_path is None
         assert final.read_bytes() == _OLD
         assert (tmp_path / locked).read_bytes() == b"stale staging"
-        assert locked in error.call_args.args[0]
+        assert locked in str(info.value)
 
     def test_cleanup_after_failed_attempt_stays_best_effort(self, fake_ydl, tmp_path):
         final = _existing_final(tmp_path)

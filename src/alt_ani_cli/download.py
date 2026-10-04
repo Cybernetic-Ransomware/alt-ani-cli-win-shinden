@@ -7,7 +7,7 @@ from pathlib import Path
 
 from alt_ani_cli.config import DOWNLOADS, USER_AGENT
 from alt_ani_cli.content import CONTENT, EXCEPTIONS_PL
-from alt_ani_cli.errors import DownloadFailedError
+from alt_ani_cli.errors import DownloadFailedError, DownloadTargetError
 from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.models import EpisodeRow, SeriesRef
 from alt_ani_cli.ui import progress
@@ -90,12 +90,11 @@ def _redirect_to_staging(ydl, info: dict, final_path: Path) -> Path:
     """Point yt-dlp at a sibling staging file so the existing final stays intact until the new copy is complete."""
     # A staging partial may come from another source or a crashed run; resuming or promoting it could splice stale data.
     if leftovers := _discard_staging(final_path):
-        progress.error(EXCEPTIONS_PL["download"]["staging_locked"].format(path=leftovers[0]))
-        raise DownloadFailedError(EXCEPTIONS_PL["download"]["failed"])
+        raise DownloadTargetError(EXCEPTIONS_PL["download"]["staging_locked"].format(path=leftovers[0]))
     staging = _staging_path(final_path)
     ydl.params["outtmpl"]["default"] = str(staging).replace("%", "%%")
     if Path(ydl.prepare_filename(info)) != staging:
-        raise DownloadFailedError(EXCEPTIONS_PL["download"]["failed"])
+        raise DownloadTargetError(EXCEPTIONS_PL["download"]["failed"])
     return staging
 
 
@@ -104,8 +103,7 @@ def _promote_staging(staging: Path, final_path: Path) -> None:
         os.replace(staging, final_path)
     except OSError:
         _discard_staging(final_path)
-        progress.error(EXCEPTIONS_PL["download"]["replace_failed"].format(path=final_path))
-        raise DownloadFailedError(EXCEPTIONS_PL["download"]["failed"]) from None
+        raise DownloadTargetError(EXCEPTIONS_PL["download"]["replace_failed"].format(path=final_path)) from None
 
 
 def run(
