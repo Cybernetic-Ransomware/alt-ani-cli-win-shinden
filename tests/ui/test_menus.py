@@ -19,6 +19,7 @@ from alt_ani_cli.ui.menus import (
     select_action,
     select_episodes,
     select_existing_download_action,
+    select_pin_fallback_action,
     select_player_once,
     select_quality,
     select_series_from_download_history,
@@ -153,6 +154,42 @@ class TestSelectAction:
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value=""):
             assert select_action() is None
+
+    def test_pin_option_hidden_by_default(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        printed: list[str] = []
+        with (
+            patch("builtins.input", return_value="1"),
+            patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+        ):
+            select_action()
+        assert not any(_AC_OPTS["download_pin"] in line for line in printed)
+
+    @pytest.mark.parametrize(("answer", "expected"), [("1", "play"), ("2", "download"), ("3", "download_pin"), ("4", "debug")])
+    def test_offer_pin_adds_option_after_download(self, monkeypatch, answer, expected):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        printed: list[str] = []
+        with (
+            patch("builtins.input", return_value=answer),
+            patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+        ):
+            assert select_action(offer_pin=True) == expected
+        assert printed[2] == f"  3. {_AC_OPTS['download_pin']}"
+
+
+@pytest.mark.unit
+class TestSelectPinFallbackAction:
+    @pytest.mark.parametrize(("answer", "expected"), [("1", "keep"), ("2", "repin"), ("", None)])
+    def test_fallback_maps_options(self, monkeypatch, answer, expected):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        printed: list[str] = []
+        with (
+            patch("builtins.input", return_value=answer),
+            patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+        ):
+            assert select_pin_fallback_action() == expected
+        opts = CONTENT["menu"]["pin_fallback"]["options"]
+        assert printed[:2] == [f"  1. {opts['keep']}", f"  2. {opts['repin']}"]
 
 
 @pytest.mark.unit
@@ -515,6 +552,7 @@ class TestConfirm:
             assert confirm("Kontynuować?") is None
 
 
+_AC_OPTS = CONTENT["menu"]["action"]["options"]
 _EF = CONTENT["menu"]["existing_file"]
 _EXISTING = r"C:\dl\Show - ep4.mp4"
 

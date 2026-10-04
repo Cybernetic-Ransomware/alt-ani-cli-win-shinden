@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Literal
 
+from alt_ani_cli.flow.pin import PlayerFingerprint
 from alt_ani_cli.health import ResolverHealth
 
 
@@ -71,10 +72,14 @@ class FlowState:
     # replace already-downloaded files without asking — scoped to the current targets batch only
     overwrite_existing_batch: bool = False
     episode_arg_consumed: bool = False
+    # download source pin — scoped to the current targets batch, never persisted
+    pinned_player: PlayerFingerprint | None = None
 
     # player / stream
     players: list = field(default_factory=list)
     chosen_player: Any = None
+    # True only when chosen_player came from PLAYER_PICK (not pin / --select-nth / single-player auto-pick)
+    player_picked_manually: bool = False
     failed_ids: set[str] = field(default_factory=set)
     stream: Any = None
     embed: Any = None

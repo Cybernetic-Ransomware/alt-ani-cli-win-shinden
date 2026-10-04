@@ -712,19 +712,27 @@ def select_quality(qualities: dict[str, str], prompt: str = _M["quality"]["defau
     return _run_simple_picker(all_options, _label, prompt=prompt, instruction=_q["instruction"], mode="select")
 
 
-def select_action() -> Literal["play", "download", "debug"] | None:
+def select_action(*, offer_pin: bool = False) -> Literal["play", "download", "download_pin", "debug"] | None:
+    """offer_pin adds "download and keep using this source" — only meaningful when later episodes remain."""
     _ac = _M["action"]
     _ac_opts = _ac["options"]
-    _options: list[tuple[str, str]] = [
-        ("play", _ac_opts["play"]),
-        ("download", _ac_opts["download"]),
-        ("debug", _ac_opts["debug"]),
-    ]
+    keys = ["play", "download", "download_pin", "debug"] if offer_pin else ["play", "download", "debug"]
     return _run_keyed_picker(  # type: ignore[return-value]
-        _options,
+        [(k, _ac_opts[k]) for k in keys],
         prompt=_ac["message"],
         instruction=_ac["instruction"],
-        fallback_invalid=_ac["fallback_invalid"],
+        fallback_invalid=_ac["fallback_invalid"].format(n=len(keys)),
+    )
+
+
+def select_pin_fallback_action() -> Literal["keep", "repin"] | None:
+    _pf = _M["pin_fallback"]
+    _opts = _pf["options"]
+    return _run_keyed_picker(  # type: ignore[return-value]
+        [("keep", _opts["keep"]), ("repin", _opts["repin"])],
+        prompt=_pf["message"],
+        instruction=_pf["instruction"],
+        fallback_invalid=_pf["fallback_invalid"],
     )
 
 
