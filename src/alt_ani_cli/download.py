@@ -72,19 +72,26 @@ def _staging_path(final_path: Path) -> Path:
     return final_path.with_name(f"{final_path.stem}{_STAGING_INFIX}{final_path.suffix}")
 
 
-def _discard_staging(final_path: Path) -> None:
-    """Remove every artifact of a redownload attempt: staged file, .part/.ytdl, fragments and ffmpeg fixup temp."""
+def _staging_artifacts(final_path: Path) -> list[Path]:
     prefix = f"{final_path.stem}{_STAGING_INFIX}."
-    for path in final_path.parent.iterdir():
-        if path.name.startswith(prefix) and path.is_file():
+    return [path for path in final_path.parent.iterdir() if path.name.startswith(prefix)]
+
+
+def _discard_staging(final_path: Path) -> list[Path]:
+    """Remove every artifact of a redownload attempt (staged file, .part/.ytdl, fragments, fixup temp); return leftovers."""
+    for path in _staging_artifacts(final_path):
+        if path.is_file():
             with suppress(OSError):
                 path.unlink()
+    return _staging_artifacts(final_path)
 
 
 def _redirect_to_staging(ydl, info: dict, final_path: Path) -> Path:
     """Point yt-dlp at a sibling staging file so the existing final stays intact until the new copy is complete."""
-    # A staging partial may come from another source or a crashed run; resuming it could splice incompatible data.
-    _discard_staging(final_path)
+    # A staging partial may come from another source or a crashed run; resuming or promoting it could splice stale data.
+    if leftovers := _discard_staging(final_path):
+        progress.error(EXCEPTIONS_PL["download"]["staging_locked"].format(path=leftovers[0]))
+        raise DownloadFailedError(EXCEPTIONS_PL["download"]["failed"])
     staging = _staging_path(final_path)
     ydl.params["outtmpl"]["default"] = str(staging).replace("%", "%%")
     if Path(ydl.prepare_filename(info)) != staging:

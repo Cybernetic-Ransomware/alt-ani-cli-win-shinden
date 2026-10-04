@@ -446,3 +446,44 @@ class TestOverwritePartialFiles:
         (tmp_path / "Show - ep1.redownload.temp.mp4").write_bytes(b"fixup temp")
         download._discard_staging(final)
         assert sorted(p.name for p in tmp_path.iterdir()) == sorted(p.name for p in keep)
+
+
+def _unlink_fails_for(name: str):
+    real_unlink = Path.unlink
+
+    def unlink(self: Path, *args, **kwargs) -> None:
+        if self.name == name:
+            raise PermissionError(13, "locked", str(self))
+        real_unlink(self, *args, **kwargs)
+
+    return patch.object(Path, "unlink", unlink)
+
+
+@pytest.mark.unit
+class TestStrictStagingPreflight:
+    @pytest.mark.parametrize(
+        "locked",
+        ["Show - ep1.redownload.mp4", "Show - ep1.redownload.mp4.part", "Show - ep1.redownload.mp4.ytdl"],
+    )
+    def test_undeletable_stale_staging_aborts_before_download(self, fake_ydl, tmp_path, locked):
+        final = _existing_final(tmp_path)
+        (tmp_path / locked).write_bytes(b"stale staging")
+        fake_ydl.payload = _NEW
+        with (
+            _unlink_fails_for(locked),
+            patch.object(download.progress, "error") as error,
+            pytest.raises(DownloadFailedError),
+        ):
+            _overwrite(tmp_path)
+        assert fake_ydl.instances[-1].final_path is None
+        assert final.read_bytes() == _OLD
+        assert (tmp_path / locked).read_bytes() == b"stale staging"
+        assert locked in error.call_args.args[0]
+
+    def test_cleanup_after_failed_attempt_stays_best_effort(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        fake_ydl.payload = _NEW
+        fake_ydl.fail_in = "process_ie_result"
+        with _unlink_fails_for("Show - ep1.redownload.mp4.part"), pytest.raises(DownloadFailedError):
+            _overwrite(tmp_path)
+        assert final.read_bytes() == _OLD

@@ -76,3 +76,4 @@ player:
 download:
   failed: "Pobieranie nie powiodło się."
   replace_failed: "Nie udało się zastąpić pliku {path} — poprzednia wersja pozostała bez zmian (czy plik jest otwarty w innym programie?)."
+  staging_locked: "Nie udało się usunąć pozostałości poprzedniej próby: {path} — ponowne pobieranie przerwane, poprzedni plik pozostał bez zmian."
