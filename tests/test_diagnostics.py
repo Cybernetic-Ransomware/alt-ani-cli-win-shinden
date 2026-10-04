@@ -175,6 +175,12 @@ class TestEventEmission:
         assert str(mpv_log) in content
         assert "https://" not in content
 
+    def test_download_result_records_host_and_exception_class_only(self, log_path):
+        diagnostics.download_result("vidara.to", ok=False, exc="DownloadFailedError")
+
+        content = log_path.read_text(encoding="utf-8")
+        assert "event=download_result host=vidara.to ok=False exc=DownloadFailedError" in content
+
     def test_session_start_records_environment_without_urls(self, log_path):
         diagnostics.session_start("1.2.3", "3.14.0", "Windows-11-10.0.26200")
 

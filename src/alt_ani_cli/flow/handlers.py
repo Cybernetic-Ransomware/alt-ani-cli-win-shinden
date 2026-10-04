@@ -19,9 +19,9 @@ from curl_cffi.requests.exceptions import RequestException as CurlRequestExcepti
 
 from alt_ani_cli import __version__, diagnostics, download, history
 from alt_ani_cli.content import CONTENT
-from alt_ani_cli.errors import ShindenError
+from alt_ani_cli.errors import DownloadFailedError, ShindenError
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, ScreenResult
-from alt_ani_cli.models import EmbedURL, PlayerSource, SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_cli.models import EmbedURL, EpisodeRow, PlayerSource, SeriesHit, SeriesMetadata, SeriesRef
 from alt_ani_cli.shinden import api as shinden_api
 from alt_ani_cli.shinden import episode as shinden_episode
 from alt_ani_cli.shinden import search as shinden_search
@@ -420,13 +420,16 @@ def handle_resolve_stream(state: FlowState) -> ScreenResult:
             return Screen.QUALITY_PICK
         return Screen.ACTION_PICK
 
-    # player failed
     online_id = state.chosen_player.online_id
-    state.failed_ids.add(online_id)
     failed_embed = state.player_embeds.get(online_id)
     if failed_embed is not None:
         # the embed resolved fine, only extraction failed downstream — the host is already known
         _record_player_source(state, online_id, failed_embed)
+    return _fail_chosen_player(state, ep)
+
+
+def _fail_chosen_player(state: FlowState, ep: EpisodeRow) -> ScreenResult:
+    state.failed_ids.add(state.chosen_player.online_id)
     remaining = [p for p in state.players if p.online_id not in state.failed_ids]
     if remaining:
         return Screen.PLAYER_PICK  # try another (no history push — stays in same UI level)
@@ -487,7 +490,17 @@ def handle_run_action(state: FlowState) -> ScreenResult:
 
     completed = False
     if args.download or state.episode_action == "download":
-        download.run(stream, ep, state.ref)
+        source = state.player_sources.get(state.chosen_player.online_id)
+        host = source.host if source else None
+        try:
+            download.run(stream, ep, state.ref)
+        except DownloadFailedError as exc:
+            diagnostics.download_result(host, ok=False, exc=type(exc).__name__)
+            progress.error(_PROG["download_failed"].format(player=repr(state.chosen_player.player)))
+            state.stream = None
+            state.embed = None
+            return _fail_chosen_player(state, ep)
+        diagnostics.download_result(host, ok=True, exc=None)
     elif args.debug or state.episode_action == "debug":
         _print_debug(stream, state.embed)
     else:

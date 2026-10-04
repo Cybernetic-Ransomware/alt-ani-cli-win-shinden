@@ -183,5 +183,9 @@ def playback_result(kind: str, rc: int, elapsed: float, confirmed: bool, mpv_log
     _emit("playback_result", kind=kind, rc=rc, elapsed=f"{elapsed:.3f}", confirmed=confirmed, mpv_log=mpv_log)
 
 
+def download_result(host: str | None, ok: bool, exc: str | None) -> None:
+    _emit("download_result", host=host, ok=ok, exc=exc)
+
+
 def history_update(series_id: str, last_ep: float) -> None:
     _emit("history_update", id=series_id, last_ep=last_ep)

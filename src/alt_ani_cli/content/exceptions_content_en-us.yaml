@@ -72,3 +72,6 @@ player:
     VLC not found on PATH.
     Install via:  winget install VideoLAN.VLC
     Or set env:   ANI_CLI_PLAYER=C:\path\to\vlc.exe
+
+download:
+  failed: "Download failed."

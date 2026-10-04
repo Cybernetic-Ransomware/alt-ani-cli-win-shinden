@@ -1,8 +1,10 @@
+import gc
 import shutil
 from pathlib import Path
 
 from alt_ani_cli.config import DOWNLOADS, USER_AGENT
-from alt_ani_cli.content import CONTENT
+from alt_ani_cli.content import CONTENT, EXCEPTIONS_PL
+from alt_ani_cli.errors import DownloadFailedError
 from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.models import EpisodeRow, SeriesRef
 from alt_ani_cli.ui import progress
@@ -69,6 +71,7 @@ def run(
     dest_dir: Path = DOWNLOADS,
 ) -> None:
     from yt_dlp import YoutubeDL
+    from yt_dlp.utils import DownloadError
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     safe_title = "".join(c for c in series.title if c.isalnum() or c in " _-").strip()
@@ -90,12 +93,21 @@ def run(
     }
 
     progress.info(CONTENT["download"]["starting"].format(title=safe_title, ep_label=ep_label, dir=dest_dir))
-    with YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(stream.url, download=False)
-        final_path = Path(ydl.prepare_filename(info))
-        if str(info.get("protocol", "")).startswith("m3u8") and (backup := _quarantine_legacy_hls_part(final_path)):
-            progress.warn(CONTENT["download"]["legacy_part_moved"].format(path=backup))
-        ydl.process_ie_result(info, download=True)
+    failed = False
+    try:
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(stream.url, download=False)
+            final_path = Path(ydl.prepare_filename(info))
+            if str(info.get("protocol", "")).startswith("m3u8") and (backup := _quarantine_legacy_hls_part(final_path)):
+                progress.warn(CONTENT["download"]["legacy_part_moved"].format(path=backup))
+            ydl.process_ie_result(info, download=True)
+    except DownloadError:
+        failed = True
+
+    if failed:
+        # Outside except on purpose: yt-dlp's leaked .part handle sits in a traceback cycle (WinError 32 on reuse).
+        gc.collect()
+        raise DownloadFailedError(EXCEPTIONS_PL["download"]["failed"])
 
     if final_path.exists():
         progress.success(CONTENT["download"]["saved"].format(path=final_path))
