@@ -80,6 +80,10 @@ def run(
             **stream.headers,
             "User-Agent": stream.headers.get("User-Agent", USER_AGENT),
         },
+        # Match yt-dlp CLI retry counts, but fail instead of silently skipping unavailable HLS fragments.
+        "retries": 10,
+        "fragment_retries": 10,
+        "skip_unavailable_fragments": False,
         "quiet": True,
         "noprogress": True,
         "logger": _TruncLogger(),
