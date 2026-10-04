@@ -94,7 +94,7 @@ def _redirect_to_staging(ydl, info: dict, final_path: Path) -> Path:
     staging = _staging_path(final_path)
     ydl.params["outtmpl"]["default"] = str(staging).replace("%", "%%")
     if Path(ydl.prepare_filename(info)) != staging:
-        raise DownloadTargetError(EXCEPTIONS_PL["download"]["failed"])
+        raise DownloadTargetError(EXCEPTIONS_PL["download"]["staging_mismatch"].format(path=final_path))
     return staging
 
 

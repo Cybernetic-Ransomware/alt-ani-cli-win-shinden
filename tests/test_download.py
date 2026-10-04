@@ -385,10 +385,11 @@ class TestSafeOverwrite:
                 return self.opts["outtmpl"].replace("%(ext)s", info["ext"])
 
         final = _existing_final(tmp_path)
-        with patch("yt_dlp.YoutubeDL", _StagingIgnoredYDL), pytest.raises(DownloadTargetError):
+        with patch("yt_dlp.YoutubeDL", _StagingIgnoredYDL), pytest.raises(DownloadTargetError) as info:
             _overwrite(tmp_path)
         assert fake_ydl.instances[-1].final_path is None
         assert final.read_bytes() == _OLD
+        assert str(final) in str(info.value)
 
     def test_missing_staged_file_after_success_is_a_failure(self, fake_ydl, tmp_path):
         final = _existing_final(tmp_path)
