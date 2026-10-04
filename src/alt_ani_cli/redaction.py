@@ -17,22 +17,15 @@ SENSITIVE_HEADERS = frozenset(
     }
 )
 
-# Query suffix of any URL-ish token, scheme optional; `(?<!\\\\)` skips Windows `\\?\` long-path prefixes.
-_QUERY_RE = re.compile(r"(?<=\S)(?<!\\\\)(?P<sep>[?#])(?P<query>[^\s\"'`?#]*)")
+# Stops only at chars invalid unencoded in a URL (or `#`), so ambiguous tails get redacted; skips `\\?\` paths.
+_QUERY_RE = re.compile(r"(?<=\S)(?<!\\\\)(?P<sep>[?#])(?P<query>[^\s\"`#]*)")
 _PARAM_RE = re.compile(r"(?P<lead>^|&)(?P<name>[^=&]+)=(?P<value>[^&]*)")
 _USERINFO_RE = re.compile(r"(?<=://)[^/\s@?#]+@")
 
 
-_TRAILING_PUNCT = ")]}>.,;:!"
-
-
 def _redact_query(match: re.Match[str]) -> str:
-    body, tail = match["query"], ""
-    # Keep prose punctuation after a URL, but never split the `>` of an existing marker.
-    while body and body[-1] in _TRAILING_PUNCT and not body.endswith(REDACTED):
-        body, tail = body[:-1], body[-1] + tail
-    body = _PARAM_RE.sub(lambda m: f"{m['lead']}{m['name']}={REDACTED}", body)
-    return f"{match['sep']}{body}{tail}"
+    body = _PARAM_RE.sub(lambda m: f"{m['lead']}{m['name']}={REDACTED}", match["query"])
+    return f"{match['sep']}{body}"
 
 
 def redact_text(text: object) -> str:

@@ -59,11 +59,30 @@ class TestRedactText:
         assert "cdn.example/hls/master.m3u8?token=" in out and "&expires=" in out
         assert "HTTP Error 403" in out
 
-    def test_trailing_prose_punctuation_kept_outside_value(self):
-        assert redact_text("(see https://h.example/x?a=1).") == f"(see https://h.example/x?a={REDACTED})."
+    def test_punctuation_only_value_fully_redacted(self):
+        out = redact_text("https://h/x?token=!!!!")
+        assert out == f"https://h/x?token={REDACTED}"
+        assert "!" not in out
 
-    def test_quoted_url_in_exception_repr(self):
-        assert redact_text("failed GET 'https://cdn/x?token=S'") == f"failed GET 'https://cdn/x?token={REDACTED}'"
+    @pytest.mark.parametrize("tail", [".", ")", ",", ";", ":", "!", "]", "}", ">", "'"])
+    def test_trailing_punctuation_is_treated_as_part_of_value(self, tail):
+        out = redact_text(f"https://h/x?token=abc{tail}")
+        assert out == f"https://h/x?token={REDACTED}"
+        assert "abc" not in out
+
+    def test_question_mark_inside_value_does_not_end_it(self):
+        out = redact_text("https://h/x?token=abc?MORE")
+        assert out == f"https://h/x?token={REDACTED}"
+        assert "abc" not in out and "MORE" not in out
+
+    def test_nested_query_after_question_mark_redacted(self):
+        out = redact_text("https://h/x?token=abc?more=SECOND")
+        assert out == f"https://h/x?token={REDACTED}"
+        assert "abc" not in out and "SECOND" not in out
+
+    def test_redaction_continues_to_next_whitespace(self):
+        out = redact_text("failed GET 'https://cdn/x?token=S') then retry")
+        assert out == f"failed GET 'https://cdn/x?token={REDACTED} then retry"
 
     def test_url_userinfo_redacted(self):
         out = redact_text("https://user:hunter2@host.example/path")
@@ -76,6 +95,8 @@ class TestRedactText:
             "master.m3u8?token=SECRET&x=1 then (https://h/x?a=1). <https://h/y?b=2>",
             "https://u:p@h.example/a?b=1#c=2",
             "https://h/p?a=1&&flag&c=",
+            "https://h/x?token=abc?more=SECOND",
+            "https://h/x?token=!!!!",
         ],
     )
     def test_idempotent(self, text):
