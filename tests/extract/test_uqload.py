@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from alt_ani_cli.extract import uqload
 from alt_ani_cli.extract.uqload import resolve
 
 _EMBED = "https://uqload.is/e/mhq7xbccftp5"
@@ -88,3 +89,21 @@ class TestResolveUqload:
         with _make_session_patch(html):
             stream = resolve(_EMBED, _REFERER)
         assert stream.ext == "m3u8"
+
+
+@pytest.mark.unit
+class TestResolveUqloadFixture:
+    def test_packed_dl_fixture_resolves_after_unpacking(self, fake_session, load_fixture):
+        body = load_fixture("uqload_dl_packed.html")
+        assert "v.mp4" not in body
+        session = fake_session(uqload, post=[body])
+        stream = resolve(_EMBED, _REFERER)
+
+        assert stream.url == "https://cdn.example/3rfktestfilecode/v.mp4"
+        assert stream.ext == "mp4"
+        assert stream.headers["Referer"] == _EMBED
+
+        call = session.post.call_args
+        assert call.args == ("https://uqload.is/dl",)
+        assert call.kwargs["data"] == {"op": "embed", "file_code": "mhq7xbccftp5", "auto": "0", "referer": _EMBED}
+        assert call.kwargs["headers"]["Referer"] == _EMBED

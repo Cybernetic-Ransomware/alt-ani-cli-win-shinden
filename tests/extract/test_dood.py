@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+from alt_ani_cli.extract import dood
 from alt_ani_cli.extract.dood import resolve
 
 _EMBED = "https://dood.la/e/xyz"
@@ -97,3 +98,25 @@ class TestResolveDood:
                 resolve("not-a-url", _REFERER)
         session.get.assert_not_called()
         assert exc_info.value.category == "parser_drift"
+
+
+@pytest.mark.unit
+class TestResolveDoodFixture:
+    _EMBED = "https://dood.example/e/testfilecode"
+
+    def test_embed_and_pass_md5_fixtures_resolve_to_tokenized_url(self, fake_session, load_fixture):
+        session = fake_session(dood, get=[load_fixture("dood_embed.html"), load_fixture("dood_pass_md5.txt")])
+        with patch("alt_ani_cli.extract.dood.time.time", return_value=1700000000.0):
+            stream = resolve(self._EMBED, _REFERER)
+
+        assert stream.url == "https://cdn.example/stream/testfilecode~?token=testtokenAbc123&expiry=1700000000000"
+        assert stream.ext == "mp4"
+        assert stream.headers["Referer"] == "https://dood.example/"
+        assert "User-Agent" in stream.headers
+
+        embed_call, pass_call = session.get.call_args_list
+        assert embed_call.args == (self._EMBED,)
+        assert embed_call.kwargs["headers"]["Referer"] == _REFERER
+        assert pass_call.args == ("https://dood.example/pass_md5/42-1700000000-testhash/testfilecode",)
+        assert pass_call.kwargs["headers"]["Referer"] == self._EMBED
+        assert pass_call.kwargs["headers"]["X-Requested-With"] == "XMLHttpRequest"
