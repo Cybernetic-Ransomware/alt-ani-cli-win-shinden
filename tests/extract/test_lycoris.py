@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from alt_ani_cli.extract import lycoris
 from alt_ani_cli.extract.lycoris import resolve
 
 _EMBED = "https://www.lycoris.cafe/embed?id=180136&episode=1"
@@ -98,3 +99,28 @@ class TestResolveLycoris:
                 resolve("not-a-url", _REFERER)
         session.get.assert_not_called()
         assert exc_info.value.category == "parser_drift"
+
+
+@pytest.mark.unit
+class TestResolveLycorisFixture:
+    _EMBED = "https://lycoris.example/embed?id=4242&episode=1"
+
+    def test_embed_api_fixture_resolves_best_url_and_qualities(self, fake_session, load_fixture):
+        session = fake_session(lycoris, get=[load_fixture("lycoris_embed.json")])
+        stream = resolve(self._EMBED, _REFERER)
+
+        base = "https://cdn.example/d/testfilecode"
+        assert stream.url == f"{base}/episode-1-1080p.mp4"
+        assert stream.ext == "mp4"
+        assert stream.qualities == {
+            "1080p": f"{base}/episode-1-1080p.mp4",
+            "720p": f"{base}/episode-1-720p.mp4",
+            "480p": f"{base}/episode-1-480p.mp4",
+            "source-mkv": f"{base}/episode-1-1080p.mkv",
+        }
+        assert stream.headers["Referer"] == self._EMBED
+
+        call = session.get.call_args
+        assert call.args == ("https://lycoris.example/api/embed",)
+        assert call.kwargs["params"] == {"id": "4242", "episode": "1"}
+        assert call.kwargs["headers"]["Referer"] == self._EMBED

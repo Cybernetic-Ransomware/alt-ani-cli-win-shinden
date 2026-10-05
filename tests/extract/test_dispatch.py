@@ -11,7 +11,7 @@ from yt_dlp.networking.exceptions import HTTPError as YtdlpHTTPError
 from yt_dlp.networking.exceptions import TransportError
 
 from alt_ani_cli.errors import JavaScriptRequiredError, NoStreamError, UnsupportedHostError
-from alt_ani_cli.extract import HOST_RULES, HostRule, _normalize_url, resolve
+from alt_ani_cli.extract import HOST_RULES, HostRule, _exc_text, _normalize_url, mp4upload, resolve, resolver_family
 from alt_ani_cli.extract.common import CATEGORY_NO_STREAM_URL, CATEGORY_PARSER_DRIFT, ExtractError, Stream
 
 _REFERER = "https://shinden.pl/"
@@ -163,6 +163,13 @@ class TestResolveDispatch:
         assert HOST_RULES["morningmarkets.art"] == HostRule("custom", vidara.resolve)
         assert HOST_RULES["morningmarkets.fit"] == HostRule("custom", vidara.resolve)
 
+    def test_iosbgaigo_hosts_route_to_vidara_extractor(self):
+        """JWPlayer source comes from a runtime POST /api/stream, so generic JWPlayer sees no URL."""
+        from alt_ani_cli.extract import vidara
+
+        assert HOST_RULES["iosbgaigo.com"] == HostRule("custom", vidara.resolve)
+        assert HOST_RULES["www.iosbgaigo.com"] == HostRule("custom", vidara.resolve)
+
     def test_dood_yt_routes_to_dood_extractor(self):
         from alt_ani_cli.extract import dood
 
@@ -231,6 +238,29 @@ class TestResolveDispatch:
         exc_text = on_fallback.call_args[0][2]
         assert embed_url not in exc_text
         assert "unknownhost.tv" in exc_text
+
+    def test_exc_text_redacts_other_signed_urls(self):
+        embed_url = "https://player.example/e/abc"
+        exc = TimeoutError(f"Timeout while fetching {embed_url} -> https://cdn.example/master.m3u8?token=SECRET")
+        text = _exc_text(exc, embed_url, "player.example")
+        assert embed_url not in text
+        assert "-> " in text and text.startswith("TimeoutError: Timeout while fetching player.example")
+        assert "SECRET" not in text
+        assert "cdn.example/master.m3u8?token=<redacted>" in text
+
+    def test_signed_url_in_failure_messages_redacted(self):
+        embed_url = "https://unknownhost.tv/embed/abc"
+        signed = "https://cdn.example/master.m3u8?token=SECRET&expires=999"
+        on_fallback = MagicMock()
+        with (
+            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ValueError(f"Timeout while fetching {signed}")),
+            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception(f"HTTP 403 for {signed}")),
+            pytest.raises(NoStreamError) as exc_info,
+        ):
+            resolve(embed_url, _REFERER, on_fallback=on_fallback)
+        for text in (str(exc_info.value), on_fallback.call_args[0][2]):
+            assert "SECRET" not in text and "999" not in text
+            assert "cdn.example/master.m3u8?token=<redacted>&expires=<redacted>" in text
 
 
 def _http_error(status_code: int) -> cffi_exceptions.HTTPError:
@@ -399,3 +429,39 @@ class TestRealYtdlpFailureDiagnostics:
         assert exc_info.value.category == CATEGORY_PARSER_DRIFT
         assert exc_info.value.fallback_category == "http_error"
         assert exc_info.value.fallback_http_status == 503
+
+
+@pytest.mark.unit
+class TestResolverFamily:
+    @pytest.mark.parametrize(
+        ("host", "family"),
+        [
+            ("dood.la", "dood"),
+            ("dood.yt", "dood"),
+            ("vidawra.cc", "vidara"),
+            ("morningmarkets.art", "vidara"),
+            ("iosbgaigo.com", "vidara"),
+            ("streamtape.to", "streamtape"),
+            ("mp4upload.com", "mp4upload"),
+            ("lycoris.cafe", "lycoris"),
+            ("playmate.to", "playmate"),
+            ("uqload.is", "uqload"),
+            ("flyf.lat", "flyf"),
+            ("streamwish.com", "jwplayer"),
+            ("filemoon.sx", "jwplayer"),
+            ("cda.pl", "ytdlp"),
+            ("sibnet.ru", "ytdlp"),
+            ("voe.sx", "unsupported"),
+            ("mega.nz", "unsupported"),
+            ("completely-unknown-host.example", "generic"),
+        ],
+    )
+    def test_known_and_unknown_hosts(self, host, family):
+        assert resolver_family(host) == family
+
+    def test_falls_back_to_www_variant_when_bare_host_missing(self):
+        with patch.dict("alt_ani_cli.extract.HOST_RULES", {"www.onlywww.example": HostRule("custom", mp4upload.resolve)}):
+            assert resolver_family("onlywww.example") == "mp4upload"
+
+    def test_bare_host_takes_priority_over_www_variant(self):
+        assert resolver_family("mp4upload.com") == "mp4upload"

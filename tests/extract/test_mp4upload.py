@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from alt_ani_cli.extract import mp4upload
 from alt_ani_cli.extract.mp4upload import resolve
 
 _EMBED = "https://www.mp4upload.com/embed-abc123.html"
@@ -67,3 +68,19 @@ class TestResolveMp4upload:
         with _make_session_patch("<script>player.src('https://cdn.mp4upload.com/v/video.mp4');</script>"):
             stream = resolve(_EMBED, _REFERER)
         assert stream.headers.get("Referer") == _EMBED
+
+
+@pytest.mark.unit
+class TestResolveMp4uploadFixture:
+    def test_videojs_object_src_fixture_resolves(self, fake_session, load_fixture):
+        session = fake_session(mp4upload, get=[load_fixture("mp4upload_embed.html")])
+        stream = resolve(_EMBED, _REFERER)
+
+        assert stream.url == "https://cdn.example:183/d/testfilecodetesttoken/video.mp4"
+        assert stream.ext == "mp4"
+        assert stream.headers["Referer"] == _EMBED
+        assert "User-Agent" in stream.headers
+
+        call = session.get.call_args
+        assert call.args == (_EMBED,)
+        assert call.kwargs["headers"]["Referer"] == _REFERER

@@ -21,6 +21,7 @@ from alt_ani_cli.extract import (
     ytdlp_resolver,
 )
 from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.redaction import redact_text
 
 # ebd.cda.pl/800x450/{id} → yt-dlp does not understand the embed URL; rewrite to www.cda.pl/video/{id}
 _EBD_CDA_RE = re.compile(r"/\d+x\d+/([0-9a-z]+)$", re.IGNORECASE)
@@ -102,6 +103,9 @@ HOST_RULES: dict[str, HostRule] = {
     # /api/stream protocol, confirmed by live replay
     "morningmarkets.art": HostRule("custom", vidara.resolve),
     "morningmarkets.fit": HostRule("custom", vidara.resolve),
+    # iosbgaigo — JWPlayer source is set from a POST /api/stream response at runtime, confirmed by live replay
+    "iosbgaigo.com": HostRule("custom", vidara.resolve),
+    "www.iosbgaigo.com": HostRule("custom", vidara.resolve),
     # lycoris
     "lycoris.cafe": HostRule("custom", lycoris.resolve),
     "www.lycoris.cafe": HostRule("custom", lycoris.resolve),
@@ -136,9 +140,24 @@ HOST_RULES: dict[str, HostRule] = {
 }
 
 
+def resolver_family(host: str) -> str:
+    """Diagnostics-only family label for a hostname — never influences health decisions."""
+    rule = HOST_RULES.get(host) or HOST_RULES.get(f"www.{host}")
+    if rule is None:
+        return "generic"
+    if rule.mode == "unsupported":
+        return "unsupported"
+    if rule.mode == "ytdlp":
+        return "ytdlp"
+    if rule.resolver is None:
+        return "jwplayer"
+    return rule.resolver.__module__.rsplit(".", 1)[-1]
+
+
 def _exc_text(exc: Exception, embed_url: str, host: str) -> str:
     """Format an exception for user-facing messages, replacing the embed URL with its host."""
-    return f"{type(exc).__name__}: {exc}".replace(repr(embed_url), host).replace(embed_url, host)
+    text = f"{type(exc).__name__}: {exc}".replace(repr(embed_url), host).replace(embed_url, host)
+    return redact_text(text)
 
 
 # Classify by ExtractError.category or exception type only — messages may carry URLs/tokens.

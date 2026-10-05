@@ -1,0 +1,11 @@
+{
+  "episodeInfo": {
+    "primarySource": {
+      "FHD": "https://cdn.example/d/testfilecode/episode-1-1080p.mp4",
+      "HD": "https://cdn.example/d/testfilecode/episode-1-720p.mp4",
+      "SD": "https://cdn.example/d/testfilecode/episode-1-480p.mp4",
+      "preview": "https://cdn.example/d/testfilecode/preview.mp4",
+      "SourceMKV": "https://cdn.example/d/testfilecode/episode-1-1080p.mkv"
+    }
+  }
+}

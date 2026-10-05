@@ -16,7 +16,7 @@ cli:
   help:
     query: "Tytuł do wyszukania na shinden.pl (pomijany gdy --url lub -c)."
     url: "Bezpośredni URL serii (https://shinden.pl/series/...)."
-    resume: "Kontynuuj oglądanie z historii."
+    resume: "Kontynuuj oglądanie z historii (z -d: kontynuuj pobieranie)."
     download: "Pobierz odcinek zamiast odtwarzać."
     delete_history: "Wyczyść historię i wyjdź."
     episode: 'Numer odcinka lub zakres: "5", "1-5", "-1" (ostatni).'
@@ -53,7 +53,14 @@ progress:
   player_failed_long: "Player {player} (ep {number:g}) nie zadziałał: {exc}"
   player_failed_short: "Player {player} nie zadziałał — wybierz inny:"
   no_player_worked: "Żaden player nie zadziałał dla odcinka {number:g} — pomijam."
+  download_failed: "Pobieranie z playera {player} nie powiodło się."
+  pin_no_match: "Przypiętego źródła nie ma w odcinku {number:g}."
+  host_deferred: "Host {host} jest chwilowo niedostępny w tej sesji — odkładam próbę."
+  host_last_resort: "Pozostałe źródła zawiodły — próbuję odłożonego hosta {host}."
+  host_dropped: "Host {host} nadal jest niedostępny po próbie last-resort — pomijam kolejnego playera na tym hoście."
   history_empty: "Historia jest pusta."
+  download_history_empty: "Historia pobierania jest pusta."
+  downloaded_all: "Wszystkie dostępne odcinki są już pobrane ({title})."
   history_cleared: "Historia wyczyszczona."
   interrupted: "Przerwano przez użytkownika."
   http_error: "Błąd HTTP {status} — {url}"
@@ -72,14 +79,17 @@ progress:
 download:
   starting: "Pobieranie: {title} ep{ep_label} → {dir}"
   saved: "Zapisano: {path}"
+  legacy_part_moved: "Niedokończone pobieranie ze starszej wersji (ffmpeg) przeniesiono do: {path} — pobieranie zacznie się od nowa."
+  kept_existing: "Pominięto — zostawiam istniejący plik: {path}"
+  batch_cancelled: "Anulowano pobieranie zaznaczonych odcinków."
 
 menu:
   start_mode:
     question: "Co chcesz zrobić?"
     options:
       search: "Szukaj nowego anime"
-      resume: "Kontynuuj z historii"
-      resume_with_count: "Kontynuuj z historii ({count} pozycji)"
+      resume_watch: "Kontynuuj oglądanie ({count} pozycji)"
+      resume_download: "Kontynuuj pobieranie ({count} pozycji)"
       url: "Wklej URL serii"
       quit: "Wyjdź"
     instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  Ctrl+O = wersja  |  ESC = wyjście"
@@ -119,10 +129,15 @@ menu:
     default_prompt: "Kontynuuj oglądanie"
     label: "{title}  — ostatni ep {last_ep:g}"
     instruction: "Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz"
+  download_resume:
+    default_prompt: "Kontynuuj pobieranie"
+    label: "{title}  — pobrano {count} odc."
+    instruction: "Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz"
   episodes:
     default_prompt: "Wybierz odcinek"
     label_unwatched: "  {number:g}.  {title}"
     label_watched: "✓ {number:g}.  {title}"
+    label_downloaded: "↓ {number:g}.  {title}"
     instruction_single: "Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz"
     instruction_multi: "Wpisz aby filtrować  |  Spacja = zaznacz/odznacz  |  Ctrl+R = wszystkie  |  Enter = potwierdź  |  ESC = wstecz"
     invalid_multi: "Zaznacz co najmniej jeden odcinek — użyj Spacji."
@@ -152,10 +167,29 @@ menu:
     options:
       play: "Oglądaj w mpv/vlc"
       download: "Pobierz na dysk"
+      download_pin: "Pobierz i używaj tego źródła dla kolejnych odcinków"
       debug: "Pokaż linki (debug)"
     instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
     fallback_prompt: "Akcja [1-3, Enter=wstecz]: "
-    fallback_invalid: "  Wpisz liczbę 1–3."
+    fallback_invalid: "  Wpisz liczbę 1–{n}."
+  pin_fallback:
+    message: "Ten player różni się od przypiętego źródła. Co zrobić?"
+    options:
+      keep: "Pobierz ten odcinek i zachowaj przypięte źródło"
+      repin: "Pobierz i używaj tego źródła dla kolejnych odcinków"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
+    fallback_invalid: "  Wpisz liczbę 1–2."
+  existing_file:
+    header: "Plik już istnieje:
+{path}"
+    message: "Co zrobić z istniejącym plikiem?"
+    options:
+      skip: "Pomiń (zostaw istniejący plik)"
+      overwrite: "Pobierz ponownie i zastąp"
+      overwrite_remaining: "Pobierz ponownie i zastępuj istniejące pliki także dla pozostałych zaznaczonych odcinków"
+      cancel: "Anuluj pobieranie zaznaczonych odcinków"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = anuluj"
+    fallback_invalid: "  Wpisz liczbę 1–{n}."
   confirm:
     option_yes: "Tak"
     option_no: "Nie"

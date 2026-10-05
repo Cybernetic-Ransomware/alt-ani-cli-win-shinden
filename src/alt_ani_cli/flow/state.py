@@ -2,7 +2,10 @@
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any
+from typing import Any, Literal
+
+from alt_ani_cli.flow.pin import PlayerFingerprint
+from alt_ani_cli.health import ResolverHealth
 
 
 class Screen(Enum):
@@ -10,6 +13,7 @@ class Screen(Enum):
     SEARCH_QUERY = auto()
     URL_INPUT = auto()
     RESUME_PICK = auto()
+    DOWNLOAD_RESUME_PICK = auto()
     SERIES_PICK = auto()
     FETCH_EPISODES = auto()  # wirtualny — I/O bez UI
     EPISODES_PICK = auto()
@@ -57,16 +61,25 @@ class FlowState:
     hits: list = field(default_factory=list)
     ref: Any = None
     last_ep: float = 0.0
+    resume_mode: Literal["watch", "download"] | None = None
+    downloaded_eps: set[float] = field(default_factory=set)
 
     # episodes
     episodes: list = field(default_factory=list)
     targets: list = field(default_factory=list)
     ep_idx: int = 0
     completed_eps: set[float] = field(default_factory=set)
+    # replace already-downloaded files without asking — scoped to the current targets batch only
+    overwrite_existing_batch: bool = False
+    episode_arg_consumed: bool = False
+    # download source pin — scoped to the current targets batch, never persisted
+    pinned_player: PlayerFingerprint | None = None
 
     # player / stream
     players: list = field(default_factory=list)
     chosen_player: Any = None
+    # True only when chosen_player came from PLAYER_PICK (not pin / --select-nth / single-player auto-pick)
+    player_picked_manually: bool = False
     failed_ids: set[str] = field(default_factory=set)
     stream: Any = None
     embed: Any = None
@@ -76,6 +89,9 @@ class FlowState:
     # cached user choices
     quality: str | None = None
     episode_action: str | None = None
+
+    # observability only — never gates player choice, order, or skipping
+    health: ResolverHealth = field(default_factory=ResolverHealth)
 
     @property
     def current_ep(self):

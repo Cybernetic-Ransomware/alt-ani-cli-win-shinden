@@ -18,7 +18,8 @@ Python CLI for watching and downloading anime from [shinden.pl](https://shinden.
   ```powershell
   winget install mpv.net   # or: scoop install mpv
   ```
-- [ffmpeg](https://ffmpeg.org/) (optional) — enables HLS merging during downloads
+- [ffmpeg](https://ffmpeg.org/) (optional) — yt-dlp downloads HLS natively; when ffmpeg is available it remuxes
+  the result into a proper MP4. Without it, an HLS download stays an MPEG-TS stream despite the `.mp4` extension.
   ```powershell
   winget install ffmpeg    # or: scoop install ffmpeg
   ```
@@ -73,9 +74,9 @@ Run without arguments for an interactive wizard (search → select series → pi
 |------|-------------|
 | `QUERY` | Title to search on shinden.pl |
 | `--url URL` | Skip search — use a direct series URL |
-| `-c`, `--continue` | Resume from watch history |
+| `-c`, `--continue` | Resume from watch history (with `-d`: resume from download history — first episode not yet downloaded) |
 | `-d`, `--download` | Download instead of playing |
-| `-D`, `--delete-history` | Clear watch history and exit |
+| `-D`, `--delete-history` | Clear watch and download history and exit |
 | `-e RANGE` | Episode number or range: `5`, `1-5`, `-1` (last), `1 5 7` |
 | `-q QUALITY` | Quality: `best`, `worst`, `1080p`, `720p` … (default: interactive menu) |
 | `-S N` | Auto-select N-th search result (1-based, skips menus) |
@@ -110,6 +111,9 @@ alt-ani-cli -d -e 1-3 -q 720p --url https://shinden.pl/series/65137-fate-strange
 
 # Resume from history
 alt-ani-cli -c
+
+# Download the next missing episode of the most recently downloaded series
+alt-ani-cli -c -d
 
 # Polish dub only
 alt-ani-cli --lang pl vinland saga
@@ -171,14 +175,8 @@ just replay-failures "PATH_TO_LOG"  # replay resolve_result failures from a diag
 
 ## Supported video hosts
 
-Native extractors: mp4upload, streamtape, dood, Lycoris Cafe, Vidara/Viewdara, Uqload, Flyf,
+Native extractors: mp4upload, streamtape, dood, Lycoris Cafe, Vidara/Viewdara, Playmate, Uqload, Flyf,
 streamwish/filemoon/morencius family (JWPlayer), CDA, sibnet, VK.
-
-**Playmate is currently broken.** The extractor exists (`extract/playmate.py`), but a live
-replay (see `tools/replay_failed_resolvers.py` below) confirmed the upstream protocol has
-changed: the current request now gets HTTP 403, and the additional request elements it needs
-have not been reverse-engineered yet. Playmate links fall back to yt-dlp, which also cannot
-resolve them.
 
 Lycoris Cafe embeds are resolved through the host API and expose the available direct qualities (`1080p`, `720p`, `480p`) plus `source-mkv` when the API provides it.
 

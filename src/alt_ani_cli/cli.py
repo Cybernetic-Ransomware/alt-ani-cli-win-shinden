@@ -5,6 +5,7 @@ import contextlib
 import platform
 import sys
 import time
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
@@ -15,6 +16,8 @@ from alt_ani_cli.content import CONTENT, EXCEPTIONS
 from alt_ani_cli.diagnostics import _host_of_url
 from alt_ani_cli.errors import (
     AntiBotError,
+    DownloadFailedError,
+    DownloadTargetError,
     FilterMismatchError,
     NoStreamError,
     ParseError,
@@ -22,8 +25,10 @@ from alt_ani_cli.errors import (
     ShindenError,
 )
 from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.health import HealthTransition, ResolverHealth, Signal, classify_failure
 from alt_ani_cli.models import EmbedURL, EpisodeRow, PlayerEntry, SeriesRef
 from alt_ani_cli.player import runner as player_runner
+from alt_ani_cli.redaction import redact_headers, redact_text
 from alt_ani_cli.shinden import api as shinden_api
 from alt_ani_cli.shinden import episode as shinden_episode
 from alt_ani_cli.shinden import http as shinden_http
@@ -192,8 +197,8 @@ def _resolve_embed_with_spinner(client, online_id: str) -> EmbedURL:
 
 
 def _extract_stream(embed: EmbedURL, cookies_file: str | None, cookies_browser: str | None) -> Stream:
-    # the only place the full embed URL is shown — failure messages use the host only
-    progress.info(_PROG["embed"].format(url=embed.url))
+    # the only place the embed URL is shown — failure messages use the host only
+    progress.info(_PROG["embed"].format(url=redact_text(embed.url)))
     return extract.resolve(
         embed.url,
         embed.referer,
@@ -214,6 +219,70 @@ _RESOLVE_DIAG_FIELDS = (
 )
 
 
+def _emit_health_transition(transition: HealthTransition | None, *, category: str | None, http_status: int | None) -> None:
+    if transition is None:
+        return
+    diagnostics.host_health(
+        host=transition.host,
+        from_state=transition.before.value,
+        to_state=transition.after.value,
+        signal=transition.signal.value,
+        online_id=transition.online_id,
+        category=category,
+        http_status=http_status,
+        resolver=extract.resolver_family(transition.host),
+        evidence_expired=transition.evidence_expired,
+    )
+
+
+def _record_extraction_success(host: str | None, candidate: PlayerEntry, health: ResolverHealth | None, start: float) -> None:
+    if health is not None and host is not None:
+        transition = health.record(host, candidate.online_id, Signal.SUCCESS)
+        _emit_health_transition(transition, category=None, http_status=None)
+    diagnostics.resolve_result(host, True, None, time.monotonic() - start)
+
+
+def _record_extraction_failure(
+    host: str | None,
+    candidate: PlayerEntry,
+    exc: Exception,
+    health: ResolverHealth | None,
+    start: float,
+    ep_number: float,
+) -> None:
+    fields = {name: getattr(exc, name, None) for name in _RESOLVE_DIAG_FIELDS}
+    if isinstance(exc, AntiBotError):
+        fields.update(layer="shinden_api", category="anti_bot")
+    if health is not None and host is not None:
+        signal = classify_failure(
+            host,
+            layer=fields.get("layer") or "",
+            category=fields.get("category"),
+            http_status=fields.get("http_status"),
+            used_fallback=bool(fields.get("used_fallback")),
+            fallback_category=fields.get("fallback_category"),
+            fallback_http_status=fields.get("fallback_http_status"),
+        )
+        transition = health.record(host, candidate.online_id, signal)
+        _emit_health_transition(transition, category=fields.get("category"), http_status=fields.get("http_status"))
+    diagnostics.resolve_result(host, False, type(exc).__name__, time.monotonic() - start, **fields)
+    progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=redact_text(exc)))
+
+
+@dataclass
+class _DeferredCandidate:
+    """A candidate whose embed is already resolved but whose extraction was postponed.
+
+    Carries the resolved ``embed`` so last-resort can retry extraction without a second
+    resolve_embed call — the host is only known after resolving, so deferral can never
+    happen earlier than this.
+    """
+
+    candidate: PlayerEntry
+    embed: EmbedURL
+    host: str
+
+
 def _resolve_with_fallback(
     client,
     players: list[PlayerEntry],
@@ -224,6 +293,7 @@ def _resolve_with_fallback(
     cookies_file: str | None = None,
     cookies_browser: str | None = None,
     embed_cache: dict[str, EmbedURL] | None = None,
+    health: ResolverHealth | None = None,
 ):
     """Try chosen player; if it fails and auto-mode is active, walk down the sorted list.
 
@@ -231,6 +301,11 @@ def _resolve_with_fallback(
     For user-chosen players (auto=False) only the selected player is attempted.
     A candidate found in embed_cache skips the 5 s resolve; if extraction on the
     cached embed fails, one fresh resolve is attempted before giving up on it.
+
+    ``health``, when given, records outcomes for diagnostics and — in auto mode only —
+    gates *when* a candidate's extraction runs: a host already known UNAVAILABLE in this
+    session is deferred to the end of the candidate list, then given at least one real
+    attempt in a last-resort pass if nothing else worked. Player order itself never changes.
     """
     candidates = players if auto else [chosen]
     # Always start with the explicitly chosen player
@@ -238,8 +313,11 @@ def _resolve_with_fallback(
         candidates = [chosen] + [p for p in candidates if p is not chosen]
 
     cache = embed_cache if embed_cache is not None else {}
+    deferred: list[_DeferredCandidate] = []
 
     for candidate in candidates:
+        if auto:
+            diagnostics.player_selected(candidate.online_id, candidate.player, None)
         start = time.monotonic()
         host_hint: str | None = None
         try:
@@ -250,6 +328,23 @@ def _resolve_with_fallback(
                 embed = _resolve_embed_with_spinner(client, candidate.online_id)
                 cache[candidate.online_id] = embed
             host_hint = _host_of_url(embed.url)
+            if health is not None:
+                health.learn_label(candidate.player, host_hint)
+
+            if auto and health is not None and health.should_defer(host_hint):
+                deferred.append(_DeferredCandidate(candidate=candidate, embed=embed, host=host_hint))
+                diagnostics.health_defer(
+                    action="deferred",
+                    host=host_hint,
+                    online_id=candidate.online_id,
+                    player=candidate.player,
+                    state=health.state(host_hint).value,
+                    category=None,
+                    http_status=None,
+                )
+                progress.warn(_PROG["host_deferred"].format(host=host_hint))
+                continue
+
             try:
                 stream = _extract_stream(embed, cookies_file, cookies_browser)
             except NoStreamError:
@@ -258,15 +353,51 @@ def _resolve_with_fallback(
                 embed = _resolve_embed_with_spinner(client, candidate.online_id)
                 cache[candidate.online_id] = embed
                 host_hint = _host_of_url(embed.url)
+                if health is not None:
+                    health.learn_label(candidate.player, host_hint)
                 stream = _extract_stream(embed, cookies_file, cookies_browser)
-            diagnostics.resolve_result(host_hint, True, None, time.monotonic() - start)
+            _record_extraction_success(host_hint, candidate, health, start)
             return stream, embed
         except (NoStreamError, AntiBotError) as exc:
-            fields = {name: getattr(exc, name, None) for name in _RESOLVE_DIAG_FIELDS}
-            if isinstance(exc, AntiBotError):
-                fields.update(layer="shinden_api", category="anti_bot")
-            diagnostics.resolve_result(host_hint, False, type(exc).__name__, time.monotonic() - start, **fields)
-            progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=exc))
+            _record_extraction_failure(host_hint, candidate, exc, health, start, ep_number)
+
+    if deferred and health is not None:
+        retried_hosts: set[str] = set()
+        for entry in deferred:
+            if entry.host in retried_hosts and health.should_defer(entry.host):
+                diagnostics.health_defer(
+                    action="dropped",
+                    host=entry.host,
+                    online_id=entry.candidate.online_id,
+                    player=entry.candidate.player,
+                    state=health.state(entry.host).value,
+                    category=None,
+                    http_status=None,
+                )
+                progress.warn(_PROG["host_dropped"].format(host=entry.host))
+                continue
+
+            diagnostics.player_selected(entry.candidate.online_id, entry.candidate.player, None)
+            diagnostics.health_defer(
+                action="retry",
+                host=entry.host,
+                online_id=entry.candidate.online_id,
+                player=entry.candidate.player,
+                state=health.state(entry.host).value,
+                category=None,
+                http_status=None,
+            )
+            progress.warn(_PROG["host_last_resort"].format(host=entry.host))
+            retried_hosts.add(entry.host)
+
+            retry_start = time.monotonic()
+            try:
+                stream = _extract_stream(entry.embed, cookies_file, cookies_browser)
+            except NoStreamError as exc:
+                _record_extraction_failure(entry.host, entry.candidate, exc, health, retry_start, ep_number)
+                continue
+            _record_extraction_success(entry.host, entry.candidate, health, retry_start)
+            return stream, entry.embed
 
     return None, None
 
@@ -333,19 +464,20 @@ def _print_debug(stream: Stream, embed) -> None:
     from alt_ani_cli.ui.progress import _get
 
     con = _get()
-    con.print(f"\n[bold]Embed URL:[/bold] {embed.url}")
-    con.print(f"[bold]Direct URL:[/bold] {stream.url}")
+    con.print(f"\n[bold]Embed URL:[/bold] {redact_text(embed.url)}")
+    con.print(f"[bold]Direct URL:[/bold] {redact_text(stream.url)}")
     con.print(f"[bold]Ext:[/bold] {stream.ext}")
 
     if stream.headers:
         t = Table("Header", "Value", title="HTTP headers")
-        for k, v in stream.headers.items():
+        for k, v in redact_headers(stream.headers).items():
             t.add_row(k, v)
         con.print(t)
 
     if stream.qualities:
         t = Table("Quality", "URL", title="Available qualities")
-        for q, u in sorted(stream.qualities.items(), key=lambda kv: kv[0]):
+        for q, raw in sorted(stream.qualities.items(), key=lambda kv: kv[0]):
+            u = redact_text(raw)
             t.add_row(q, u[:80] + "..." if len(u) > 80 else u)
         con.print(t)
 
@@ -356,7 +488,15 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
 
         _ap.ArgumentParser(prog="alt-ani-cli").error(_CLI["errors"]["missing_input"])
 
-    if args.resume:
+    downloaded_eps: frozenset[float] = frozenset()
+    if args.resume and args.download:
+        downloads = history.list_downloads()
+        if not downloads:
+            progress.error(_PROG["download_history_empty"])
+            sys.exit(1)
+        ref, downloaded_eps = downloads[0]
+        last_ep = 0.0
+    elif args.resume:
         all_entries = history.list_all()
         if not all_entries:
             progress.error(_PROG["history_empty"])
@@ -394,6 +534,12 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         if not targets:
             progress.error(_PROG["range_not_found"].format(range=repr(args.episode)))
             sys.exit(1)
+    elif args.resume and args.download:
+        remaining = [ep for ep in episodes if ep.number not in downloaded_eps]
+        if not remaining:
+            progress.info(_PROG["downloaded_all"].format(title=ref.title))
+            return
+        targets = [remaining[0]]
     elif args.resume and last_ep > 0:
         remaining = [ep for ep in episodes if ep.number > last_ep]
         if not remaining:
@@ -405,9 +551,11 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
 
     player_kind = "vlc" if args.vlc else "mpv"
     _episode_action: str | None = None
+    health = ResolverHealth()
 
     for ep in targets:
         progress.info(_PROG["episode"].format(number=ep.number, title=ep.title))
+        diagnostics.episode_selected(ep.number, ep.title)
 
         ep_resp = client.get(ep.url)
         ep_resp.raise_for_status()
@@ -434,6 +582,16 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         else:
             players = filtered
 
+        ordered = health.order(players)
+        if [p.online_id for p in ordered] != [p.online_id for p in players]:
+            diagnostics.health_reorder(
+                number=ep.number,
+                before=",".join(p.online_id for p in players),
+                after=",".join(p.online_id for p in ordered),
+                states=",".join(health.predict(p.player).value for p in ordered),
+            )
+        players = ordered
+
         chosen = players[0]
         stream, embed = _resolve_with_fallback(
             client,
@@ -443,6 +601,7 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
             ep_number=ep.number,
             cookies_file=args.cookies_file,
             cookies_browser=args.cookies_browser,
+            health=health,
         )
 
         if stream is None:
@@ -463,6 +622,7 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         completed = False
         if _action == "download":
             download.run(stream, ep, ref)
+            history.record_download(ref, ep.number)
         elif _action == "debug":
             _print_debug(stream, embed)
         else:
@@ -513,11 +673,11 @@ def main() -> None:  # noqa: C901
 
     client = shinden_http.make_client()
     interactive = sys.stdin.isatty() and not args.select_nth
+    mode = "interactive" if interactive else "noninteractive"
 
-    if interactive:
-        diag_path = diagnostics.configure()
-        diagnostics.session_start(__version__, platform.python_version(), platform.platform())
-        progress.info(_PROG["diagnostics_log_hint"].format(path=diag_path))
+    diag_path = diagnostics.configure()
+    diagnostics.session_start(__version__, platform.python_version(), platform.platform(), mode=mode)
+    progress.info(_PROG["diagnostics_log_hint"].format(path=diag_path))
 
     try:
         if interactive:
@@ -533,18 +693,18 @@ def main() -> None:  # noqa: C901
         if exc.response is not None:
             status = exc.response.status_code
             url = str(exc.response.url)
-            progress.error(_PROG["http_error"].format(status=status, url=url))
+            progress.error(_PROG["http_error"].format(status=status, url=redact_text(url)))
             if status == 403 and SHINDEN_BASE in url:
                 if FLARESOLVERR_URL:
-                    progress.warn(_PROG["flaresolverr_unreachable"].format(url=FLARESOLVERR_URL))
+                    progress.warn(_PROG["flaresolverr_unreachable"].format(url=redact_text(FLARESOLVERR_URL)))
                 else:
                     progress.warn(_PROG["cloudflare_hint"])
         else:
-            progress.error(str(exc))
+            progress.error(redact_text(exc))
         sys.exit(1)
-    except (AntiBotError, NoStreamError, ParseError, FilterMismatchError) as exc:
+    except (AntiBotError, NoStreamError, ParseError, FilterMismatchError, DownloadFailedError, DownloadTargetError) as exc:
         diagnostics.session_end("error", type(exc).__name__)
-        progress.error(str(exc))
+        progress.error(redact_text(exc))
         sys.exit(1)
     except PlayerNotFoundError as exc:
         diagnostics.session_end("error", type(exc).__name__)
@@ -552,7 +712,7 @@ def main() -> None:  # noqa: C901
         sys.exit(1)
     except ShindenError as exc:
         diagnostics.session_end("error", type(exc).__name__)
-        progress.error(_PROG["shinden_error"].format(exc=exc))
+        progress.error(_PROG["shinden_error"].format(exc=redact_text(exc)))
         sys.exit(1)
     else:
         diagnostics.session_end("ok", None)

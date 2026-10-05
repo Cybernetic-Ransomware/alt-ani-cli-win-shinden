@@ -36,6 +36,12 @@ class TestEpisodeLabels:
         unwatched = _ep["label_unwatched"].format(number=1.0, title="Ep A")
         assert watched != unwatched
 
+    def test_downloaded_template_differs_from_watched_and_unwatched(self):
+        _ep = CONTENT["menu"]["episodes"]
+        downloaded = _ep["label_downloaded"].format(number=1.0, title="Ep A")
+        assert downloaded != _ep["label_watched"].format(number=1.0, title="Ep A")
+        assert downloaded != _ep["label_unwatched"].format(number=1.0, title="Ep A")
+
     def test_select_episodes_renders_watched_template(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         episodes = [
@@ -101,7 +107,7 @@ class TestStartModeLabels:
     def test_resume_count_in_label(self, monkeypatch, capsys):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value="2"):
-            select_start_mode(has_history=True, history_count=5)
+            select_start_mode(watch_count=5)
         assert "5" in capsys.readouterr().out
 
 
@@ -117,7 +123,11 @@ class TestTemplatePlaceholders:
             (("menu", "series", "label_without_date"), ("{title}", "{id}")),
             (("menu", "episodes", "label_watched"), ("{number", "{title}")),
             (("menu", "episodes", "label_unwatched"), ("{number", "{title}")),
-            (("menu", "start_mode", "options", "resume_with_count"), ("{count}",)),
+            (("menu", "start_mode", "options", "resume_watch"), ("{count}",)),
+            (("menu", "start_mode", "options", "resume_download"), ("{count}",)),
+            (("menu", "download_resume", "label"), ("{title}", "{count}")),
+            (("menu", "episodes", "label_downloaded"), ("{number", "{title}")),
+            (("progress", "downloaded_all"), ("{title}",)),
             (("menu", "start_mode", "version_body"), ("{version}",)),
             (("menu", "player", "label_ok"), ("{player}", "{res}", "{audio}", "{subs}", "{origin}")),
             (("menu", "player", "label_failed"), ("{player}", "{res}", "{audio}", "{subs}", "{origin}")),
@@ -129,6 +139,9 @@ class TestTemplatePlaceholders:
             (("progress", "extractor_fallback"), ("{host}", "{exc}")),
             (("progress", "jwplayer_fallback"), ("{host}", "{exc}")),
             (("progress", "prefetch_sources"), ("{count}",)),
+            (("progress", "host_deferred"), ("{host}",)),
+            (("progress", "host_last_resort"), ("{host}",)),
+            (("progress", "host_dropped"), ("{host}",)),
         ],
     )
     def test_template_has_required_placeholders(self, path, placeholders):

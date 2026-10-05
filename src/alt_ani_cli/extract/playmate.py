@@ -23,6 +23,7 @@ def resolve(embed_url: str, referer: str) -> Stream:
                 "Origin": base,
                 "Referer": embed_url,
                 "User-Agent": USER_AGENT,
+                "Sec-Fetch-Site": "same-origin",
             },
         )
         resp.raise_for_status()
@@ -35,5 +36,5 @@ def resolve(embed_url: str, referer: str) -> Stream:
     return Stream(
         url=url,
         headers={"Referer": embed_url, "Origin": base, "User-Agent": USER_AGENT},
-        ext="m3u8" if "m3u8" in url else "mp4",
+        ext="m3u8" if "m3u8" in url or "/hls/" in url else "mp4",
     )

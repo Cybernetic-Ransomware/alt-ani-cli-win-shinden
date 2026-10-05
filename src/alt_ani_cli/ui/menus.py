@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.models import EpisodeRow, PlayerEntry, PlayerSource, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_cli.redaction import redact_text
 from alt_ani_cli.ui import progress
 
 _RES_RE = re.compile(r"(\d+)")
@@ -377,6 +378,19 @@ def select_series_from_history(
     )
 
 
+def select_series_from_download_history(
+    entries: list[tuple[SeriesRef, frozenset[float]]],
+    prompt: str = _M["download_resume"]["default_prompt"],
+) -> tuple[SeriesRef, frozenset[float]] | None:
+    _dr = _M["download_resume"]
+    return _run_simple_picker(
+        entries,
+        lambda e: _dr["label"].format(title=e[0].title, count=len(e[1])),
+        prompt=prompt,
+        instruction=_dr["instruction"],
+    )
+
+
 _EP_WINDOW_MAX_ROWS = 15
 
 
@@ -410,12 +424,19 @@ def select_episodes(
     multi: bool = False,
     watched_numbers: set[float] | None = None,
     default_index: int | None = None,
+    downloaded_numbers: set[float] | None = None,
 ) -> list[EpisodeRow] | None:
     _watched = watched_numbers or set()
+    _downloaded = downloaded_numbers or set()
     _ep = _M["episodes"]
 
     def _label(ep: EpisodeRow) -> str:
-        tmpl = _ep["label_watched"] if ep.number in _watched else _ep["label_unwatched"]
+        if ep.number in _watched:
+            tmpl = _ep["label_watched"]
+        elif ep.number in _downloaded:
+            tmpl = _ep["label_downloaded"]
+        else:
+            tmpl = _ep["label_unwatched"]
         return tmpl.format(number=ep.number, title=ep.title)
 
     if not _use_inquirer():
@@ -520,9 +541,9 @@ def format_player_source(p: PlayerEntry, resolved: PlayerSource | None) -> tuple
     if p.subs_author:
         lines.append(_pl["source_author"].format(author=p.subs_author))
     if p.source:
-        lines.append(_pl["source_url"].format(url=p.source))
+        lines.append(_pl["source_url"].format(url=redact_text(p.source)))
     if resolved:
-        lines.append(_pl["source_embed"].format(url=resolved.embed_url))
+        lines.append(_pl["source_embed"].format(url=redact_text(resolved.embed_url)))
     body = "\n".join(lines) or _pl["source_empty"]
     return _pl["source_header"].format(player=p.player), body
 
@@ -588,15 +609,16 @@ def select_player_once(
 
 
 def select_start_mode(
-    has_history: bool, history_count: int = 0
-) -> Literal["search", "resume", "url", "quit", "version"] | None:
+    watch_count: int = 0, download_count: int = 0
+) -> Literal["search", "resume_watch", "resume_download", "url", "quit", "version"] | None:
     _sm = _M["start_mode"]
     _opts = _sm["options"]
 
     options_plain: list[tuple[str, str]] = [("search", _opts["search"])]
-    if has_history:
-        resume_label = _opts["resume_with_count"].format(count=history_count) if history_count else _opts["resume"]
-        options_plain.append(("resume", resume_label))
+    if watch_count:
+        options_plain.append(("resume_watch", _opts["resume_watch"].format(count=watch_count)))
+    if download_count:
+        options_plain.append(("resume_download", _opts["resume_download"].format(count=download_count)))
     options_plain.append(("url", _opts["url"]))
     options_plain.append(("quit", _opts["quit"]))
 
@@ -690,17 +712,42 @@ def select_quality(qualities: dict[str, str], prompt: str = _M["quality"]["defau
     return _run_simple_picker(all_options, _label, prompt=prompt, instruction=_q["instruction"], mode="select")
 
 
-def select_action() -> Literal["play", "download", "debug"] | None:
+def select_action(*, offer_pin: bool = False) -> Literal["play", "download", "download_pin", "debug"] | None:
+    """offer_pin adds "download and keep using this source" — only meaningful when later episodes remain."""
     _ac = _M["action"]
     _ac_opts = _ac["options"]
-    _options: list[tuple[str, str]] = [
-        ("play", _ac_opts["play"]),
-        ("download", _ac_opts["download"]),
-        ("debug", _ac_opts["debug"]),
-    ]
+    keys = ["play", "download", "download_pin", "debug"] if offer_pin else ["play", "download", "debug"]
     return _run_keyed_picker(  # type: ignore[return-value]
-        _options,
+        [(k, _ac_opts[k]) for k in keys],
         prompt=_ac["message"],
         instruction=_ac["instruction"],
-        fallback_invalid=_ac["fallback_invalid"],
+        fallback_invalid=_ac["fallback_invalid"].format(n=len(keys)),
     )
+
+
+def select_pin_fallback_action() -> Literal["keep", "repin"] | None:
+    _pf = _M["pin_fallback"]
+    _opts = _pf["options"]
+    return _run_keyed_picker(  # type: ignore[return-value]
+        [("keep", _opts["keep"]), ("repin", _opts["repin"])],
+        prompt=_pf["message"],
+        instruction=_pf["instruction"],
+        fallback_invalid=_pf["fallback_invalid"],
+    )
+
+
+def select_existing_download_action(
+    path: str, *, has_remaining: bool
+) -> Literal["skip", "overwrite", "overwrite_remaining", "cancel"]:
+    """Ask what to do with an already downloaded file; ESC / empty Enter means cancel."""
+    _ef = _M["existing_file"]
+    _opts = _ef["options"]
+    keys = ["skip", "overwrite", "overwrite_remaining", "cancel"] if has_remaining else ["skip", "overwrite", "cancel"]
+    progress.warn(_ef["header"].format(path=path))
+    choice = _run_keyed_picker(
+        [(k, _opts[k]) for k in keys],
+        prompt=_ef["message"],
+        instruction=_ef["instruction"],
+        fallback_invalid=_ef["fallback_invalid"].format(n=len(keys)),
+    )
+    return choice or "cancel"

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from alt_ani_cli.extract import vidara
 from alt_ani_cli.extract.vidara import resolve
 
 _EMBED = "https://vidara.to/e/gGnwW3ekLDWQX"
@@ -90,3 +91,23 @@ class TestResolveVidara:
         call = session.post.call_args
         assert call.args == ("https://viewdara.com/api/stream",)
         assert call.kwargs["headers"]["Origin"] == "https://viewdara.com"
+
+
+@pytest.mark.unit
+class TestResolveVidaraFixture:
+    @pytest.mark.parametrize("host", ["vidara.to", "iosbgaigo.com"])
+    def test_stream_api_fixture_is_host_agnostic(self, fake_session, load_fixture, host):
+        embed = f"https://{host}/e/testfilecode"
+        session = fake_session(vidara, post=[load_fixture("vidara_stream.json")])
+        stream = resolve(embed, _REFERER)
+
+        assert stream.url == "https://cdn.example/hls/testfilecode/master.m3u8?t=testtoken&e=1700000000"
+        assert stream.ext == "m3u8"
+        assert stream.headers["Referer"] == embed
+        assert stream.headers["Origin"] == f"https://{host}"
+
+        call = session.post.call_args
+        assert call.args == (f"https://{host}/api/stream",)
+        assert call.kwargs["json"] == {"filecode": "testfilecode", "device": "web"}
+        assert call.kwargs["headers"]["Origin"] == f"https://{host}"
+        assert call.kwargs["headers"]["Referer"] == embed

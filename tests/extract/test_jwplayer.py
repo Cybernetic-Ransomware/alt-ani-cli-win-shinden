@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from alt_ani_cli.extract import jwplayer
 from alt_ani_cli.extract.jwplayer import _best_hls_url, _decode_base_n, _normalize_stream_url, resolve, unpack_packer
 
 _SIMPLE_PACKED = (
@@ -171,3 +172,23 @@ class TestResolve:
             with pytest.raises(ValueError, match="jwplayer") as exc_info:
                 resolve(_EMBED, _REFERER)
         assert exc_info.value.category == "parser_drift"
+
+
+@pytest.mark.unit
+class TestResolveJwplayerFixture:
+    def test_morencius_packed_page_resolves_hls4_relative_path(self, fake_session, load_fixture):
+        html = load_fixture("jwplayer_morencius_packed.html")
+        # Words live only in the packer key table, so the stream URL can only come out of the real unpacker.
+        assert '"hls4"' not in html and "master.m3u8" not in html
+        session = fake_session(jwplayer, get=[html])
+
+        stream = resolve(_EMBED, _REFERER)
+
+        assert stream.url == "https://morencius.com/stream/testfilecode/testtoken/1700000000/master.m3u8"
+        assert stream.ext == "m3u8"
+        assert stream.headers["Referer"] == _EMBED
+        assert "User-Agent" in stream.headers
+
+        call = session.get.call_args
+        assert call.args == (_EMBED,)
+        assert call.kwargs["headers"]["Referer"] == _REFERER

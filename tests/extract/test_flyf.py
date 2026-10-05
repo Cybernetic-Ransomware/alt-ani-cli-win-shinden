@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from alt_ani_cli.extract import flyf
 from alt_ani_cli.extract.flyf import resolve
 
 _EMBED = "https://flyf.lat/embed/Gdbv8BEkZhOFZ2O"
@@ -83,3 +84,25 @@ class TestResolveFlyf:
                 resolve("not-a-url", _REFERER)
         session.get.assert_not_called()
         assert exc_info.value.category == "parser_drift"
+
+
+@pytest.mark.unit
+class TestResolveFlyfFixture:
+    _EMBED = "https://flyf.example/embed/testfilecode"
+
+    def test_assign_fixture_resolves_to_raw_file(self, fake_session, load_fixture):
+        session = fake_session(flyf, get=[load_fixture("flyf_assign.json")])
+        stream = resolve(self._EMBED, _REFERER)
+
+        assert stream.url == "https://cdn.example/raw/testtoken0000"
+        assert stream.ext == "mp4"
+        assert stream.headers["Referer"] == self._EMBED
+        assert "User-Agent" in stream.headers
+
+        call = session.get.call_args
+        assert call.args == ("https://api.flyfile.app/api/streaming/assign/testfilecode",)
+        headers = call.kwargs["headers"]
+        assert headers["Referer"] == self._EMBED
+        assert headers["X-FlyFile-View"] == "embed"
+        assert headers["X-Embed-Referrer"] == self._EMBED
+        assert headers["X-Adblock-Detected"] == "0"

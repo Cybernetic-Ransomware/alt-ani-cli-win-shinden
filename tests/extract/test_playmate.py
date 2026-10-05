@@ -5,12 +5,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from alt_ani_cli.extract import playmate
 from alt_ani_cli.extract.playmate import resolve
 
 _EMBED = "https://playmate.to/embed/MFyuwmxvBGiUE"
 _REFERER = "https://shinden.pl/"
 
-_M3U8_URL = "https://cdn.playmate.to/hls/abc/master.m3u8?token=deadbeef"
+_M3U8_URL = "https://cdn.playmate.to/hls/abc/master.txt?token=deadbeef"
 
 _API_RESPONSE = {"sx": _M3U8_URL}
 
@@ -51,6 +52,7 @@ class TestResolvePlaymate:
         assert call.kwargs["json"] == {"c": "MFyuwmxvBGiUE", "d": "web"}
         assert call.kwargs["headers"]["Origin"] == "https://playmate.to"
         assert call.kwargs["headers"]["Referer"] == _EMBED
+        assert call.kwargs["headers"]["Sec-Fetch-Site"] == "same-origin"
 
     def test_missing_sx_raises_value_error(self):
         with _make_session_patch({"status": 404}):
@@ -75,3 +77,25 @@ class TestResolvePlaymate:
         with _make_session_patch({"sx": "https://cdn.example.com/video.mp4"}):
             stream = resolve(_EMBED, _REFERER)
         assert stream.ext == "mp4"
+
+
+@pytest.mark.unit
+class TestResolvePlaymateFixture:
+    _EMBED = "https://playmate.example/embed/testfilecode"
+
+    def test_api_fixture_master_txt_is_recognised_as_hls(self, fake_session, load_fixture):
+        session = fake_session(playmate, post=[load_fixture("playmate_stream.json")])
+        stream = resolve(self._EMBED, _REFERER)
+
+        assert stream.url == "https://cdn.example/hls/testfilecode/master.txt?t=testtoken&e=1700000000"
+        assert stream.ext == "m3u8"
+        assert stream.headers["Referer"] == self._EMBED
+        assert stream.headers["Origin"] == "https://playmate.example"
+
+        call = session.post.call_args
+        assert call.args == ("https://playmate.example/api/s",)
+        assert call.kwargs["json"] == {"c": "testfilecode", "d": "web"}
+        headers = call.kwargs["headers"]
+        assert headers["Origin"] == "https://playmate.example"
+        assert headers["Referer"] == self._EMBED
+        assert headers["Sec-Fetch-Site"] == "same-origin"
