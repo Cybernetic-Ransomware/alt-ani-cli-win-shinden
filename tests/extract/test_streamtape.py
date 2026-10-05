@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from alt_ani_cli.extract import streamtape
 from alt_ani_cli.extract.streamtape import resolve
 
 _EMBED = "https://streamtape.com/e/abc123"
@@ -78,3 +79,20 @@ class TestResolveStreamtape:
             with pytest.raises(ValueError, match="streamtape") as exc_info:
                 resolve(_EMBED, _REFERER)
         assert exc_info.value.category == "parser_drift"
+
+
+@pytest.mark.unit
+class TestResolveStreamtapeFixture:
+    def test_robotlink_concatenation_fixture_ignores_decoy_div(self, fake_session, load_fixture):
+        session = fake_session(streamtape, get=[load_fixture("streamtape_embed.html")])
+        stream = resolve(_EMBED, _REFERER)
+
+        assert stream.url == (
+            "https://streamtape.example/get_video?id=testfilecode&expires=1700000000&ip=TESTIP0000&token=testtoken0000"
+        )
+        assert stream.ext == "mp4"
+        assert stream.headers["Referer"] == _EMBED
+
+        call = session.get.call_args
+        assert call.args == (_EMBED,)
+        assert call.kwargs["headers"]["Referer"] == _REFERER
