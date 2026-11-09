@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlparse
 
-from curl_cffi.requests import exceptions as cffi_exceptions
-
 from alt_ani_cli.content import EXCEPTIONS
 from alt_ani_cli.errors import JavaScriptRequiredError, NoStreamError, UnsupportedHostError
 from alt_ani_cli.extract import (
@@ -21,6 +19,7 @@ from alt_ani_cli.extract import (
     ytdlp_resolver,
 )
 from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.failure import classify_exception, http_status_of
 from alt_ani_cli.redaction import redact_text
 
 # ebd.cda.pl/800x450/{id} → yt-dlp does not understand the embed URL; rewrite to www.cda.pl/video/{id}
@@ -160,29 +159,8 @@ def _exc_text(exc: Exception, embed_url: str, host: str) -> str:
     return redact_text(text)
 
 
-# Classify by ExtractError.category or exception type only — messages may carry URLs/tokens.
-def _classify(exc: Exception) -> str:
-    tagged = getattr(exc, "category", None)
-    if isinstance(tagged, str):
-        return tagged
-    if isinstance(exc, (JavaScriptRequiredError, UnsupportedHostError)):
-        return "unsupported_host"
-    if isinstance(exc, cffi_exceptions.JSONDecodeError):
-        return "parser_drift"
-    if isinstance(exc, cffi_exceptions.Timeout):
-        return "timeout"
-    if isinstance(exc, cffi_exceptions.HTTPError):
-        return "http_error"
-    if isinstance(exc, cffi_exceptions.RequestException):
-        return "network_error"
-    return "unknown"
-
-
-def _http_status(exc: Exception) -> int | None:
-    status = getattr(exc, "http_status", None)
-    if status is None:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-    return status if isinstance(status, int) else None
+_classify = classify_exception
+_http_status = http_status_of
 
 
 def _annotate_failure(

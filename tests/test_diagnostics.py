@@ -156,6 +156,33 @@ class TestEventEmission:
         assert "fallback_category=network_error" in content
         assert "fallback_http_status" not in content
 
+    def test_resolve_result_records_xhr_fields(self, log_path):
+        diagnostics.resolve_result(
+            None,
+            False,
+            "ShindenXhrError",
+            0.2,
+            layer="shinden_api",
+            category="parser_drift",
+            http_status=200,
+            stage="player_load",
+            reason="wait_above_limit",
+            xhr_outcome="api_protocol_error",
+        )
+
+        content = log_path.read_text(encoding="utf-8")
+        for token in (
+            "layer=shinden_api",
+            "category=parser_drift",
+            "http_status=200",
+            "stage=player_load",
+            "reason=wait_above_limit",
+            "xhr_outcome=api_protocol_error",
+        ):
+            assert token in content
+        assert "api_code" not in content
+        assert "retry_after" not in content
+
     def test_resolve_result_omits_diagnostic_fields_when_not_given(self, log_path):
         diagnostics.resolve_result("mp4upload.com", True, None, 0.5)
 

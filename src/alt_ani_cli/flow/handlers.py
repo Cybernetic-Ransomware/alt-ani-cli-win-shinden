@@ -20,7 +20,7 @@ from curl_cffi.requests.exceptions import RequestException as CurlRequestExcepti
 
 from alt_ani_cli import __version__, diagnostics, download, history
 from alt_ani_cli.content import CONTENT
-from alt_ani_cli.errors import DownloadFailedError, DownloadTargetError, ShindenError
+from alt_ani_cli.errors import DownloadFailedError, DownloadTargetError, ShindenError, ShindenXhrError
 from alt_ani_cli.flow.pin import find_pinned, player_fingerprint
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, ScreenResult
 from alt_ani_cli.models import EmbedURL, EpisodeRow, PlayerSource, SeriesHit, SeriesMetadata, SeriesRef
@@ -68,28 +68,25 @@ def _record_player_source(state: FlowState, online_id: str, embed: EmbedURL) -> 
 
 
 def _prefetch_player_sources(state: FlowState) -> None:
-    """Resolve every player's embed up front (--show-sources); failures leave the host unknown.
-
-    Tech debt: the shared curl_cffi session is used from multiple threads, the same
-    trade-off already taken in _prefetch_series_metadata. The safe alternatives are
-    a session per worker (extra FlareSolverr/cookie setup) or sequential fetching
-    (~7 s per player); revisit if antibot blocks or session corruption show up.
-    """
+    """Sequential on purpose: a block or outage must stop before the next XHR, which concurrent workers can't guarantee."""
     players = [p for p in state.players if p.online_id not in state.player_sources]
     if not players:
         return
-    with (
-        progress.spinner(_PROG["prefetch_sources"].format(count=len(players))),
-        ThreadPoolExecutor(max_workers=min(3, len(players))) as ex,
-    ):
-        futures = {ex.submit(shinden_api.resolve_embed, state.client, p.online_id): p for p in players}
-        for fut in as_completed(futures):
-            p = futures[fut]
+    stop: ShindenXhrError | None = None
+    with progress.spinner(_PROG["prefetch_sources"].format(count=len(players))):
+        for p in players:
             try:
-                embed = fut.result()
-            except CurlRequestException, ShindenError:
+                embed = shinden_api.resolve_embed(state.client, p.online_id)
+            except ShindenXhrError as exc:
+                if shinden_api.xhr_outcome(exc) is shinden_api.XhrOutcome.NEXT_PLAYER:
+                    continue
+                stop = exc
+                break
+            except ShindenError:
                 continue
             _record_player_source(state, p.online_id, embed)
+    if stop is not None:
+        progress.warn(_PROG["prefetch_stopped"].format(reason=shinden_api.stop_message(stop)))
 
 
 def _sorted_by_date_desc(hits: list[SeriesHit], metadata: dict[str, SeriesMetadata]) -> list[SeriesHit]:
@@ -450,7 +447,7 @@ def handle_player_pick(state: FlowState) -> ScreenResult:
     ep = state.current_ep
     ep_label = f"{ep.number:g}" if ep is not None else "?"
 
-    if state.failed_ids:
+    if state.chosen_player is not None and state.chosen_player.online_id in state.failed_ids:
         progress.warn(_PROG["player_failed_short"].format(player=repr(state.chosen_player.player)))
 
     while True:
@@ -482,17 +479,22 @@ def handle_resolve_stream(state: FlowState) -> ScreenResult:
 
     from alt_ani_cli.cli import _resolve_with_fallback
 
-    stream, embed = _resolve_with_fallback(
-        state.client,
-        state.players,
-        state.chosen_player,
-        auto=False,  # user already picked — try only chosen player
-        ep_number=ep.number,
-        cookies_file=state.args.cookies_file,
-        cookies_browser=state.args.cookies_browser,
-        embed_cache=state.player_embeds,
-        health=state.health,
-    )
+    try:
+        stream, embed = _resolve_with_fallback(
+            state.client,
+            state.players,
+            state.chosen_player,
+            auto=False,  # user already picked — try only chosen player
+            ep_number=ep.number,
+            cookies_file=state.args.cookies_file,
+            cookies_browser=state.args.cookies_browser,
+            embed_cache=state.player_embeds,
+            health=state.health,
+        )
+    except ShindenXhrError as exc:
+        # shared-API failure, not this player's: keep it pickable and leave any retry to the user
+        progress.error(shinden_api.stop_message(exc))
+        return Screen.PLAYER_PICK
 
     if stream is not None:
         state.stream = stream

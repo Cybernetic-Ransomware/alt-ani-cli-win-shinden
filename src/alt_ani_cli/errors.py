@@ -6,6 +6,31 @@ class AntiBotError(ShindenError):
     """shinden API returned 403 or empty iframe — guest token likely expired."""
 
 
+class ShindenXhrError(ShindenError):
+    """player_load/player_show failed; carries only classified primitives, never the URL, body or server message."""
+
+    layer = "shinden_api"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str,
+        category: str,
+        reason: str,
+        http_status: int | None = None,
+        api_code: str | None = None,
+        retry_after: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.category = category
+        self.reason = reason
+        self.http_status = http_status
+        self.api_code = api_code
+        self.retry_after = retry_after
+
+
 class NoStreamError(ShindenError):
     """Could not extract a playable video URL from the embed page."""
 

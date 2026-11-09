@@ -2,11 +2,14 @@ cli:
   filter_no_match: "Żaden player nie pasuje do podanych filtrów ({filters}). Użyj --allow-fallback, aby skorzystać z pełnej listy playerów."
 
 api:
-  player_load_403: "shinden API zwróciło 403 na player_load — GUEST_AUTH w config.py mógł wygasnąć."
-  player_show_403: "shinden API zwróciło 403 na player_show."
-  no_iframe: "player_show nie zwróciło iframe dla online_id={online_id}. Fragment odpowiedzi: {snippet}. Spróbuj ustawić ALT_ANI_CLI_ANTIBOT_DELAY=7"
+  xhr_failed: "API playerów shinden: {stage} nie powiodło się dla online_id={online_id}: {detail}"
+  xhr_access_blocked: "shinden zablokował dostęp do API playerów na etapie {stage} ({detail}). Automatyczne próby wstrzymane — możesz później ręcznie wybrać playera."
+  xhr_unavailable: "API playerów shinden jest niedostępne na etapie {stage} ({detail}). Automatyczne próby wstrzymane — możesz później ręcznie wybrać playera."
+  xhr_protocol: "API playerów shinden zwróciło nieoczekiwaną odpowiedź na etapie {stage} ({detail}). Automatyczne próby wstrzymane."
+  retry_after_hint: "Shinden prosi o odczekanie {seconds} s."
+  no_iframe: "player_show nie zwróciło iframe dla online_id={online_id} ({length} znaków). Spróbuj ustawić ALT_ANI_CLI_ANTIBOT_DELAY=7"
   iframe_no_src: "iframe nie ma atrybutu src dla online_id={online_id}"
-  unexpected_iframe_src: "Nieoczekiwana wartość src iframe: {src} dla online_id={online_id}"
+  unexpected_iframe_src: "src iframe nie jest adresem http(s) dla online_id={online_id}"
 
 series:
   parse_error: "Nie można wyodrębnić ID serii z URL: {url}"

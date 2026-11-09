@@ -1,14 +1,17 @@
 """Tests for noninteractive diagnostics wiring — session lifecycle, episode/player context."""
 
 import argparse
+import json
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from curl_cffi.requests.exceptions import DNSError, Timeout
 
 from alt_ani_cli import diagnostics
 from alt_ani_cli.cli import _run_noninteractive, main
+from alt_ani_cli.config import GUEST_AUTH
 from alt_ani_cli.errors import AntiBotError, DownloadFailedError, IncompleteEpisodeListError, NoStreamError
 from alt_ani_cli.models import EmbedURL, EpisodeListing, EpisodeRow, PlayerEntry, SeriesRef
 
@@ -459,3 +462,131 @@ class TestNoninteractiveIncompleteEpisodeList:
             main()
         assert exc_info.value.code == 1
         assert "list is incomplete" in mock_error.call_args.args[0]
+
+
+_EP2 = EpisodeRow(number=2.0, title="Ep 2", url="http://shinden.pl/ep/2")
+_SECRET_COOKIE = "cf_clearance=SECRETCOOKIE123"
+_SECRET_MESSAGE = "session token SECRETTOKEN456"
+
+
+def _xhr_client(load_status: int, load_body: str, load_headers: dict | None = None) -> MagicMock:
+    def get(url, **kw):
+        if "/xhr/" in url:
+            return MagicMock(status_code=load_status, text=load_body, headers=load_headers or {})
+        return MagicMock(raise_for_status=MagicMock(), text="", status_code=200)
+
+    client = MagicMock()
+    client.get.side_effect = get
+    return client
+
+
+@contextmanager
+def _xhr_env(client):
+    with (
+        patch("sys.argv", ["alt-ani-cli", "--url", "http://shinden.pl/series/1-fate", "-e", "1-2"]),
+        patch("alt_ani_cli.cli.shinden_http.make_client", return_value=client),
+        patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
+        patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=EpisodeListing(_REF, [_EP1, _EP2])),
+        patch("alt_ani_cli.cli.shinden_episode.parse_players", return_value=[_PLAYER_A, _PLAYER_B]),
+        patch("alt_ani_cli.cli.shinden_episode.sort_players", return_value=[_PLAYER_A, _PLAYER_B]),
+        patch("alt_ani_cli.shinden.api.time.sleep") as mock_sleep,
+        patch("alt_ani_cli.cli.history.upsert") as mock_upsert,
+        patch("alt_ani_cli.cli.player_runner.play") as mock_play,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        yield SimpleNamespace(sleep=mock_sleep, upsert=mock_upsert, play=mock_play, exit=exc_info)
+
+
+def _xhr_urls(client) -> list[str]:
+    return [c.args[0] for c in client.get.call_args_list if "/xhr/" in c.args[0]]
+
+
+@pytest.mark.unit
+class TestNoninteractiveXhrStop:
+    def test_access_block_exits_1_without_further_xhr_episodes_or_history(self, capsys):
+        body = json.dumps({"error": {"code": "ochrona_godz", "message": _SECRET_MESSAGE, "retry_after": 300}})
+        client = _xhr_client(429, body, {"Retry-After": "120", "Set-Cookie": _SECRET_COOKIE})
+        with _xhr_env(client) as m:
+            main()
+        assert m.exit.value.code == 1
+        assert len(_xhr_urls(client)) == 1
+        assert _EP2.url not in [c.args[0] for c in client.get.call_args_list]
+        m.sleep.assert_not_called()
+        m.upsert.assert_not_called()
+        m.play.assert_not_called()
+
+        out = capsys.readouterr()
+        console = out.out + out.err
+        assert "blocked" in console
+        assert "120 s" in console
+        assert "ochrona_godz" in console
+
+        (log_file,) = diagnostics.DIAG_DIR.glob("session_*.log")
+        log = log_file.read_text(encoding="utf-8")
+        assert "layer=shinden_api" in log
+        assert "stage=player_load" in log
+        assert "http_status=429" in log
+        assert "api_code=ochrona_godz" in log
+        assert "retry_after=120" in log
+        assert "xhr_outcome=access_blocked" in log
+        for secret in ("SECRETCOOKIE123", "SECRETTOKEN456", GUEST_AUTH, "auth="):
+            assert secret not in log
+            assert secret not in console
+
+    def test_503_exits_1_as_unavailability_not_antibot(self, capsys):
+        client = _xhr_client(503, "<html>Service Unavailable</html>")
+        with _xhr_env(client) as m:
+            main()
+        assert m.exit.value.code == 1
+        assert len(_xhr_urls(client)) == 1
+        out = capsys.readouterr()
+        console = out.out + out.err
+        assert "unavailable" in console
+        assert "antibot" not in console.lower()
+        assert "blocked" not in console
+
+    def test_invalid_wait_stops_with_protocol_error_and_reason_in_diagnostics(self, capsys):
+        client = _xhr_client(200, "45")
+        with _xhr_env(client) as m:
+            main()
+        assert m.exit.value.code == 1
+        assert len(_xhr_urls(client)) == 1
+        m.sleep.assert_not_called()
+        (log_file,) = diagnostics.DIAG_DIR.glob("session_*.log")
+        log = log_file.read_text(encoding="utf-8")
+        assert "category=parser_drift" in log
+        assert "reason=wait_above_limit" in log
+        assert "xhr_outcome=api_protocol_error" in log
+
+    def test_dns_failure_on_xhr_exits_1_without_traceback(self, capsys):
+        def get(url, **kw):
+            if "/xhr/" in url:
+                raise DNSError("could not resolve api4.shinden.pl")
+            return MagicMock(text="")
+
+        client = MagicMock()
+        client.get.side_effect = get
+        with _xhr_env(client) as m:
+            main()
+        assert m.exit.value.code == 1
+        out = capsys.readouterr()
+        assert "Traceback" not in out.err
+        assert "network_error" in out.out + out.err
+
+
+@pytest.mark.unit
+class TestMainTransportErrorOutsideXhr:
+    def test_episode_page_timeout_exits_1_without_traceback(self, capsys):
+        with (
+            patch("sys.argv", ["alt-ani-cli", "--url", "http://shinden.pl/series/1-fate"]),
+            patch("alt_ani_cli.cli.shinden_http.make_client"),
+            patch(
+                "alt_ani_cli.cli._run_noninteractive", side_effect=Timeout("timed out: https://shinden.pl/ep/1?token=SECRET")
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+        out = capsys.readouterr()
+        assert "Traceback" not in out.err
+        assert "token=SECRET" not in out.out + out.err

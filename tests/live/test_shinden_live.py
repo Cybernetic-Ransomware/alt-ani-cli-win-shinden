@@ -1,11 +1,13 @@
 """Opt-in live checks (``just test-live``): structural asserts only, ~5 requests, CF cache never written."""
 
 import json
+import re
 
 import pytest
 from selectolax.parser import HTMLParser
 
-from alt_ani_cli.config import FLARESOLVERR_URL
+from alt_ani_cli.config import FLARESOLVERR_URL, GUEST_AUTH, SHINDEN_API_BASE
+from alt_ani_cli.redaction import redact_text
 from alt_ani_cli.shinden import episode, http, metadata, search, series
 
 pytestmark = [
@@ -64,3 +66,15 @@ def test_players_parse_and_exclude_honeypot(client, listing):
     script = HTMLParser(resp.text).css_first("script#episode-players-data")
     trap = json.loads(script.text()).get("pulapka")
     assert str(trap) not in {p.online_id for p in players}
+
+
+def test_player_load_body_is_whole_seconds(client, listing):
+    # contract gate for api.resolve_embed's wait parser; one player_load, no player_show
+    resp = client.get(listing.episodes[-1].url)
+    resp.raise_for_status()
+    online_id = episode.parse_players(resp.text)[0].online_id
+    load = client.get(f"{SHINDEN_API_BASE}/xhr/{online_id}/player_load?auth={GUEST_AUTH}")
+    body = load.text.strip()
+    shape = f"status={load.status_code} content_type={load.headers.get('content-type')!r} len={len(load.text)} head={redact_text(body[:40])!r}"
+    assert load.status_code == 200, shape
+    assert re.fullmatch(r"\d{1,3}", body) or isinstance(json.loads(body), int | float), shape

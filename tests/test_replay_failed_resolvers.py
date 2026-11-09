@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from alt_ani_cli.errors import AntiBotError, NoStreamError
+from alt_ani_cli.errors import AntiBotError, NoStreamError, ShindenXhrError
 
 # tests/ has no top-level __init__.py, so pytest puts tests/ (not the repo root) on sys.path.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -19,6 +19,7 @@ from tools.replay_failed_resolvers import (  # noqa: E402
     Verdict,
     _NowSnapshot,
     classify_outcome,
+    main,
     parse_diagnostics_log,
     replay_case,
 )
@@ -601,3 +602,68 @@ class TestReplayCase:
 
         mock_resolve_embed.assert_not_called()
         assert outcome.verdict is Verdict.REPLAY_ERROR
+
+
+def _xhr(**fields) -> ShindenXhrError:
+    defaults = dict(stage="player_load", category="http_error", reason="http_status")
+    return ShindenXhrError("xhr failed", **(defaults | fields))
+
+
+@pytest.mark.unit
+class TestReplayXhrErrors:
+    def test_resolve_result_with_xhr_fields_parses_without_skips(self, tmp_path):
+        lines = [
+            _line("series_selected", id="1", title="Fate"),
+            _line("episode_selected", number=1.0, title="Ep 1"),
+            _line("player_selected", online_id="42", player="Cda"),
+            _line(
+                "resolve_result",
+                ok=False,
+                exc="ShindenXhrError",
+                layer="shinden_api",
+                category="http_error",
+                http_status=429,
+                stage="player_load",
+                api_code="turnstile",
+                retry_after=30,
+                reason="api_error",
+                xhr_outcome="access_blocked",
+                elapsed=0.1,
+            ),
+        ]
+        log = tmp_path / "session.log"
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        cases, skipped = parse_diagnostics_log(log)
+
+        assert skipped == 0
+        assert [(c.online_id, c.layer_before, c.http_status_before) for c in cases] == [("42", "shinden_api", 429)]
+
+    def test_xhr_failure_takes_layer_and_category_from_the_error(self):
+        with patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", side_effect=_xhr(http_status=404)):
+            outcome = replay_case(MagicMock(), _case())
+        assert (outcome.now_layer, outcome.now_category, outcome.now_http_status) == ("shinden_api", "http_error", 404)
+        assert outcome.xhr_stop is None
+
+    @pytest.mark.parametrize("err", [_xhr(http_status=429), _xhr(http_status=503)], ids=["429", "503"])
+    def test_shared_api_failure_marks_outcome_as_stop(self, err):
+        with patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", side_effect=err):
+            outcome = replay_case(MagicMock(), _case())
+        assert outcome.xhr_stop is not None
+
+    def test_main_stops_replaying_after_a_block(self, tmp_path):
+        lines = [_line("series_selected", id="1", title="Fate"), _line("episode_selected", number=1.0, title="Ep 1")]
+        for oid in ("a", "b", "c"):
+            lines += [
+                _line("player_selected", online_id=oid, player="Cda"),
+                _line("resolve_result", ok=False, exc="NoStreamError", elapsed=0.1),
+            ]
+        log = tmp_path / "session.log"
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        with (
+            patch("tools.replay_failed_resolvers.shinden_http.make_client"),
+            patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", side_effect=_xhr(http_status=429)) as mock_resolve,
+            patch("tools.replay_failed_resolvers.progress"),
+        ):
+            assert main([str(log)]) == 0
+        mock_resolve.assert_called_once()
