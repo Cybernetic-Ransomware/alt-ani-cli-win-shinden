@@ -10,6 +10,7 @@ import pytest
 from curl_cffi.requests.exceptions import ConnectionError as CurlConnectionError
 from curl_cffi.requests.exceptions import DNSError, Timeout
 
+from alt_ani_cli.cli import _record_extraction_failure
 from alt_ani_cli.config import GUEST_AUTH, SHINDEN_API_BASE
 from alt_ani_cli.errors import ShindenXhrError
 from alt_ani_cli.shinden.api import XhrOutcome, resolve_embed, stop_message, xhr_outcome
@@ -290,6 +291,59 @@ class TestPlayerShowIframe:
     def test_protocol_relative_src_gets_https(self):
         result, _ = _resolve(_client(_resp(text="5"), _resp(text='<iframe src="//cdn.example.com/embed/abc"></iframe>')))
         assert result.url == "https://cdn.example.com/embed/abc"
+
+    @pytest.mark.parametrize(
+        ("src", "expected"),
+        [
+            ("https://example.com/embed", "https://example.com/embed"),
+            ("http://example.com/embed", "http://example.com/embed"),
+            ("//example.com/embed", "https://example.com/embed"),
+        ],
+    )
+    def test_absolute_web_src_is_accepted(self, src, expected):
+        result, _ = _resolve(_client(_resp(text="5"), _resp(text=f'<iframe src="{src}"></iframe>')))
+        assert result.url == expected
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            "httpfoo",
+            "https-not-a-url",
+            "https://",
+            "javascript:alert(1)",
+            "http://[::1/embed",
+            "//[bad/embed",
+            "ftp://example.com/x",
+        ],
+    )
+    def test_malformed_src_is_unexpected(self, src):
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _resolve(_client(_resp(text="5"), _resp(text=f'<iframe src="{src}"></iframe>')))
+        err = exc_info.value
+        assert (err.stage, err.category, err.reason) == ("player_show", "no_stream_url", "unexpected_iframe_src")
+        assert xhr_outcome(err) is XhrOutcome.NEXT_PLAYER
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            "javascript:SECRETPATH/x",
+            "https:///embed?token=SECRETPATH",
+            "httpx://example.com/embed#SECRETPATH",
+            "http://[::1/SECRETPATH?t=SECRETPATH",
+        ],
+    )
+    def test_malformed_src_never_leaks(self, src, diag_events, capsys):
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _resolve(_client(_resp(text="5"), _resp(text=f'<iframe src="{src}"></iframe>')))
+        err = exc_info.value
+        assert err.reason == "unexpected_iframe_src"
+        candidate = MagicMock(online_id="42", player="Example")
+        _record_extraction_failure(None, candidate, err, None, 0.0, 1)
+        assert diag_events
+        assert "SECRETPATH" not in str(err)
+        assert "SECRETPATH" not in stop_message(err)
+        assert "SECRETPATH" not in repr(diag_events)
+        assert "SECRETPATH" not in capsys.readouterr().out
 
 
 @pytest.mark.unit

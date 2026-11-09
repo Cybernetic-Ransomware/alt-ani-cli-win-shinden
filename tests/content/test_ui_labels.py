@@ -161,6 +161,7 @@ _API_PLACEHOLDERS = {
     "xhr_protocol": ("{stage}", "{detail}"),
     "retry_after_hint": ("{seconds}",),
     "no_iframe": ("{online_id}", "{length}"),
+    "unexpected_iframe_src": ("{online_id}",),
 }
 
 
@@ -175,3 +176,7 @@ class TestApiExceptionTemplates:
     @pytest.mark.parametrize("catalog", [EXCEPTIONS, EXCEPTIONS_PL], ids=["en-us", "pl-pl"])
     def test_no_iframe_no_longer_embeds_a_response_snippet(self, catalog):
         assert "{snippet}" not in catalog["api"]["no_iframe"]
+
+    @pytest.mark.parametrize("catalog", [EXCEPTIONS, EXCEPTIONS_PL], ids=["en-us", "pl-pl"])
+    def test_unexpected_iframe_src_does_not_embed_the_src(self, catalog):
+        assert "{src}" not in catalog["api"]["unexpected_iframe_src"]

@@ -9,7 +9,7 @@ api:
   retry_after_hint: "Shinden prosi o odczekanie {seconds} s."
   no_iframe: "player_show nie zwróciło iframe dla online_id={online_id} ({length} znaków). Spróbuj ustawić ALT_ANI_CLI_ANTIBOT_DELAY=7"
   iframe_no_src: "iframe nie ma atrybutu src dla online_id={online_id}"
-  unexpected_iframe_src: "Nieoczekiwana wartość src iframe: {src} dla online_id={online_id}"
+  unexpected_iframe_src: "src iframe nie jest adresem http(s) dla online_id={online_id}"
 
 series:
   parse_error: "Nie można wyodrębnić ID serii z URL: {url}"

@@ -5,6 +5,7 @@ import time
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from enum import StrEnum
+from urllib.parse import urlsplit
 
 from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
@@ -181,6 +182,14 @@ def _wait_seconds(text: str, online_id: str) -> int:
     return value
 
 
+def _is_web_url(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+        return parts.scheme in ("http", "https") and bool(parts.hostname)
+    except ValueError:
+        return False
+
+
 def resolve_embed(
     client: cffi_requests.Session,
     online_id: str,
@@ -208,7 +217,8 @@ def resolve_embed(
         raise no_stream("iframe_no_src", _API["iframe_no_src"].format(online_id=repr(online_id)))
     if src.startswith("//"):
         src = "https:" + src
-    elif not src.startswith("http"):
-        raise no_stream("unexpected_iframe_src", _API["unexpected_iframe_src"].format(src=repr(src), online_id=repr(online_id)))
+    # the src is untrusted server data and may carry tokens, so it never reaches the message
+    if not _is_web_url(src):
+        raise no_stream("unexpected_iframe_src", _API["unexpected_iframe_src"].format(online_id=repr(online_id)))
 
     return EmbedURL(url=src, referer=f"{SHINDEN_BASE}/")

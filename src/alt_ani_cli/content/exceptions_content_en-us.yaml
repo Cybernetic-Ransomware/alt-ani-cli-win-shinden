@@ -9,7 +9,7 @@ api:
   retry_after_hint: "The server asks to wait {seconds} s."
   no_iframe: "player_show returned no iframe for online_id={online_id} ({length} characters). Try setting ALT_ANI_CLI_ANTIBOT_DELAY=7"
   iframe_no_src: "iframe has no src for online_id={online_id}"
-  unexpected_iframe_src: "Unexpected iframe src={src} for online_id={online_id}"
+  unexpected_iframe_src: "iframe src is not an http(s) URL for online_id={online_id}"
 
 series:
   parse_error: "Cannot extract series ID from URL: {url}"
