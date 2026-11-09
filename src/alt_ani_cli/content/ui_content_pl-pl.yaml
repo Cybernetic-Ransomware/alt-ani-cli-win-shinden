@@ -73,6 +73,8 @@ progress:
   spinner_api: "Czekam na API shinden ({label}) …"
   prefetch_sources: "Pobieram źródła playerów ({count}) …"
   prefetch_stopped: "Przerwano pobieranie źródeł playerów: {reason}"
+  xhr_fallback_api4: "Strona odcinka {number:g} nie ma poprawnego kontekstu nowego API playerów ({reason}) — ten odcinek używa zapasowego api4."
+  players_reload: "Wczytuję ponownie listę playerów odcinka {number:g} …"
   network_error: "Błąd sieci: {exc}"
   playing: "Odtwarzam w {kind}: {title}"
   playing_failed: "Player {kind} zakończył się kodem {rc}: {title}"

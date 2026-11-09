@@ -1,7 +1,9 @@
 cli:
   filter_no_match: "Żaden player nie pasuje do podanych filtrów ({filters}). Użyj --allow-fallback, aby skorzystać z pełnej listy playerów."
+  invalid_xhr_backend: "ALT_ANI_CLI_XHR_BACKEND musi mieć wartość 'new' albo 'api4', a ma {value}."
 
 api:
+  xhr_players_changed: "Lista playerów tego odcinka zmieniła się po odświeżeniu tokenu ({detail}). Automatyczne próby wstrzymane — wczytaj odcinek ponownie, aby zobaczyć aktualne playery."
   xhr_failed: "API playerów shinden: {stage} nie powiodło się dla online_id={online_id}: {detail}"
   xhr_access_blocked: "shinden zablokował dostęp do API playerów na etapie {stage} ({detail}). Automatyczne próby wstrzymane — możesz później ręcznie wybrać playera."
   xhr_unavailable: "API playerów shinden jest niedostępne na etapie {stage} ({detail}). Automatyczne próby wstrzymane — możesz później ręcznie wybrać playera."

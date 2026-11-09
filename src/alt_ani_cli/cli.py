@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
-from alt_ani_cli import __version__, diagnostics, download, extract, history
+from alt_ani_cli import __version__, config, diagnostics, download, extract, history
 from alt_ani_cli.config import FLARESOLVERR_URL, SHINDEN_BASE
 from alt_ani_cli.content import CONTENT, EXCEPTIONS
 from alt_ani_cli.diagnostics import _host_of_url
@@ -37,6 +37,8 @@ from alt_ani_cli.shinden import episode as shinden_episode
 from alt_ani_cli.shinden import http as shinden_http
 from alt_ani_cli.shinden import search as shinden_search
 from alt_ani_cli.shinden import series as shinden_series
+from alt_ani_cli.shinden import xhr as shinden_xhr
+from alt_ani_cli.shinden.xhr import EpisodeXhr
 from alt_ani_cli.ui import progress
 
 _C = CONTENT
@@ -194,9 +196,29 @@ def _warn_extract_fallback(event: str, host: str, exc_text: str) -> None:
     progress.warn(_PROG[event].format(host=host, exc=exc_text))
 
 
-def _resolve_embed_with_spinner(client, online_id: str) -> EmbedURL:
+def _resolve_embed_with_spinner(client, online_id: str, xhr: EpisodeXhr) -> EmbedURL:
     with progress.spinner(_PROG["spinner_api"].format(label=ANTIBOT_LABEL)):
-        return shinden_api.resolve_embed(client, online_id)
+        return shinden_api.resolve_embed(client, online_id, xhr=xhr)
+
+
+def _xhr_backend() -> str:
+    return shinden_xhr.parse_backend(config.XHR_BACKEND)
+
+
+def _load_episode(client, ep: EpisodeRow) -> tuple[list[PlayerEntry], EpisodeXhr]:
+    players, xhr = shinden_xhr.load_episode(client, ep.url, backend=_xhr_backend())
+    if xhr.forced:
+        diagnostics.shinden_xhr_context(action="forced", backend=xhr.backend, reason=None)
+    elif xhr.fallback_reason is not None and players:
+        diagnostics.shinden_xhr_context(action="fallback", backend=xhr.backend, reason=xhr.fallback_reason)
+        progress.warn(_PROG["xhr_fallback_api4"].format(number=ep.number, reason=xhr.fallback_reason))
+    return players, xhr
+
+
+def _xhr_diag(xhr: EpisodeXhr | None) -> dict:
+    if xhr is None:
+        return {}
+    return {"xhr_backend": xhr.backend, "token_refreshed": xhr.refresh_used, "xhr_fallback": xhr.fallback_reason}
 
 
 def _extract_stream(embed: EmbedURL, cookies_file: str | None, cookies_browser: str | None) -> Stream:
@@ -242,11 +264,13 @@ def _emit_health_transition(transition: HealthTransition | None, *, category: st
     )
 
 
-def _record_extraction_success(host: str | None, candidate: PlayerEntry, health: ResolverHealth | None, start: float) -> None:
+def _record_extraction_success(
+    host: str | None, candidate: PlayerEntry, health: ResolverHealth | None, start: float, xhr: EpisodeXhr | None = None
+) -> None:
     if health is not None and host is not None:
         transition = health.record(host, candidate.online_id, Signal.SUCCESS)
         _emit_health_transition(transition, category=None, http_status=None)
-    diagnostics.resolve_result(host, True, None, time.monotonic() - start)
+    diagnostics.resolve_result(host, True, None, time.monotonic() - start, **_xhr_diag(xhr))
 
 
 def _record_extraction_failure(
@@ -256,6 +280,7 @@ def _record_extraction_failure(
     health: ResolverHealth | None,
     start: float,
     ep_number: float,
+    xhr: EpisodeXhr | None = None,
 ) -> None:
     fields = {name: getattr(exc, name, None) for name in _RESOLVE_DIAG_FIELDS}
     if isinstance(exc, ShindenXhrError):
@@ -274,7 +299,7 @@ def _record_extraction_failure(
         )
         transition = health.record(host, candidate.online_id, signal)
         _emit_health_transition(transition, category=fields.get("category"), http_status=fields.get("http_status"))
-    diagnostics.resolve_result(host, False, type(exc).__name__, time.monotonic() - start, **fields)
+    diagnostics.resolve_result(host, False, type(exc).__name__, time.monotonic() - start, **fields, **_xhr_diag(xhr))
     # a shared-API stop is not this player's failure; the caller reports it via stop_message()
     if fields.get("xhr_outcome") in (None, shinden_api.XhrOutcome.NEXT_PLAYER):
         progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=redact_text(exc)))
@@ -301,6 +326,7 @@ def _resolve_with_fallback(
     auto: bool,
     ep_number: float,
     *,
+    xhr: EpisodeXhr,
     cookies_file: str | None = None,
     cookies_browser: str | None = None,
     embed_cache: dict[str, EmbedURL] | None = None,
@@ -318,7 +344,10 @@ def _resolve_with_fallback(
     gates *when* a candidate's extraction runs: a host already known UNAVAILABLE in this
     session is deferred to the end of the candidate list, then given at least one real
     attempt in a last-resort pass if nothing else worked. Player order itself never changes.
+
+    ``xhr`` is the current episode's XHR state; one call is one operation with one token-refresh budget.
     """
+    xhr.begin_operation()
     candidates = players if auto else [chosen]
     # Always start with the explicitly chosen player
     if auto and chosen in candidates:
@@ -337,7 +366,7 @@ def _resolve_with_fallback(
             if cached is not None:
                 embed = cached
             else:
-                embed = _resolve_embed_with_spinner(client, candidate.online_id)
+                embed = _resolve_embed_with_spinner(client, candidate.online_id, xhr)
                 cache[candidate.online_id] = embed
             host_hint = _host_of_url(embed.url)
             if health is not None:
@@ -362,16 +391,16 @@ def _resolve_with_fallback(
             except NoStreamError:
                 if cached is None:
                     raise
-                embed = _resolve_embed_with_spinner(client, candidate.online_id)
+                embed = _resolve_embed_with_spinner(client, candidate.online_id, xhr)
                 cache[candidate.online_id] = embed
                 host_hint = _host_of_url(embed.url)
                 if health is not None:
                     health.learn_label(candidate.player, host_hint)
                 stream = _extract_stream(embed, cookies_file, cookies_browser)
-            _record_extraction_success(host_hint, candidate, health, start)
+            _record_extraction_success(host_hint, candidate, health, start, xhr)
             return stream, embed
         except (NoStreamError, AntiBotError, ShindenXhrError) as exc:
-            _record_extraction_failure(host_hint, candidate, exc, health, start, ep_number)
+            _record_extraction_failure(host_hint, candidate, exc, health, start, ep_number, xhr)
             if isinstance(exc, ShindenXhrError) and shinden_api.xhr_outcome(exc) is not shinden_api.XhrOutcome.NEXT_PLAYER:
                 raise
 
@@ -408,9 +437,9 @@ def _resolve_with_fallback(
             try:
                 stream = _extract_stream(entry.embed, cookies_file, cookies_browser)
             except NoStreamError as exc:
-                _record_extraction_failure(entry.host, entry.candidate, exc, health, retry_start, ep_number)
+                _record_extraction_failure(entry.host, entry.candidate, exc, health, retry_start, ep_number, xhr)
                 continue
-            _record_extraction_success(entry.host, entry.candidate, health, retry_start)
+            _record_extraction_success(entry.host, entry.candidate, health, retry_start, xhr)
             return stream, entry.embed
 
     return None, None
@@ -581,14 +610,10 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
 
     for ep in targets:
         progress.info(_PROG["episode"].format(number=ep.number, title=ep.title))
-        diagnostics.episode_selected(ep.number, ep.title)
+        diagnostics.episode_selected(ep.number, ep.title, shinden_episode.episode_path(ep.url))
 
-        ep_resp = client.get(ep.url)
-        ep_resp.raise_for_status()
-        players = shinden_episode.sort_players(
-            shinden_episode.parse_players(ep_resp.text),
-            download=args.download,
-        )
+        raw_players, xhr = _load_episode(client, ep)
+        players = shinden_episode.sort_players(raw_players, download=args.download)
 
         if not players:
             progress.warn(_PROG["no_players"].format(number=ep.number))
@@ -625,6 +650,7 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
             chosen,
             auto=True,
             ep_number=ep.number,
+            xhr=xhr,
             cookies_file=args.cookies_file,
             cookies_browser=args.cookies_browser,
             health=health,
@@ -696,6 +722,12 @@ def main() -> None:  # noqa: C901
         history.clear()
         progress.success(_PROG["history_cleared"])
         sys.exit(0)
+
+    try:
+        _xhr_backend()
+    except ValueError as exc:
+        progress.error(str(exc))
+        sys.exit(1)
 
     client = shinden_http.make_client()
     interactive = sys.stdin.isatty() and not args.select_nth

@@ -1,11 +1,13 @@
 """Replay resolve_result failures recorded in a diagnostics session log against live hosts.
 
 Reads a ``CACHE_DIR/diagnostics/session_*.log`` file, rebuilds the (series, episode, player)
-context for every logged ``resolve_result ok=False``, and re-runs the same
+context for every logged ``resolve_result ok=False``, reopens the logged episode page and re-runs the same
 ``shinden_api.resolve_embed`` -> ``extract.resolve`` sequence the interactive UI would have run,
-without any UI, player launch, history update, or download. Never prints a full embed/stream
-URL, header, cookie, or token -- only hostnames (via ``diagnostics._host_of_url``) and exception
-class names, matching the redaction discipline already enforced by ``diagnostics.py``.
+without any UI, player launch, history update, or download. The XHR backend comes from
+``--xhr-backend``, else ``ALT_ANI_CLI_XHR_BACKEND``; each case gets its own episode page and token.
+Never prints a full embed/stream URL, header, cookie, or token -- only hostnames
+(via ``diagnostics._host_of_url``) and exception class names, matching the redaction discipline
+already enforced by ``diagnostics.py``.
 """
 
 from __future__ import annotations
@@ -19,11 +21,13 @@ from pathlib import Path
 
 from curl_cffi.requests import exceptions as cffi_exceptions
 
-from alt_ani_cli import extract
+from alt_ani_cli import config, extract
 from alt_ani_cli.diagnostics import _host_of_url
 from alt_ani_cli.errors import AntiBotError, NoStreamError, ShindenError, ShindenXhrError
 from alt_ani_cli.shinden import api as shinden_api
+from alt_ani_cli.shinden import episode as shinden_episode
 from alt_ani_cli.shinden import http as shinden_http
+from alt_ani_cli.shinden import xhr as shinden_xhr
 from alt_ani_cli.ui import progress
 
 _RESOLVE_DIAG_FIELDS = (
@@ -46,7 +50,7 @@ _UNKNOWN_BY_FIELD: dict[str, frozenset] = {
     "fallback_http_status": frozenset({None}),
 }
 
-_BOOL_FIELDS = frozenset({"ok", "used_fallback"})
+_BOOL_FIELDS = frozenset({"ok", "used_fallback", "token_refreshed"})
 _INT_FIELDS = frozenset({"http_status", "fallback_http_status"})
 _FLOAT_FIELDS = frozenset({"number"})
 
@@ -81,6 +85,8 @@ class ReplayCase:
     fallback_layer_before: str | None
     fallback_category_before: str | None
     fallback_http_status_before: int | None
+    # validated episode page path from episode_selected; None in logs written before it was recorded
+    episode_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +105,7 @@ class ReplayOutcome:
     now_fallback_http_status: int | None = None
     note: str | None = None
     xhr_stop: str | None = None
+    now_backend: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,7 +168,7 @@ def parse_diagnostics_log(path: Path) -> tuple[list[ReplayCase], int]:
     recognized = 0
 
     current_series: tuple[str | None, str | None] | None = None
-    current_episode: tuple[float | None, str | None] | None = None
+    current_episode: tuple[float | None, str | None, str | None] | None = None
     current_player: tuple[str | None, str | None] | None = None
 
     for raw_line in path.read_text(encoding="utf-8").splitlines():
@@ -183,13 +190,13 @@ def parse_diagnostics_log(path: Path) -> tuple[list[ReplayCase], int]:
             current_episode = None
             current_player = None
         elif event == "episode_selected":
-            current_episode = (fields.get("number"), fields.get("title"))
+            current_episode = (fields.get("number"), fields.get("title"), fields.get("path"))
             current_player = None
         elif event == "player_selected":
             current_player = (fields.get("online_id"), fields.get("player"))
         elif event == "resolve_result" and fields.get("ok") is False:
             series_id, series_title = current_series or (None, None)
-            ep_number, ep_title = current_episode or (None, None)
+            ep_number, ep_title, ep_path = current_episode or (None, None, None)
             online_id, player_name = current_player or (None, None)
             cases.append(
                 ReplayCase(
@@ -208,6 +215,7 @@ def parse_diagnostics_log(path: Path) -> tuple[list[ReplayCase], int]:
                     fallback_layer_before=fields.get("fallback_layer"),
                     fallback_category_before=fields.get("fallback_category"),
                     fallback_http_status_before=fields.get("fallback_http_status"),
+                    episode_path=ep_path,
                 )
             )
 
@@ -280,21 +288,46 @@ def _finalize(case: ReplayCase, now: _NowSnapshot, exc: Exception | None) -> Rep
     )
 
 
-def replay_case(client, case: ReplayCase) -> ReplayOutcome:
+def _harness_error(case: ReplayCase, note: str, exc: Exception | None = None) -> ReplayOutcome:
+    return ReplayOutcome(
+        case=case,
+        verdict=Verdict.REPLAY_ERROR,
+        now_ok=False,
+        now_exc=type(exc).__name__ if exc is not None else None,
+        now_host=None,
+        note=note,
+    )
+
+
+def replay_case(client, case: ReplayCase, *, backend: str = shinden_xhr.BACKEND_NEW) -> ReplayOutcome:
     """Re-run resolve_embed -> extract.resolve for one case. Never launches a player or touches history."""
     if case.online_id is None:
-        now = _NowSnapshot(ok=False, host=None, harness_error=True)
-        return ReplayOutcome(
-            case=case,
-            verdict=Verdict.REPLAY_ERROR,
-            now_ok=False,
-            now_exc=None,
-            now_host=None,
-            note="missing player context in log",
-        )
+        return _harness_error(case, "missing player context in log")
 
+    # logs written before episode_selected carried a path cannot be replayed without a fresh, validated page
+    episode_url = shinden_episode.episode_url_from_path(case.episode_path) if case.episode_path else None
+    if episode_url is None:
+        return _harness_error(case, "missing episode context in log")
     try:
-        embed = shinden_api.resolve_embed(client, case.online_id)
+        _players, xhr = shinden_xhr.load_episode(client, episode_url, backend=backend)
+    except (ShindenError, cffi_exceptions.RequestException) as exc:
+        return _harness_error(case, "episode page could not be loaded", exc)
+    if case.online_id == xhr.trap_id:
+        return _harness_error(case, "player id is now the episode's honeypot")
+    if case.online_id not in xhr.player_ids:
+        return _harness_error(case, "player no longer listed on the episode page")
+    xhr.begin_operation()
+
+    outcome = _replay_resolve(client, case, xhr)
+    fallback = f"api4 fallback: {xhr.fallback_reason}" if xhr.fallback_reason else None
+    note = "; ".join(n for n in (outcome.note, fallback) if n) or None
+    return replace(outcome, now_backend=xhr.backend, note=note)
+
+
+def _replay_resolve(client, case: ReplayCase, xhr: shinden_xhr.EpisodeXhr) -> ReplayOutcome:
+    online_id = case.online_id or ""
+    try:
+        embed = shinden_api.resolve_embed(client, online_id, xhr=xhr)
     except AntiBotError as exc:
         now = _NowSnapshot(ok=False, host=None, harness_error=False, layer="shinden_api", category="anti_bot")
         return _finalize(case, now, exc)
@@ -400,7 +433,7 @@ def render_case(outcome: ReplayOutcome) -> None:
     )
     progress.output(
         _fmt_signature(
-            "  NOW",
+            f"  NOW (backend={outcome.now_backend or '?'})",
             outcome.now_host,
             outcome.now_exc,
             outcome.now_layer,
@@ -435,7 +468,19 @@ def render_summary(outcomes: list[ReplayOutcome]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log_path", type=Path, help="Path to a diagnostics session_*.log file")
+    parser.add_argument(
+        "--xhr-backend",
+        choices=("new", "api4"),
+        default=None,
+        help="Player API backend; overrides ALT_ANI_CLI_XHR_BACKEND (default: new)",
+    )
     args = parser.parse_args(argv)
+
+    try:
+        backend = shinden_xhr.parse_backend(args.xhr_backend or config.XHR_BACKEND)
+    except ValueError as exc:
+        progress.error(str(exc))
+        return 1
 
     try:
         cases, skipped = parse_diagnostics_log(args.log_path)
@@ -462,7 +507,7 @@ def main(argv: list[str] | None = None) -> int:
     outcomes: list[ReplayOutcome] = []
     try:
         for case in cases:
-            outcome = replay_case(client, case)
+            outcome = replay_case(client, case, backend=backend)
             outcomes.append(outcome)
             render_case(outcome)
             if outcome.xhr_stop is not None:

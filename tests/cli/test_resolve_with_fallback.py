@@ -4,13 +4,20 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from alt_ani_cli.cli import _resolve_with_fallback
+from alt_ani_cli import cli
 from alt_ani_cli.errors import AntiBotError, NoStreamError, ShindenXhrError
 from alt_ani_cli.health import HostState, ResolverHealth, Signal
 from alt_ani_cli.models import EmbedURL, PlayerEntry
+from alt_ani_cli.shinden.xhr import BACKEND_API4, EpisodeXhr
 
 _PLAYER = PlayerEntry(online_id="123", player="Default", lang_audio="pl", lang_subs="pl")
 _EMBED = EmbedURL(url="https://vidawra.cc/e/abc123", referer="https://shinden.pl/")
+
+
+def _resolve_with_fallback(*args, **kwargs):
+    # resolve_embed is patched in these tests, so the episode XHR state only has to exist
+    kwargs.setdefault("xhr", EpisodeXhr("https://shinden.pl/episode/1-x/view/1", frozenset(), None, BACKEND_API4))
+    return cli._resolve_with_fallback(*args, **kwargs)
 
 
 def _tagged_no_stream_error(**fields) -> NoStreamError:
@@ -238,7 +245,7 @@ _EMBED_HOST_B = EmbedURL(url="https://hostb.example/e/b1", referer="https://shin
 
 
 def _resolve_embed_from(embeds: dict[str, EmbedURL], calls: list[str] | None = None):
-    def _side_effect(_client, online_id):
+    def _side_effect(_client, online_id, **_kwargs):
         if calls is not None:
             calls.append(online_id)
         return embeds[online_id]

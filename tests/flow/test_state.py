@@ -9,6 +9,7 @@ from alt_ani_cli.flow.handlers import handle_episode_dispatch, handle_resolve_st
 from alt_ani_cli.flow.state import FlowState
 from alt_ani_cli.health import HostState, ResolverHealth, Signal
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesRef
+from alt_ani_cli.shinden.xhr import BACKEND_API4, EpisodeXhr
 
 _SERIES_REF = SeriesRef(id="1", slug="fate", title="Fate", url="http://shinden.pl/series/1-fate")
 _EP1 = EpisodeRow(number=1.0, title="Ep 1", url="http://shinden.pl/ep/1")
@@ -82,6 +83,7 @@ class TestFlowStateHealth:
             ep_idx=0,
             players=[_PLAYER],
             chosen_player=_PLAYER,
+            episode_xhr=EpisodeXhr(_EP1.url, frozenset({_PLAYER.online_id}), None, BACKEND_API4),
         )
         with patch("alt_ani_cli.cli._resolve_with_fallback", return_value=(None, None)) as mock_fallback:
             handle_resolve_stream(state)
