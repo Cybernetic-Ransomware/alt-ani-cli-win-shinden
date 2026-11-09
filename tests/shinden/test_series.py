@@ -43,6 +43,12 @@ def _shifted(html: str, offset: int) -> str:
     return re.sub(r'ep-row__no">(\d+)<', lambda m: f'ep-row__no">{int(m.group(1)) + offset}<', html)
 
 
+def _truncated(html: str, keep: int) -> str:
+    """Keep only the first ``keep`` rows of the episode list; the related-titles section after it is untouched."""
+    rows = iter(range(series.EPISODES_PER_PAGE))
+    return re.sub(r'<li class="ep-row".*?</li>', lambda m: m.group(0) if next(rows, -1) < keep else "", html, flags=re.S)
+
+
 def _events(events, name):
     return [fields for event, fields in events if event == name]
 
@@ -255,6 +261,69 @@ class TestListEpisodes:
         p2 = _paged(_with_links(shinden_html("episodes_titles_p2.html")), total=200, last_page=2)
         p2 = p2.replace('view/1081"', 'view/1082"').replace('view/1080"', 'view/1083"')
         assert list_episodes(client_for({1: p1, 2: p2}), _ONE_PIECE).incomplete_reason == "repeated_page"
+
+    def test_empty_later_page_is_incomplete(self, shinden_html, client_for, diag_events):
+        p1 = _paged(_with_links(shinden_html("episodes_titles_p1.html")), total=200, last_page=2)
+        p2 = _truncated(_paged(shinden_html("episodes_titles_p2.html"), total=0, last_page=2), keep=0)
+        listing = list_episodes(client_for({1: p1, 2: p2}), _ONE_PIECE)
+        assert (listing.complete, listing.incomplete_reason) == (False, "empty_page")
+        assert len(listing.episodes) == 100
+        assert _events(diag_events, "shinden_episodes_incomplete") == [
+            {"id": "12", "fetched": 2, "total": 2, "reason": "empty_page"}
+        ]
+
+    def test_empty_page_stops_fetching(self, shinden_html, client_for):
+        p1 = _paged(_with_links(shinden_html("episodes_titles_p1.html")), total=300, last_page=3)
+        empty = _truncated(_paged(shinden_html("episodes_titles_p2.html"), total=0, last_page=3), keep=0)
+        client = client_for({1: p1}, default=empty)
+        assert list_episodes(client, _ONE_PIECE).incomplete_reason == "empty_page"
+        assert client.get.call_count == 2
+
+    def test_empty_last_page_after_one_removed_episode_is_tolerated(self, shinden_html, client_for, diag_events):
+        p1 = _paged(_with_links(shinden_html("episodes_titles_p1.html")), total=101, last_page=2)
+        p2 = _truncated(_paged(shinden_html("episodes_titles_p2.html"), total=0, last_page=2), keep=0)
+        listing = list_episodes(client_for({1: p1, 2: p2}), _ONE_PIECE)
+        assert listing.complete
+        assert len(listing.episodes) == 100
+        assert {"page": "episodes", "counter": "total", "expected": 101, "actual": 100} in _events(
+            diag_events, "shinden_count_mismatch"
+        )
+
+    def test_rows_short_of_counter_are_incomplete(self, shinden_html, client_for, diag_events):
+        p1 = _paged(_with_links(shinden_html("episodes_titles_p1.html")), total=200, last_page=2)
+        p2 = _truncated(_paged(_with_links(shinden_html("episodes_titles_p2.html")), total=200, last_page=2), keep=50)
+        listing = list_episodes(client_for({1: p1, 2: p2}), _ONE_PIECE)
+        assert (listing.complete, listing.incomplete_reason) == (False, "count_mismatch")
+        assert len(listing.episodes) == 150
+        assert {"page": "episodes", "counter": "total", "expected": 200, "actual": 150} in _events(
+            diag_events, "shinden_count_mismatch"
+        )
+        assert _events(diag_events, "shinden_episodes_incomplete") == [
+            {"id": "12", "fetched": 2, "total": 2, "reason": "count_mismatch"}
+        ]
+
+    def test_single_page_short_of_counter_is_incomplete(self, shinden_html, client_for):
+        html = shinden_html("episodes_frieren.html").replace('ep-list__count">28', 'ep-list__count">40')
+        assert list_episodes(client_for({1: html}), _FRIEREN).incomplete_reason == "count_mismatch"
+
+    def test_one_row_short_of_counter_is_tolerated(self, shinden_html, client_for):
+        html = shinden_html("episodes_frieren.html").replace('ep-list__count">28', 'ep-list__count">29')
+        assert list_episodes(client_for({1: html}), _FRIEREN).complete
+
+    def test_rows_above_counter_are_logged_not_incomplete(self, shinden_html, client_for, diag_events):
+        html = shinden_html("episodes_frieren.html").replace('ep-list__count">28', 'ep-list__count">20')
+        assert list_episodes(client_for({1: html}), _FRIEREN).complete
+        assert _events(diag_events, "shinden_count_mismatch") == [
+            {"page": "episodes", "counter": "total", "expected": 20, "actual": 28}
+        ]
+
+    def test_unavailable_rows_count_towards_counter(self, shinden_html, client_for):
+        p1 = _paged(shinden_html("episodes_titles_p1.html"), total=200, last_page=2)
+        p2 = _truncated(_paged(shinden_html("episodes_titles_p2.html"), total=200, last_page=2), keep=50)
+        assert list_episodes(client_for({1: p1, 2: p2}), _ONE_PIECE).incomplete_reason == "count_mismatch"
+
+    def test_total_shortfall_tolerance_is_one_row(self):
+        assert series.MAX_TOTAL_SHORTFALL == 1
 
     def test_overlap_tolerance_is_one_row(self):
         assert series.MAX_PAGE_OVERLAP == 1

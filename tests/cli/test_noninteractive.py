@@ -428,6 +428,21 @@ class TestNoninteractiveIncompleteEpisodeList:
         m.upsert.assert_not_called()
         m.record.assert_not_called()
 
+    @pytest.mark.parametrize("overrides", [{}, {"episode": "1"}, {"url": None, "resume": True}, {"download": True}], ids=str)
+    def test_counter_mismatch_aborts_before_play_download_and_history(self, overrides):
+        listing = EpisodeListing(_REF, _EPISODES, pages_fetched=2, pages_total=2, incomplete_reason="count_mismatch")
+        with (
+            _resume_env(watch=[(_REF, 2.0)]) as (client, m),
+            patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=listing),
+            pytest.raises(IncompleteEpisodeListError, match="count_mismatch"),
+        ):
+            _run_noninteractive(_make_args(**overrides), client)
+        client.get.assert_not_called()
+        m.play.assert_not_called()
+        m.download.assert_not_called()
+        m.upsert.assert_not_called()
+        m.record.assert_not_called()
+
     def test_complete_listing_still_plays(self):
         with _resume_env() as (client, m):
             _run_noninteractive(_make_args(), client)

@@ -31,6 +31,8 @@ EPISODES_PER_PAGE = 100
 MAX_EPISODE_PAGES = 30
 # One repeated row is a boundary shift (an episode published between requests); more means a repeated page.
 MAX_PAGE_OVERLAP = 1
+# Raw rows may fall short of the first page's counter by one episode removed between requests.
+MAX_TOTAL_SHORTFALL = 1
 _PAGE_DELAY_SEC = 0.5
 _PAGE = "episodes"
 
@@ -97,6 +99,10 @@ def list_episodes(client: cffi_requests.Session, ref: SeriesRef) -> EpisodeListi
         page = _parse_page(page_resp.text, tally)
         rows.extend(page.rows)
         pages_fetched += 1
+        if not page.row_keys:
+            if first.total is None or first.total - len(seen_keys) > MAX_TOTAL_SHORTFALL:
+                reason = "empty_page"
+            break
         repeated = sum(1 for key in page.row_keys if key in seen_keys)
         seen_keys.update(page.row_keys)
         if repeated > MAX_PAGE_OVERLAP:
@@ -107,10 +113,12 @@ def list_episodes(client: cffi_requests.Session, ref: SeriesRef) -> EpisodeListi
     if reason is None and pages_total > MAX_EPISODE_PAGES:
         reason = "page_limit"
 
+    if reason is None and first.total is not None and len(seen_keys) != first.total:
+        diagnostics.shinden_count_mismatch(_PAGE, "total", expected=first.total, actual=len(seen_keys))
+        if first.total - len(seen_keys) > MAX_TOTAL_SHORTFALL:
+            reason = "count_mismatch"
     if reason is not None:
         diagnostics.shinden_episodes_incomplete(ref.id, pages_fetched, pages_total, reason)
-    elif first.total is not None and len(seen_keys) != first.total:
-        diagnostics.shinden_count_mismatch(_PAGE, "total", expected=first.total, actual=len(seen_keys))
 
     episodes = _dedupe(rows, tally)
     tally.finish()

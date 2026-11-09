@@ -31,7 +31,7 @@ class EpisodeListing:
     episodes: list[EpisodeRow]
     pages_fetched: int = 1
     pages_total: int = 1
-    # "page_limit" or "http_error" when pagination stopped early; None for a complete listing
+    # page_limit, http_error, repeated_page, empty_page or count_mismatch; None for a complete listing
     incomplete_reason: str | None = None
 
     @property
