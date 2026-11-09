@@ -292,10 +292,12 @@ def handle_fetch_episodes(state: FlowState) -> ScreenResult:
     if state.ref is None:
         raise AssertionError
     progress.info(_PROG["fetching_episodes"].format(title=state.ref.title))
-    ref, episodes = shinden_series.list_episodes(state.client, state.ref)
+    listing = shinden_series.list_episodes(state.client, state.ref)
+    ref, episodes = listing.ref, listing.episodes
     state.ref = ref
     diagnostics.series_selected(ref.id, ref.title)
     state.episodes = episodes
+    state.episodes_complete = listing.complete
     state.completed_eps = set()
     state.targets = []
     state.ep_idx = 0
@@ -305,6 +307,8 @@ def handle_fetch_episodes(state: FlowState) -> ScreenResult:
     if not episodes:
         progress.error(_PROG["no_episodes"])
         return Screen.SERIES_PICK
+    if not listing.complete:
+        progress.warn(_PROG["episodes_incomplete"].format(fetched=listing.pages_fetched, total=listing.pages_total))
     return Screen.EPISODES_PICK
 
 
@@ -312,6 +316,11 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
     if state.ref is None:
         raise AssertionError
     args = state.args
+
+    # A partial list cannot resolve a range or a resume position; the user picks from what is visible.
+    if args.episode and not state.episode_arg_consumed and not state.episodes_complete:
+        progress.warn(_PROG["episodes_incomplete_range"].format(range=repr(args.episode)))
+        state.episode_arg_consumed = True
 
     # --episode picks the first batch of a series only; later returns here must show the picker
     if args.episode and not state.episode_arg_consumed:
@@ -331,7 +340,9 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
     default_index = None
     watched = set(state.completed_eps)
     downloaded = set(state.downloaded_eps)
-    if state.resume_mode == "download":
+    if not state.episodes_complete:
+        watched |= {ep.number for ep in state.episodes if ep.number <= state.last_ep}
+    elif state.resume_mode == "download":
         default_index = _first_missing_index(state.episodes, downloaded)
     elif state.last_ep > 0:
         watched |= {ep.number for ep in state.episodes if ep.number <= state.last_ep}

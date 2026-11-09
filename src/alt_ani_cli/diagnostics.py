@@ -93,6 +93,28 @@ def episode_selected(number: float, title: str) -> None:
     _emit("episode_selected", number=number, title=title)
 
 
+def shinden_parse_partial(page: str, found: int, valid: int, invalid: str, excluded: str) -> None:
+    _emit("shinden_parse_partial", page=page, found=found, valid=valid, invalid=invalid, excluded=excluded or None)
+
+
+def shinden_count_mismatch(page: str, counter: str, expected: int, actual: int) -> None:
+    _emit("shinden_count_mismatch", page=page, counter=counter, expected=expected, actual=actual)
+
+
+def shinden_players_mismatch(dom_only: int, json_only: int, trap_visible: bool, dom_duplicates: int) -> None:
+    _emit(
+        "shinden_players_mismatch",
+        dom_only=dom_only,
+        json_only=json_only,
+        trap_visible=trap_visible,
+        dom_duplicates=dom_duplicates,
+    )
+
+
+def shinden_episodes_incomplete(series_id: str, pages_fetched: int, pages_total: int, reason: str) -> None:
+    _emit("shinden_episodes_incomplete", id=series_id, fetched=pages_fetched, total=pages_total, reason=reason)
+
+
 def player_selected(online_id: str, player: str, host: str | None) -> None:
     _emit("player_selected", online_id=online_id, player=player, host=host)
 

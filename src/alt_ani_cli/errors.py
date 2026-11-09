@@ -26,6 +26,10 @@ class ParseError(ShindenError):
     """HTML parsing produced unexpected structure."""
 
 
+class IncompleteEpisodeListError(ShindenError):
+    """Episode list pagination stopped early, so episode selection cannot trust it as the full catalogue."""
+
+
 class FilterMismatchError(ShindenError):
     """--lang/--subs/--player-name matched no players and --allow-fallback was not set."""
 

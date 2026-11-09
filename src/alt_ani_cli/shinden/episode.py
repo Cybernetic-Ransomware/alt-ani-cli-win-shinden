@@ -1,81 +1,116 @@
-import html as _html
 import json
 import re
 
-from selectolax.parser import HTMLParser, Node
+from selectolax.parser import HTMLParser
 
+from alt_ani_cli import diagnostics
 from alt_ani_cli.models import PlayerEntry
+from alt_ani_cli.shinden.utils import ParseTally, _check_challenge, drift
 
 _RES_RE = re.compile(r"(\d+)")
+_PAGE = "players"
 
 
 def parse_players(html: str) -> list[PlayerEntry]:
-    """Extract player list from an episode page.
-
-    Each <a data-episode="..."> button carries a JSON payload with the
-    shinden online_id needed to call the API, plus metadata like player
-    name, audio language, subtitle language, and max resolution.
-    The date_added field is parsed from the .ep-online-added column of the
-    containing table row (None when that column is absent).
-    """
+    """Parse the player JSON island; the ``pulapka`` honeypot id is excluded because loading it flags the client."""
     tree = HTMLParser(html)
+    _check_challenge(tree, _PAGE)
+    script = tree.css_first("script#episode-players-data")
+    if script is None:
+        raise drift(_PAGE, "player data script#episode-players-data not found")
+    try:
+        data = json.loads(script.text())
+    except json.JSONDecodeError as exc:
+        raise drift(_PAGE, "player data is not valid JSON") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("players"), list):
+        raise drift(_PAGE, "player data has no players list")
+    trap_raw = data.get("pulapka")
+    if trap_raw is not None and _online_id(trap_raw) is None:
+        raise drift(_PAGE, "honeypot id has an unexpected type")
+    trap = _online_id(trap_raw) if trap_raw is not None else None
+
+    tally = ParseTally(_PAGE)
     players: list[PlayerEntry] = []
-
-    for node in tree.css("a[data-episode]"):
-        raw = node.attributes.get("data-episode", "")
-        if not raw:
+    json_ids: set[str] = set()
+    for raw in data["players"]:
+        online_id = _online_id(raw.get("online_id")) if isinstance(raw, dict) else None
+        if online_id is None:
+            tally.reject("bad_online_id")
             continue
-        try:
-            data = json.loads(_html.unescape(raw))
-        except json.JSONDecodeError, ValueError:
+        first_seen = online_id not in json_ids
+        json_ids.add(online_id)
+        if online_id == trap:
+            tally.exclude("honeypot")
             continue
-
-        online_id = str(data.get("online_id", "")).strip()
-        player_name = str(data.get("player", "")).strip()
-        if not online_id or not player_name:
+        if not first_seen:
+            tally.exclude("duplicate")
             continue
+        entry = _to_entry(online_id, raw)
+        if isinstance(entry, str):
+            tally.reject(entry)
+            continue
+        tally.accept()
+        players.append(entry)
 
-        max_res_raw = str(data.get("max_res", "")).strip()
-
-        date_added = _row_date(node)
-
-        players.append(
-            PlayerEntry(
-                online_id=online_id,
-                player=player_name,
-                lang_audio=str(data.get("lang_audio", "")).strip(),
-                lang_subs=str(data.get("lang_subs", "")).strip(),
-                max_res=max_res_raw or None,
-                date_added=date_added,
-                subs_author=_opt_str(data, "subs_author"),
-                source=_opt_str(data, "source"),
-            )
-        )
-
+    _report_dom_mismatch(tree, json_ids, {p.online_id for p in players}, trap)
+    tally.finish()
     return players
 
 
-def _opt_str(data: dict, key: str) -> str | None:
-    """Read an optional string field; JSON null, missing key and empty string all map to None."""
-    val = data.get(key)
-    if val is None:
+def _online_id(value: object) -> str | None:
+    if isinstance(value, bool):
         return None
-    s = str(val).strip()
-    return s or None
+    if isinstance(value, int) and value > 0:
+        return str(value)
+    if isinstance(value, str) and value.strip().isdigit() and int(value) > 0:
+        return str(int(value))
+    return None
 
 
-def _row_date(node: Node) -> str | None:
-    """Walk up the DOM to the enclosing <tr> and extract the .ep-online-added cell text."""
-    current = node.parent
-    while current is not None and current.tag != "tr":
-        current = current.parent
-    if current is None:
+def _opt_text(value: object) -> str | None:
+    if not isinstance(value, str):
         return None
-    date_cell = current.css_first(".ep-online-added")
-    if date_cell is None:
-        return None
-    text = date_cell.text(strip=True)
-    return text or None
+    return value.strip() or None
+
+
+def _to_entry(online_id: str, raw: dict) -> PlayerEntry | str:
+    """Build a PlayerEntry, or return the rejection reason."""
+    player = raw.get("player")
+    if not isinstance(player, str) or not player.strip():
+        return "bad_player"
+    audio, subs = raw.get("audio"), raw.get("sub")
+    if not isinstance(audio, str | None) or not isinstance(subs, str | None):
+        return "bad_lang"
+    res = raw.get("res")
+    max_res = f"{res}p" if isinstance(res, int) and not isinstance(res, bool) and res > 0 else None
+    raw_group = raw.get("group")
+    group: dict = raw_group if isinstance(raw_group, dict) else {}
+    return PlayerEntry(
+        online_id=online_id,
+        player=player.strip(),
+        lang_audio=(audio or "").strip(),
+        lang_subs=(subs or "").strip(),
+        max_res=max_res,
+        # Same meaning as the pre-2.5 payload: subtitle group name and the group's own website.
+        subs_author=_opt_text(group.get("name")),
+        source=_opt_text(group.get("url")),
+    )
+
+
+def _report_dom_mismatch(tree: HTMLParser, json_ids: set[str], valid_ids: set[str], trap: str | None) -> None:
+    """Compare the visible player rows with the JSON ids; disagreement means one of the two sources drifted."""
+    dom_ids = [
+        node.attributes.get("data-online-id") or ""
+        for node in tree.css("li.ep-pl-row[data-online-id]")
+        if "hidden" not in node.attributes
+    ]
+    visible = set(dom_ids)
+    dom_only = len(visible - json_ids)
+    json_only = len(valid_ids - visible)
+    trap_visible = trap is not None and trap in visible
+    dom_duplicates = len(dom_ids) - len(visible)
+    if dom_only or json_only or trap_visible or dom_duplicates:
+        diagnostics.shinden_players_mismatch(dom_only, json_only, trap_visible, dom_duplicates)
 
 
 _AUDIO_RANK_WATCH = {"pl": 3, "jp": 2, "en": 1}  # PL dub first for interactive
