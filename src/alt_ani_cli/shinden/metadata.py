@@ -78,10 +78,10 @@ def _info_value(info: Node, label: str) -> Node | None:
     for dt in info.css("dt"):
         if dt.text(strip=True).rstrip(":") != label:
             continue
-        dd = dt.next
-        while dd is not None and dd.tag != "dd":
-            dd = dd.next
-        return dd
+        node = dt.next
+        while node is not None and node.tag not in ("dd", "dt"):
+            node = node.next
+        return node if node is not None and node.tag == "dd" else None
     return None
 
 
@@ -146,6 +146,8 @@ def _parse_tags(tree: HTMLParser) -> tuple[str, ...]:
         if not names:
             tally.reject("no_tags")
             continue
+        for _ in range(len(anchors) - len(names)):
+            tally.reject("empty_tag_name")
         tally.accept()
         groups.setdefault(label, []).extend(names)
     if not tally.found and tree.css_first("ul.sh-tp-tags a") is not None:

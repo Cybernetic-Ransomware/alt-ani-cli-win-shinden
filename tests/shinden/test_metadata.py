@@ -109,6 +109,11 @@ class TestParseAirDate:
         info = HTMLParser('<dl class="sh-tp-info"><dt>Emisja</dt>\n  <dd>20.10.1999</dd></dl>').css_first("dl")
         assert _parse_air_date(info) == ("20.10.1999", (1999, 10, 20))
 
+    def test_label_without_dd_does_not_take_next_label_value(self, diag_events):
+        info = HTMLParser('<dl class="sh-tp-info"><dt>Emisja</dt><dt>Premiera</dt><dd>2027</dd></dl>').css_first("dl")
+        assert _parse_air_date(info) == (None, None)
+        assert diag_events == []
+
     def test_legacy_label_is_not_matched(self):
         info = HTMLParser('<dl class="sh-tp-info"><dt>Data emisji:</dt><dd>30.07.2003</dd></dl>').css_first("dl")
         assert _parse_air_date(info) == (None, None)
@@ -348,6 +353,20 @@ class TestSectionDrift:
         assert "Manga" not in fetch(html).tags
         [event] = _events(diag_events, "shinden_parse_partial")
         assert event["invalid"] == "no_tags:1"
+
+    def test_empty_tag_name_keeps_rest_of_group(self, fetch, shinden_html, diag_events):
+        html = shinden_html("series_frieren.html").replace(">Dramat</a>", "></a>")
+        tags = fetch(html).tags
+        assert len(tags) == 14 and "Przygodowe" in tags and "Magia" in tags
+        [event] = _events(diag_events, "shinden_parse_partial")
+        assert (event["page"], event["valid"], event["invalid"]) == ("metadata:tags", 5, "empty_tag_name:1")
+
+    def test_group_with_only_empty_names_is_partial(self, fetch, shinden_html, diag_events):
+        html = re.sub(r"(<h3>Pierwowzór</h3>\s*<ul>.*?)>Manga</a>", r"\1></a>", shinden_html("series_frieren.html"), flags=re.S)
+        tags = fetch(html).tags
+        assert "Manga" not in tags and len(tags) == 14
+        [event] = _events(diag_events, "shinden_parse_partial")
+        assert (event["page"], event["valid"], event["invalid"]) == ("metadata:tags", 4, "no_tags:1")
 
     def test_unknown_group_is_appended_not_dropped(self, fetch, shinden_html, diag_events):
         html = shinden_html("series_frieren.html").replace("<h3>Gatunki</h3>", "<h3>Nowa grupa</h3>")
