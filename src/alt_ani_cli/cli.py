@@ -19,6 +19,7 @@ from alt_ani_cli.errors import (
     DownloadFailedError,
     DownloadTargetError,
     FilterMismatchError,
+    IncompleteEpisodeListError,
     NoStreamError,
     ParseError,
     PlayerNotFoundError,
@@ -522,8 +523,20 @@ def _run_noninteractive(args, client) -> None:  # noqa: C901
         last_ep = 0.0
 
     progress.info(_PROG["fetching_episodes"].format(title=ref.title))
-    ref, episodes = shinden_series.list_episodes(client, ref)
+    listing = shinden_series.list_episodes(client, ref)
+    ref, episodes = listing.ref, listing.episodes
     diagnostics.series_selected(ref.id, ref.title)
+
+    # -e, -c, download resume and the default first episode all treat the list as the full catalogue.
+    if not listing.complete:
+        raise IncompleteEpisodeListError(
+            EXCEPTIONS["shinden"]["episodes_incomplete"].format(
+                title=ref.title,
+                fetched=listing.pages_fetched,
+                total=listing.pages_total,
+                reason=listing.incomplete_reason,
+            )
+        )
 
     if not episodes:
         progress.error(_PROG["no_episodes"])
@@ -702,7 +715,15 @@ def main() -> None:  # noqa: C901
         else:
             progress.error(redact_text(exc))
         sys.exit(1)
-    except (AntiBotError, NoStreamError, ParseError, FilterMismatchError, DownloadFailedError, DownloadTargetError) as exc:
+    except (
+        AntiBotError,
+        NoStreamError,
+        ParseError,
+        IncompleteEpisodeListError,
+        FilterMismatchError,
+        DownloadFailedError,
+        DownloadTargetError,
+    ) as exc:
         diagnostics.session_end("error", type(exc).__name__)
         progress.error(redact_text(exc))
         sys.exit(1)

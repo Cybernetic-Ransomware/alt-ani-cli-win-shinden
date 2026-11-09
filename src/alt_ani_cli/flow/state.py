@@ -66,6 +66,8 @@ class FlowState:
 
     # episodes
     episodes: list = field(default_factory=list)
+    # False when pagination stopped early — the oldest episodes are missing, so nothing may be auto-selected
+    episodes_complete: bool = True
     targets: list = field(default_factory=list)
     ep_idx: int = 0
     completed_eps: set[float] = field(default_factory=set)

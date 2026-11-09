@@ -26,6 +26,20 @@ class EpisodeRow:
 
 
 @dataclass(frozen=True)
+class EpisodeListing:
+    ref: SeriesRef
+    episodes: list[EpisodeRow]
+    pages_fetched: int = 1
+    pages_total: int = 1
+    # "page_limit" or "http_error" when pagination stopped early; None for a complete listing
+    incomplete_reason: str | None = None
+
+    @property
+    def complete(self) -> bool:
+        return self.incomplete_reason is None
+
+
+@dataclass(frozen=True)
 class PlayerEntry:
     online_id: str
     player: str

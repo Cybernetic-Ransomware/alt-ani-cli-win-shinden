@@ -9,8 +9,8 @@ import pytest
 
 from alt_ani_cli import diagnostics
 from alt_ani_cli.cli import _run_noninteractive, main
-from alt_ani_cli.errors import AntiBotError, DownloadFailedError, NoStreamError
-from alt_ani_cli.models import EmbedURL, EpisodeRow, PlayerEntry, SeriesRef
+from alt_ani_cli.errors import AntiBotError, DownloadFailedError, IncompleteEpisodeListError, NoStreamError
+from alt_ani_cli.models import EmbedURL, EpisodeListing, EpisodeRow, PlayerEntry, SeriesRef
 
 _REF = SeriesRef(id="1", slug="fate", title="Fate", url="http://shinden.pl/series/1-fate")
 _EP1 = EpisodeRow(number=1.0, title="Ep 1", url="http://shinden.pl/ep/1")
@@ -59,7 +59,7 @@ class TestNoninteractiveDiagnosticsContext:
 
         with (
             patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
-            patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=(_REF, [_EP1])),
+            patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=EpisodeListing(_REF, [_EP1])),
             patch("alt_ani_cli.cli.shinden_episode.parse_players", return_value=[_PLAYER_A, _PLAYER_B]),
             patch("alt_ani_cli.cli.shinden_episode.sort_players", return_value=[_PLAYER_A, _PLAYER_B]),
             patch("alt_ani_cli.cli.shinden_api.resolve_embed", side_effect=AntiBotError("blocked")),
@@ -88,7 +88,7 @@ class TestNoninteractiveDiagnosticsContext:
 
         with (
             patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
-            patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=(_REF, [_EP1])),
+            patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=EpisodeListing(_REF, [_EP1])),
             patch("alt_ani_cli.cli.shinden_episode.parse_players", return_value=[]),
         ):
             _run_noninteractive(args, client)
@@ -165,7 +165,7 @@ class TestNoninteractiveHealthDeferAcrossEpisodes:
 
         with (
             patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
-            patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=(_REF, [_EP1, ep2])),
+            patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=EpisodeListing(_REF, [_EP1, ep2])),
             patch("alt_ani_cli.cli.shinden_episode.parse_players", side_effect=[players_ep1, players_ep2]),
             patch("alt_ani_cli.cli.shinden_episode.sort_players", side_effect=lambda players, download: players),
             patch("alt_ani_cli.cli.shinden_api.resolve_embed", side_effect=_resolve_embed_side_effect),
@@ -206,7 +206,7 @@ class TestNoninteractiveReorder:
 
         with (
             patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
-            patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=(_REF, [_EP1])),
+            patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=EpisodeListing(_REF, [_EP1])),
             patch("alt_ani_cli.cli.shinden_episode.parse_players", return_value=[_PLAYER_A, _PLAYER_B]),
             patch("alt_ani_cli.cli.shinden_episode.sort_players", return_value=[_PLAYER_A, _PLAYER_B]),
             patch("alt_ani_cli.cli.shinden_api.resolve_embed", side_effect=AntiBotError("blocked")),
@@ -261,7 +261,7 @@ class TestNoninteractiveReorder:
 
         with (
             patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
-            patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=(_REF, [_EP1, ep2])),
+            patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=EpisodeListing(_REF, [_EP1, ep2])),
             patch("alt_ani_cli.cli.shinden_episode.parse_players", side_effect=[players_ep1, players_ep2]),
             patch("alt_ani_cli.cli.shinden_episode.sort_players", side_effect=lambda players, download: players),
             patch("alt_ani_cli.cli.shinden_api.resolve_embed", side_effect=_resolve_embed_side_effect),
@@ -313,7 +313,7 @@ def _resume_env(watch=(), downloads=(), download_side_effect=None):
         patch("alt_ani_cli.cli.history.list_all", return_value=list(watch)),
         patch("alt_ani_cli.cli.history.list_downloads", return_value=list(downloads)),
         patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
-        patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=(_REF, _EPISODES)),
+        patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=EpisodeListing(_REF, _EPISODES)),
         patch("alt_ani_cli.cli.shinden_episode.parse_players", return_value=[_PLAYER_A]),
         patch("alt_ani_cli.cli.shinden_episode.sort_players", return_value=[_PLAYER_A]),
         patch("alt_ani_cli.cli._resolve_with_fallback", return_value=(_STREAM, None)),
@@ -392,3 +392,55 @@ class TestNoninteractiveDownloadHistory:
         assert m.download.call_args.kwargs == {}
         mock_prompt.assert_not_called()
         m.record.assert_called_once_with(_REF, 2.0)
+
+
+_PARTIAL = EpisodeListing(_REF, _EPISODES, pages_fetched=30, pages_total=40, incomplete_reason="page_limit")
+
+
+@pytest.mark.unit
+class TestNoninteractiveIncompleteEpisodeList:
+    """Every non-interactive selection treats the list as the full catalogue, so a partial one must abort."""
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {},
+            {"episode": "1-5"},
+            {"episode": "3"},
+            {"episode": "1 2"},
+            {"episode": "-1"},
+            {"url": None, "resume": True},
+            {"url": None, "resume": True, "download": True},
+            {"download": True},
+        ],
+        ids=["default", "range", "single", "multi", "last", "continue", "continue-download", "download"],
+    )
+    def test_partial_listing_aborts_before_any_selection(self, overrides):
+        with (
+            _resume_env(watch=[(_REF, 2.0)], downloads=[(_REF, frozenset({1.0}))]) as (client, m),
+            patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=_PARTIAL),
+            pytest.raises(IncompleteEpisodeListError, match="30/40"),
+        ):
+            _run_noninteractive(_make_args(**overrides), client)
+        client.get.assert_not_called()
+        m.play.assert_not_called()
+        m.download.assert_not_called()
+        m.upsert.assert_not_called()
+        m.record.assert_not_called()
+
+    def test_complete_listing_still_plays(self):
+        with _resume_env() as (client, m):
+            _run_noninteractive(_make_args(), client)
+        m.play.assert_called_once()
+
+    def test_main_reports_error_and_exits_1(self):
+        with (
+            patch("sys.argv", ["alt-ani-cli", "--url", "http://shinden.pl/series/1-fate"]),
+            patch("alt_ani_cli.cli.shinden_http.make_client"),
+            patch("alt_ani_cli.cli._run_noninteractive", side_effect=IncompleteEpisodeListError("list is incomplete")),
+            patch("alt_ani_cli.cli.progress.error") as mock_error,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+        assert "list is incomplete" in mock_error.call_args.args[0]

@@ -32,6 +32,10 @@ test:
 test-cov:
     uv run pytest --tb=short -q
 
+# Opt-in checks against live shinden.pl (needs ALT_ANI_CLI_FLARESOLVERR_URL; not part of CI)
+test-live:
+    uv run pytest -m integration tests/live -v --no-cov
+
 # Replay resolve_result failures from a diagnostics session log against live hosts
 replay-failures LOG:
     uv run python tools/replay_failed_resolvers.py "{{LOG}}"

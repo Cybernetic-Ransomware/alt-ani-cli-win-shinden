@@ -14,6 +14,11 @@ series:
     Shinden requires age verification (18+) for this series.
     Log in to shinden.pl in your browser and confirm age, then copy the session cookies to a cookies file or use --url with a logged-in session.
 
+shinden:
+  parser_drift: "shinden page structure changed ({page}): {detail}. The parser needs an update."
+  challenge: "shinden returned a Cloudflare challenge page instead of content ({page}) — the cf_clearance cookie is probably no longer accepted."
+  episodes_incomplete: "Episode list for {title} is incomplete ({fetched}/{total} pages, {reason}). Automatic episode selection needs the full list — retry later or pick episodes interactively."
+
 extract:
   js_only_host: "{host} requires JavaScript execution (pure SPA — no static video URL)"
   unsupported_host: "{host} is not supported — pick another player"

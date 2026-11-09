@@ -41,6 +41,8 @@ progress:
   select_nth_invalid: "--select-nth {n}: jest tylko {count} wyników."
   fetching_episodes: "Pobieram listę odcinków: {title}"
   no_episodes: "Brak dostępnych odcinków."
+  episodes_incomplete: "Lista odcinków jest niepełna (pobrano {fetched}/{total} stron) — brakuje najstarszych odcinków; wznawianie nie wskaże pozycji automatycznie."
+  episodes_incomplete_range: "Lista odcinków jest niepełna — pomijam --episode {range}, wybierz odcinki ręcznie."
   episode: "Odcinek {number:g}: {title}"
   no_players: "Brak playerów dla odcinka {number:g} — pomijam."
   filter_fallback: "Filtry ({filters}) nie pasują do żadnego playera — używam pełnej listy."

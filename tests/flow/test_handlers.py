@@ -25,7 +25,7 @@ from alt_ani_cli.flow.handlers import (
 )
 from alt_ani_cli.flow.pin import player_fingerprint
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, _BackSentinel
-from alt_ani_cli.models import EmbedURL, PlayerSource, RelatedSeries, SeriesMetadata
+from alt_ani_cli.models import EmbedURL, EpisodeListing, PlayerSource, RelatedSeries, SeriesMetadata
 from alt_ani_cli.player.runner import PlayResult
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesRef
 
@@ -269,7 +269,7 @@ class TestHandleFetchEpisodes:
     def test_logs_series_selected_with_finalized_ref(self):
         state = _make_state(ref=_SERIES_REF, last_ep=0.0)
         with (
-            patch("alt_ani_cli.shinden.series.list_episodes", return_value=(_SERIES_REF, [_EP1])),
+            patch("alt_ani_cli.shinden.series.list_episodes", return_value=EpisodeListing(_SERIES_REF, [_EP1])),
             patch("alt_ani_cli.diagnostics.series_selected") as mock_diag,
         ):
             result = HANDLERS[Screen.FETCH_EPISODES](state)
@@ -1574,7 +1574,7 @@ class TestDownloadResumeBackToSearchRegression:
             patch("alt_ani_cli.history.list_downloads", return_value=[(_SERIES_REF, frozenset({1.0}))]),
             patch("alt_ani_cli.ui.menus.select_start_mode", side_effect=lambda **kw: next(starts)),
             patch("alt_ani_cli.ui.menus.select_series_from_download_history", side_effect=lambda e: next(download_picks)),
-            patch("alt_ani_cli.shinden.series.list_episodes", return_value=(_SERIES_REF, [_EP1, _EP2])),
+            patch("alt_ani_cli.shinden.series.list_episodes", return_value=EpisodeListing(_SERIES_REF, [_EP1, _EP2])),
             patch("alt_ani_cli.ui.menus.select_episodes", return_value=None),
             patch("alt_ani_cli.ui.menus.prompt_search_query", side_effect=_fake_search_query),
         ):
@@ -1805,7 +1805,7 @@ class TestOverwriteBatchPolicyReset:
 
     def test_new_series_resets_policy(self):
         state = _make_state(ref=_SERIES_REF, overwrite_existing_batch=True)
-        with patch("alt_ani_cli.shinden.series.list_episodes", return_value=(_SERIES_REF, [_EP1])):
+        with patch("alt_ani_cli.shinden.series.list_episodes", return_value=EpisodeListing(_SERIES_REF, [_EP1])):
             HANDLERS[Screen.FETCH_EPISODES](state)
         assert state.overwrite_existing_batch is False
 
@@ -1906,7 +1906,7 @@ class TestEpisodeArgConsumedOnce:
 
     def test_new_series_reapplies_episode_arg(self):
         state = self._state(episode_arg_consumed=True)
-        with patch("alt_ani_cli.shinden.series.list_episodes", return_value=(_SERIES_REF, [_EP4, _EP5, _EP6, _EP7])):
+        with patch("alt_ani_cli.shinden.series.list_episodes", return_value=EpisodeListing(_SERIES_REF, [_EP4, _EP5, _EP6, _EP7])):
             HANDLERS[Screen.FETCH_EPISODES](state)
         assert state.episode_arg_consumed is False
         with patch("alt_ani_cli.ui.menus.select_episodes") as mock_sel:
@@ -2282,7 +2282,7 @@ class TestPinReset:
 
     def test_new_series_clears_pin(self):
         state = _make_state(ref=_SERIES_REF, pinned_player=_PIN_FP)
-        with patch("alt_ani_cli.shinden.series.list_episodes", return_value=(_SERIES_REF, [_EP1])):
+        with patch("alt_ani_cli.shinden.series.list_episodes", return_value=EpisodeListing(_SERIES_REF, [_EP1])):
             HANDLERS[Screen.FETCH_EPISODES](state)
         assert state.pinned_player is None
 
@@ -2340,3 +2340,57 @@ class TestPinNotPersisted:
         text = history.HISTORY_FILE.read_text(encoding="utf-8")
         assert "miorosubs" not in text
         assert "pinned" not in text.casefold()
+
+
+_PARTIAL_LISTING = EpisodeListing(_SERIES_REF, [_EP2, _EP3], pages_fetched=30, pages_total=40, incomplete_reason="page_limit")
+
+
+@pytest.mark.unit
+class TestIncompleteEpisodeList:
+    """A partial list may be browsed manually, but nothing may be picked from it automatically."""
+
+    def test_fetch_marks_state_and_warns(self):
+        state = _make_state(ref=_SERIES_REF)
+        with (
+            patch("alt_ani_cli.shinden.series.list_episodes", return_value=_PARTIAL_LISTING),
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            assert HANDLERS[Screen.FETCH_EPISODES](state) is Screen.EPISODES_PICK
+        assert state.episodes_complete is False
+        assert "30/40" in mock_warn.call_args.args[0]
+
+    def test_complete_fetch_resets_flag(self):
+        state = _make_state(ref=_SERIES_REF, episodes_complete=False)
+        with patch("alt_ani_cli.shinden.series.list_episodes", return_value=EpisodeListing(_SERIES_REF, [_EP1])):
+            HANDLERS[Screen.FETCH_EPISODES](state)
+        assert state.episodes_complete is True
+
+    def test_episode_arg_falls_back_to_manual_picker(self):
+        state = _make_state(ref=_SERIES_REF, episodes=[_EP2, _EP3], episodes_complete=False)
+        state.args.episode = "1-3"
+        with (
+            patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP3]) as mock_sel,
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            assert HANDLERS[Screen.EPISODES_PICK](state) is Screen.EPISODE_DISPATCH
+        mock_sel.assert_called_once()
+        assert state.targets == [_EP3]
+        assert state.episode_arg_consumed is True
+        assert "'1-3'" in mock_warn.call_args.args[0]
+
+    def test_watch_resume_has_no_auto_anchor(self):
+        state = _make_state(ref=_SERIES_REF, episodes=[_EP2, _EP3], episodes_complete=False, last_ep=2.0)
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP3]) as mock_sel:
+            HANDLERS[Screen.EPISODES_PICK](state)
+        kwargs = mock_sel.call_args.kwargs
+        assert kwargs["default_index"] is None
+        assert kwargs["watched_numbers"] == {2.0}
+
+    def test_download_resume_has_no_auto_anchor(self):
+        state = _make_state(
+            ref=_SERIES_REF, episodes=[_EP2, _EP3], episodes_complete=False, resume_mode="download", downloaded_eps={2.0}
+        )
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP3]) as mock_sel:
+            HANDLERS[Screen.EPISODES_PICK](state)
+        assert mock_sel.call_args.kwargs["default_index"] is None
+        assert mock_sel.call_args.kwargs["downloaded_numbers"] == {2.0}
