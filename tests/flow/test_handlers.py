@@ -1119,6 +1119,17 @@ class TestPrefetchSeriesMetadata:
         assert result[_SERIES_HIT.id].air_date is None
         mock_warn.assert_called_once()
 
+    def test_series_page_drift_falls_back_and_warns(self):
+        client = MagicMock()
+        client.get.return_value = MagicMock(status_code=200, text="<html><body><div class='sh-tp'></div></body></html>")
+        with (
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            result = _prefetch_series_metadata(client, [_SERIES_HIT])
+        assert result[_SERIES_HIT.id] == _EMPTY_META
+        mock_warn.assert_called_once()
+
     def test_unexpected_error_propagates(self):
         client = MagicMock()
         with (
