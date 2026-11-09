@@ -1,4 +1,4 @@
-"""Opt-in live checks (``just test-live``): structural asserts only, ~4 requests, CF cache never written."""
+"""Opt-in live checks (``just test-live``): structural asserts only, ~5 requests, CF cache never written."""
 
 import json
 
@@ -6,7 +6,7 @@ import pytest
 from selectolax.parser import HTMLParser
 
 from alt_ani_cli.config import FLARESOLVERR_URL
-from alt_ani_cli.shinden import episode, http, search, series
+from alt_ani_cli.shinden import episode, http, metadata, search, series
 
 pytestmark = [
     pytest.mark.integration,
@@ -39,6 +39,14 @@ def test_search_hits_are_well_formed(first_series_hit):
     assert first_series_hit.id.isdigit()
     assert first_series_hit.title
     assert first_series_hit.series_type
+
+
+def test_series_metadata_is_parsed(client, first_series_hit):
+    meta = metadata.fetch_series_metadata(client, series.parse_series_url(first_series_hit.url))
+    assert meta.air_date_sort is not None
+    assert meta.description
+    assert meta.tags
+    assert all(r.id.isdigit() and ("/series/" in r.url or "/titles/" in r.url) for r in meta.related)
 
 
 def test_episode_list_is_complete_and_ascending(listing):
