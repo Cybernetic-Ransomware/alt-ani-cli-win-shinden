@@ -46,9 +46,10 @@ def _parse_results(html: str) -> list[SeriesHit]:
 
     rows = results_list.css("li.sh-tagi-wynik")
     if not rows:
-        if total:
-            raise drift(_PAGE, f"counter reports {total} results but the list has no rows")
-        return []
+        if total == 0 or (total is None and tree.css_first("div.sh-szukaj-brak") is not None):
+            return []
+        detail = f"counter reports {total} results" if total else "result counter missing or unrecognised"
+        raise drift(_PAGE, f"{detail} but the list has no rows")
 
     tally = ParseTally(_PAGE)
     results: list[SeriesHit] = []

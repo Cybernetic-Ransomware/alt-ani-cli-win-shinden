@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
-from selectolax.parser import HTMLParser
+from selectolax.parser import HTMLParser, Node
 
 from alt_ani_cli import diagnostics
 from alt_ani_cli.config import SHINDEN_BASE
@@ -29,6 +29,8 @@ _PAGE_PARAM_RE = re.compile(r"[?&]strona=(\d+)")
 EPISODES_PER_PAGE = 100
 # 30 pages = 3000 episodes; anything longer is reported as incomplete instead of crawled further.
 MAX_EPISODE_PAGES = 30
+# One repeated row is a boundary shift (an episode published between requests); more means a repeated page.
+MAX_PAGE_OVERLAP = 1
 _PAGE_DELAY_SEC = 0.5
 _PAGE = "episodes"
 
@@ -37,7 +39,7 @@ _PAGE = "episodes"
 class _EpisodePage:
     title: str
     rows: list[EpisodeRow]
-    raw_rows: int
+    row_keys: list[str]
     total: int | None
     last_page: int
 
@@ -81,7 +83,7 @@ def list_episodes(client: cffi_requests.Session, ref: SeriesRef) -> EpisodeListi
             pages_total = max(pages_total, by_counter)
 
     rows = list(first.rows)
-    raw_rows = first.raw_rows
+    seen_keys = set(first.row_keys)
     pages_fetched = 1
     reason: str | None = None
     for page_no in range(2, min(pages_total, MAX_EPISODE_PAGES) + 1):
@@ -94,15 +96,21 @@ def list_episodes(client: cffi_requests.Session, ref: SeriesRef) -> EpisodeListi
             break
         page = _parse_page(page_resp.text, tally)
         rows.extend(page.rows)
-        raw_rows += page.raw_rows
         pages_fetched += 1
+        repeated = sum(1 for key in page.row_keys if key in seen_keys)
+        seen_keys.update(page.row_keys)
+        if repeated > MAX_PAGE_OVERLAP:
+            reason = "repeated_page"
+            break
+        if repeated:
+            diagnostics.shinden_count_mismatch(_PAGE, "page_overlap", expected=0, actual=repeated)
     if reason is None and pages_total > MAX_EPISODE_PAGES:
         reason = "page_limit"
 
     if reason is not None:
         diagnostics.shinden_episodes_incomplete(ref.id, pages_fetched, pages_total, reason)
-    elif first.total is not None and raw_rows != first.total:
-        diagnostics.shinden_count_mismatch(_PAGE, "total", expected=first.total, actual=raw_rows)
+    elif first.total is not None and len(seen_keys) != first.total:
+        diagnostics.shinden_count_mismatch(_PAGE, "total", expected=first.total, actual=len(seen_keys))
 
     episodes = _dedupe(rows, tally)
     tally.finish()
@@ -152,6 +160,16 @@ def _parse_number(text: str) -> float | None:
     return number if math.isfinite(number) and number >= 0 else None
 
 
+def _row_key(row: Node) -> str:
+    """Identity of a raw row, including unavailable ones, for spotting pages that repeat earlier pages."""
+    link = row.css_first("a.ep-row__link")
+    href = link.attributes.get("href") if link else None
+    if href:
+        return href
+    parts = (row.css_first(sel) for sel in (".ep-row__no", ".ep-row__title"))
+    return "|".join(" ".join(node.text().split()) if node else "" for node in parts)
+
+
 def _parse_page(html: str, tally: ParseTally) -> _EpisodePage:
     tree = HTMLParser(html)
     _check_challenge(tree, _PAGE)
@@ -161,15 +179,19 @@ def _parse_page(html: str, tally: ParseTally) -> _EpisodePage:
     if section is None:
         raise drift(_PAGE, "episode list section#odcinki not found")
     count_node = section.css_first(".ep-list__count")
-    total = _parse_number(count_node.text()) if count_node else None
-    total_int = int(total) if total is not None else None
+    count_text = re.sub(r"\s", "", count_node.text()) if count_node else ""
+    total = int(count_text) if count_text.isdecimal() else None
 
     rows = section.css("ol.ep-rows > li.ep-row")
-    if not rows and total_int:
-        raise drift(_PAGE, f"counter reports {total_int} episodes but the list has no rows")
+    # The zero counter is the only empty-list marker on this page.
+    if not rows and total != 0:
+        detail = f"counter reports {total} episodes" if total else "episode counter missing or unrecognised"
+        raise drift(_PAGE, f"{detail} but the list has no rows")
 
     episodes: list[EpisodeRow] = []
+    row_keys: list[str] = []
     for row in rows:
+        row_keys.append(_row_key(row))
         link = row.css_first("a.ep-row__link")
         href = (link.attributes.get("href") or "") if link else ""
         if not href:
@@ -197,7 +219,7 @@ def _parse_page(html: str, tally: ParseTally) -> _EpisodePage:
     return _EpisodePage(
         title=_parse_title(tree),
         rows=episodes,
-        raw_rows=len(rows),
-        total=total_int,
+        row_keys=row_keys,
+        total=total,
         last_page=max(page_numbers, default=1),
     )

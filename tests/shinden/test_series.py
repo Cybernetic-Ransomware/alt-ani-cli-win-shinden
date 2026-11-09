@@ -37,6 +37,12 @@ def _paged(html: str, total: int, last_page: int) -> str:
     )
 
 
+def _shifted(html: str, offset: int) -> str:
+    """Give a page distinct episode URLs and numbers so it is not mistaken for a repeated page."""
+    html = re.sub(r'view/(\d+)"', lambda m: f'view/{int(m.group(1)) + offset}"', html)
+    return re.sub(r'ep-row__no">(\d+)<', lambda m: f'ep-row__no">{int(m.group(1)) + offset}<', html)
+
+
 def _events(events, name):
     return [fields for event, fields in events if event == name]
 
@@ -90,7 +96,7 @@ class TestParsePage:
         tally = ParseTally("episodes")
         page = _parse_page(shinden_html("episodes_frieren.html"), tally)
         assert page.title == "Sousou no Frieren"
-        assert (len(page.rows), page.raw_rows, page.total, page.last_page) == (28, 28, 28, 1)
+        assert (len(page.rows), len(page.row_keys), page.total, page.last_page) == (28, 28, 28, 1)
         assert page.rows[0].url == f"{SHINDEN_BASE}/episode/61064-sousou-no-frieren/view/227851"
         assert page.rows[0].title == "To byłoby zawstydzające, gdybyśmy spotkali się ponownie"
 
@@ -105,7 +111,7 @@ class TestParsePage:
     def test_related_titles_section_is_ignored(self, shinden_html):
         tally = ParseTally("episodes")
         page = _parse_page(_with_links(shinden_html("episodes_titles_p1.html")), tally)
-        assert page.raw_rows == 100
+        assert len(page.row_keys) == 100
         assert min(ep.number for ep in page.rows) == 1082
 
     def test_empty_series(self, shinden_html):
@@ -121,6 +127,24 @@ class TestParsePage:
         html = shinden_html("episodes_frieren.html").replace('class="ep-row has-groups"', 'class="ep-renamed"')
         with pytest.raises(ParseError, match="28 episodes"):
             _parse_page(html, ParseTally("episodes"))
+
+    @pytest.mark.parametrize(
+        "counter",
+        [
+            pytest.param("", id="missing"),
+            pytest.param('<span class="ep-list__count">?</span>', id="unrecognised"),
+            pytest.param('<span class="ep-list__count">-1</span>', id="negative"),
+        ],
+    )
+    def test_empty_list_without_zero_counter_raises(self, shinden_html, counter):
+        html = shinden_html("episodes_empty.html").replace('<span class="ep-list__count">0</span>', counter)
+        with pytest.raises(ParseError, match="counter missing or unrecognised"):
+            _parse_page(html, ParseTally("episodes"))
+
+    def test_rows_without_counter_are_still_parsed(self, shinden_html):
+        html = shinden_html("episodes_frieren.html").replace('<span class="ep-list__count">28</span>', "")
+        page = _parse_page(html, ParseTally("episodes"))
+        assert (len(page.rows), page.total) == (28, None)
 
     @pytest.mark.parametrize("raw, expected", [("12.5", 12.5), ("12,5", 12.5), (" 7 ", 7.0)])
     def test_non_integer_numbers(self, shinden_html, raw, expected):
@@ -195,11 +219,45 @@ class TestListEpisodes:
         assert (numbers[0], numbers[-1], len(numbers)) == (982.0, 1181.0, 200)
         assert [c.kwargs["params"]["strona"] for c in client.get.call_args_list] == [1, 2]
 
-    def test_duplicates_across_pages_are_excluded(self, shinden_html, client_for, diag_events):
+    def test_repeated_page_is_incomplete_even_when_row_sum_matches_counter(self, shinden_html, client_for, diag_events):
         p1 = _paged(_with_links(shinden_html("episodes_titles_p1.html")), total=200, last_page=2)
         listing = list_episodes(client_for({1: p1, 2: p1}), _ONE_PIECE)
+        assert (listing.complete, listing.incomplete_reason) == (False, "repeated_page")
         assert len(listing.episodes) == 100
+        assert _events(diag_events, "shinden_episodes_incomplete") == [
+            {"id": "12", "fetched": 2, "total": 2, "reason": "repeated_page"}
+        ]
         assert _events(diag_events, "shinden_parse_partial") == []
+
+    def test_repeated_page_stops_fetching(self, shinden_html, client_for):
+        p1 = _paged(_with_links(shinden_html("episodes_titles_p1.html")), total=300, last_page=3)
+        client = client_for({1: p1}, default=p1)
+        assert list_episodes(client, _ONE_PIECE).incomplete_reason == "repeated_page"
+        assert client.get.call_count == 2
+
+    def test_repeated_page_of_unavailable_rows_is_detected(self, shinden_html, client_for):
+        p1 = _paged(shinden_html("episodes_titles_p1.html"), total=200, last_page=2)
+        listing = list_episodes(client_for({1: p1, 2: p1}), _ONE_PIECE)
+        assert (listing.episodes, listing.incomplete_reason) == ([], "repeated_page")
+
+    def test_single_repeated_row_is_tolerated_and_logged(self, shinden_html, client_for, diag_events):
+        p1 = _paged(_with_links(shinden_html("episodes_titles_p1.html")), total=200, last_page=2)
+        p2 = _paged(_with_links(shinden_html("episodes_titles_p2.html")), total=200, last_page=2)
+        listing = list_episodes(client_for({1: p1, 2: p2.replace('view/1081"', 'view/1082"')}), _ONE_PIECE)
+        assert listing.complete
+        assert len(listing.episodes) == 199
+        assert {"page": "episodes", "counter": "page_overlap", "expected": 0, "actual": 1} in _events(
+            diag_events, "shinden_count_mismatch"
+        )
+
+    def test_two_repeated_rows_mark_listing_incomplete(self, shinden_html, client_for):
+        p1 = _paged(_with_links(shinden_html("episodes_titles_p1.html")), total=200, last_page=2)
+        p2 = _paged(_with_links(shinden_html("episodes_titles_p2.html")), total=200, last_page=2)
+        p2 = p2.replace('view/1081"', 'view/1082"').replace('view/1080"', 'view/1083"')
+        assert list_episodes(client_for({1: p1, 2: p2}), _ONE_PIECE).incomplete_reason == "repeated_page"
+
+    def test_overlap_tolerance_is_one_row(self):
+        assert series.MAX_PAGE_OVERLAP == 1
 
     def test_page_limit_is_thirty(self):
         assert MAX_EPISODE_PAGES == 30
@@ -207,9 +265,10 @@ class TestListEpisodes:
     def test_page_limit_stops_fetching_and_marks_incomplete(self, shinden_html, client_for, diag_events):
         p1 = _paged(_with_links(shinden_html("episodes_titles_p1.html")), total=4000, last_page=40)
         p2 = _paged(_with_links(shinden_html("episodes_titles_p2.html")), total=4000, last_page=40)
-        client = client_for({1: p1}, default=p2)
+        client = client_for({1: p1} | {n: _shifted(p2, 10_000 * n) for n in range(2, 41)})
         listing = list_episodes(client, _ONE_PIECE)
         assert client.get.call_count == MAX_EPISODE_PAGES
+        assert listing.complete is False and len(listing.episodes) == 30 * 100
         assert (listing.complete, listing.incomplete_reason) == (False, "page_limit")
         assert (listing.pages_fetched, listing.pages_total) == (30, 40)
         assert _events(diag_events, "shinden_episodes_incomplete") == [
