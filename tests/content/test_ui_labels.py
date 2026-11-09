@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from alt_ani_cli.content import CONTENT
+from alt_ani_cli.content import CONTENT, EXCEPTIONS, EXCEPTIONS_PL
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesMetadata
 from alt_ani_cli.ui.menus import _player_label, _player_origin, _series_label, select_episodes, select_start_mode
 
@@ -142,6 +142,8 @@ class TestTemplatePlaceholders:
             (("progress", "host_deferred"), ("{host}",)),
             (("progress", "host_last_resort"), ("{host}",)),
             (("progress", "host_dropped"), ("{host}",)),
+            (("progress", "prefetch_stopped"), ("{reason}",)),
+            (("progress", "network_error"), ("{exc}",)),
         ],
     )
     def test_template_has_required_placeholders(self, path, placeholders):
@@ -150,3 +152,26 @@ class TestTemplatePlaceholders:
             tmpl = tmpl[key]
         for ph in placeholders:
             assert ph in tmpl, f"{'.'.join(path)} missing {ph}"
+
+
+_API_PLACEHOLDERS = {
+    "xhr_failed": ("{stage}", "{online_id}", "{detail}"),
+    "xhr_access_blocked": ("{stage}", "{detail}"),
+    "xhr_unavailable": ("{stage}", "{detail}"),
+    "xhr_protocol": ("{stage}", "{detail}"),
+    "retry_after_hint": ("{seconds}",),
+    "no_iframe": ("{online_id}", "{length}"),
+}
+
+
+@pytest.mark.unit
+class TestApiExceptionTemplates:
+    @pytest.mark.parametrize("catalog", [EXCEPTIONS, EXCEPTIONS_PL], ids=["en-us", "pl-pl"])
+    @pytest.mark.parametrize(("key", "placeholders"), list(_API_PLACEHOLDERS.items()))
+    def test_template_has_required_placeholders(self, catalog, key, placeholders):
+        for ph in placeholders:
+            assert ph in catalog["api"][key], f"api.{key} missing {ph}"
+
+    @pytest.mark.parametrize("catalog", [EXCEPTIONS, EXCEPTIONS_PL], ids=["en-us", "pl-pl"])
+    def test_no_iframe_no_longer_embeds_a_response_snippet(self, catalog):
+        assert "{snippet}" not in catalog["api"]["no_iframe"]

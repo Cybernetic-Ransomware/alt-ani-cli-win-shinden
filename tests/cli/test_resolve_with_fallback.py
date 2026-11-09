@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from alt_ani_cli.cli import _resolve_with_fallback
-from alt_ani_cli.errors import AntiBotError, NoStreamError
+from alt_ani_cli.errors import AntiBotError, NoStreamError, ShindenXhrError
 from alt_ani_cli.health import HostState, ResolverHealth, Signal
 from alt_ani_cli.models import EmbedURL, PlayerEntry
 
@@ -630,3 +630,98 @@ class TestResolveWithFallbackRedaction:
         assert "vidawra.cc/e/abc123?t=<redacted>" in combined
         assert "cdn.example/master.m3u8?token=<redacted>" in combined
         assert mock_resolve.call_args[0][0] == "https://vidawra.cc/e/abc123?t=EMBED_SECRET"
+
+
+def _xhr(**fields) -> ShindenXhrError:
+    defaults = dict(stage="player_load", category="http_error", reason="http_status")
+    return ShindenXhrError("xhr failed", **(defaults | fields))
+
+
+_XHR_BACKUP = PlayerEntry(online_id="xhr-backup", player="Backup", lang_audio="pl", lang_subs="pl")
+
+
+@pytest.mark.unit
+class TestResolveWithFallbackXhrPolicy:
+    @pytest.mark.parametrize(
+        "err",
+        [
+            _xhr(http_status=429),
+            _xhr(http_status=200, api_code="vpnp_limit"),
+            _xhr(http_status=200, api_code="invalid_token"),
+            _xhr(http_status=403, api_code="invalid_token"),
+            _xhr(http_status=200, api_code="brak_playera"),
+            _xhr(http_status=503),
+            _xhr(http_status=500),
+            _xhr(category="timeout", reason="transport"),
+            _xhr(category="parser_drift", reason="wait_above_limit", http_status=200),
+        ],
+        ids=["429", "vpnp_limit", "invalid_token-200", "invalid_token-403", "unknown-code-200", "503", "500", "timeout", "invalid-wait"],
+    )
+    def test_shared_api_failure_stops_auto_walk_after_one_xhr(self, err):
+        with (
+            patch("alt_ani_cli.cli.shinden_api.resolve_embed", side_effect=err) as mock_resolve,
+            patch("alt_ani_cli.cli.extract.resolve") as mock_extract,
+            patch("alt_ani_cli.cli.diagnostics.resolve_result"),
+            pytest.raises(ShindenXhrError) as exc_info,
+        ):
+            _resolve_with_fallback(MagicMock(), [_PLAYER, _XHR_BACKUP], _PLAYER, True, 1.0, health=ResolverHealth())
+        assert exc_info.value is err
+        mock_resolve.assert_called_once()
+        mock_extract.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "err",
+        [
+            _xhr(http_status=404),
+            _xhr(http_status=410, api_code="brak_playera"),
+            _xhr(stage="player_show", category="no_stream_url", reason="no_iframe", http_status=200),
+        ],
+        ids=["404", "410-with-code", "no-iframe"],
+    )
+    def test_player_local_failure_moves_to_next_player(self, err):
+        stream = MagicMock()
+        with (
+            patch("alt_ani_cli.cli.shinden_api.resolve_embed", side_effect=[err, _EMBED]) as mock_resolve,
+            patch("alt_ani_cli.cli.extract.resolve", return_value=stream),
+            patch("alt_ani_cli.cli.diagnostics.resolve_result"),
+        ):
+            result, embed = _resolve_with_fallback(MagicMock(), [_PLAYER, _XHR_BACKUP], _PLAYER, True, 1.0)
+        assert (result, embed) == (stream, _EMBED)
+        assert [c.args[1] for c in mock_resolve.call_args_list] == [_PLAYER.online_id, _XHR_BACKUP.online_id]
+
+    def test_failure_forwards_xhr_diagnostic_fields(self):
+        err = _xhr(stage="player_show", http_status=429, api_code="turnstile", retry_after=30, reason="api_error")
+        with (
+            patch("alt_ani_cli.cli.shinden_api.resolve_embed", side_effect=err),
+            patch("alt_ani_cli.cli.diagnostics.resolve_result") as mock_diag,
+            pytest.raises(ShindenXhrError),
+        ):
+            _resolve_with_fallback(MagicMock(), [_PLAYER], _PLAYER, False, 1.0)
+        args, kwargs = mock_diag.call_args
+        assert args[2] == "ShindenXhrError"
+        assert {k: kwargs[k] for k in ("layer", "category", "http_status", "stage", "api_code", "retry_after", "reason")} == {
+            "layer": "shinden_api",
+            "category": "http_error",
+            "http_status": 429,
+            "stage": "player_show",
+            "api_code": "turnstile",
+            "retry_after": 30,
+            "reason": "api_error",
+        }
+        assert kwargs["xhr_outcome"] == "access_blocked"
+
+    def test_xhr_failure_never_feeds_host_health(self):
+        health = ResolverHealth()
+        cached_host_embed = {_PLAYER.online_id: _EMBED}
+        with (
+            patch("alt_ani_cli.cli.shinden_api.resolve_embed", side_effect=_xhr(http_status=503)),
+            patch("alt_ani_cli.cli.extract.resolve", side_effect=NoStreamError("expired")),
+            patch("alt_ani_cli.cli.diagnostics.resolve_result"),
+            patch("alt_ani_cli.cli.diagnostics.host_health") as mock_health_diag,
+            pytest.raises(ShindenXhrError),
+        ):
+            _resolve_with_fallback(
+                MagicMock(), [_PLAYER], _PLAYER, False, 1.0, embed_cache=cached_host_embed, health=health
+            )
+        assert health.state("vidawra.cc") is HostState.UNKNOWN
+        mock_health_diag.assert_not_called()

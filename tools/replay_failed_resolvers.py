@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import shlex
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
@@ -21,7 +21,7 @@ from curl_cffi.requests import exceptions as cffi_exceptions
 
 from alt_ani_cli import extract
 from alt_ani_cli.diagnostics import _host_of_url
-from alt_ani_cli.errors import AntiBotError, NoStreamError, ShindenError
+from alt_ani_cli.errors import AntiBotError, NoStreamError, ShindenError, ShindenXhrError
 from alt_ani_cli.shinden import api as shinden_api
 from alt_ani_cli.shinden import http as shinden_http
 from alt_ani_cli.ui import progress
@@ -98,6 +98,7 @@ class ReplayOutcome:
     now_fallback_category: str | None = None
     now_fallback_http_status: int | None = None
     note: str | None = None
+    xhr_stop: str | None = None
 
 
 @dataclass(frozen=True)
@@ -306,7 +307,10 @@ def replay_case(client, case: ReplayCase) -> ReplayOutcome:
             category=extract._classify(exc),
             http_status=extract._http_status(exc),
         )
-        return _finalize(case, now, exc)
+        outcome = _finalize(case, now, exc)
+        if isinstance(exc, ShindenXhrError) and shinden_api.xhr_outcome(exc) is not shinden_api.XhrOutcome.NEXT_PLAYER:
+            outcome = replace(outcome, xhr_stop=shinden_api.stop_message(exc))
+        return outcome
     except Exception as exc:
         now = _NowSnapshot(ok=False, host=None, harness_error=True)
         return ReplayOutcome(
@@ -461,6 +465,9 @@ def main(argv: list[str] | None = None) -> int:
             outcome = replay_case(client, case)
             outcomes.append(outcome)
             render_case(outcome)
+            if outcome.xhr_stop is not None:
+                progress.warn(outcome.xhr_stop)
+                break
     finally:
         client.close()
 

@@ -13,7 +13,14 @@ import pytest
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from alt_ani_cli.content import CONTENT
-from alt_ani_cli.errors import AntiBotError, DownloadFailedError, DownloadTargetError, NoStreamError, ShindenError
+from alt_ani_cli.errors import (
+    AntiBotError,
+    DownloadFailedError,
+    DownloadTargetError,
+    NoStreamError,
+    ShindenError,
+    ShindenXhrError,
+)
 from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.flow.handlers import (
     HANDLERS,
@@ -2405,3 +2412,127 @@ class TestIncompleteEpisodeList:
             HANDLERS[Screen.EPISODES_PICK](state)
         assert mock_sel.call_args.kwargs["default_index"] is None
         assert mock_sel.call_args.kwargs["downloaded_numbers"] == {2.0}
+
+
+def _xhr(**fields) -> ShindenXhrError:
+    defaults = dict(stage="player_load", category="http_error", reason="http_status")
+    return ShindenXhrError("xhr failed", **(defaults | fields))
+
+
+@pytest.mark.unit
+class TestResolveStreamXhrStop:
+    def _state(self):
+        return _make_state(ref=_SERIES_REF, targets=[_EP1], ep_idx=0, players=[_PLAYER, _PLAYER2], chosen_player=_PLAYER)
+
+    @pytest.mark.parametrize(
+        "err",
+        [_xhr(http_status=429, retry_after=60), _xhr(http_status=200, api_code="turnstile"), _xhr(http_status=503)],
+        ids=["429", "turnstile", "503"],
+    )
+    def test_stop_returns_to_player_pick_without_marking_player_failed(self, err):
+        state = self._state()
+        with (
+            patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=err),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn"),
+            patch("alt_ani_cli.ui.progress.error") as mock_error,
+        ):
+            result = HANDLERS[Screen.RESOLVE_STREAM](state)
+        assert result is Screen.PLAYER_PICK
+        assert state.failed_ids == set()
+        assert state.stream is None
+        mock_error.assert_called_once()
+
+    def test_block_message_shows_retry_after(self):
+        state = self._state()
+        with (
+            patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=_xhr(http_status=429, retry_after=60)),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn"),
+            patch("alt_ani_cli.ui.progress.error") as mock_error,
+        ):
+            HANDLERS[Screen.RESOLVE_STREAM](state)
+        assert "60 s" in mock_error.call_args.args[0]
+
+    def test_block_is_not_persisted_and_manual_retry_resolves_again(self):
+        state = self._state()
+        stream = MagicMock(qualities={})
+        with (
+            patch(
+                "alt_ani_cli.shinden.api.resolve_embed", side_effect=[_xhr(http_status=429), _EMBED]
+            ) as mock_resolve,
+            patch("alt_ani_cli.extract.resolve", return_value=stream),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn"),
+            patch("alt_ani_cli.ui.progress.error"),
+            patch("alt_ani_cli.ui.progress.info"),
+        ):
+            assert HANDLERS[Screen.RESOLVE_STREAM](state) is Screen.PLAYER_PICK
+            assert HANDLERS[Screen.RESOLVE_STREAM](state) is Screen.ACTION_PICK
+        assert mock_resolve.call_count == 2
+        assert state.stream is stream
+
+    def test_player_local_xhr_failure_keeps_existing_failed_player_flow(self):
+        state = self._state()
+        with (
+            patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=_xhr(http_status=404)),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn"),
+        ):
+            result = HANDLERS[Screen.RESOLVE_STREAM](state)
+        assert result is Screen.PLAYER_PICK
+        assert state.failed_ids == {_PLAYER.online_id}
+
+    def test_interactive_session_survives_a_block(self):
+        state = self._state()
+        with (
+            patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=_xhr(http_status=403)),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.error"),
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+            patch("alt_ani_cli.ui.menus.select_player_once", return_value=("back", None)),
+        ):
+            assert HANDLERS[Screen.RESOLVE_STREAM](state) is Screen.PLAYER_PICK
+            assert HANDLERS[Screen.PLAYER_PICK](state) is Screen.EPISODES_PICK
+        # the picker must not claim the chosen player itself failed
+        mock_warn.assert_not_called()
+
+
+@pytest.mark.unit
+class TestPrefetchPlayerSourcesXhrStop:
+    _P3 = PlayerEntry(online_id="pid3", player="Mega", lang_audio="jp", lang_subs="pl")
+
+    @pytest.mark.parametrize(
+        "err",
+        [
+            _xhr(http_status=429),
+            _xhr(http_status=503),
+            _xhr(category="timeout", reason="transport"),
+            _xhr(category="parser_drift", reason="wait_not_a_number", http_status=200),
+        ],
+        ids=["429", "503", "timeout", "invalid-wait"],
+    )
+    def test_stop_sends_no_further_xhr(self, err):
+        state = _make_state(players=[_PLAYER, _PLAYER2, self._P3])
+        with (
+            patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=[_EMBED, err, _EMBED]) as mock_resolve,
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            _prefetch_player_sources(state)
+        assert mock_resolve.call_count == 2
+        assert set(state.player_sources) == {_PLAYER.online_id}
+        mock_warn.assert_called_once()
+
+    def test_player_local_failure_continues_sequentially(self):
+        state = _make_state(players=[_PLAYER, _PLAYER2, self._P3])
+        no_iframe = _xhr(stage="player_show", category="no_stream_url", reason="no_iframe", http_status=200)
+        with (
+            patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=[no_iframe, _EMBED, _EMBED]) as mock_resolve,
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            _prefetch_player_sources(state)
+        assert [c.args[1] for c in mock_resolve.call_args_list] == ["pid1", "pid2", "pid3"]
+        assert set(state.player_sources) == {"pid2", "pid3"}
+        mock_warn.assert_not_called()

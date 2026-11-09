@@ -72,6 +72,8 @@ progress:
   embed: "Embed: {url}"
   spinner_api: "Czekam na API shinden ({label}) …"
   prefetch_sources: "Pobieram źródła playerów ({count}) …"
+  prefetch_stopped: "Przerwano pobieranie źródeł playerów: {reason}"
+  network_error: "Błąd sieci: {exc}"
   playing: "Odtwarzam w {kind}: {title}"
   playing_failed: "Player {kind} zakończył się kodem {rc}: {title}"
   playing_unconfirmed: "Player {kind} zakończył się natychmiast (rc=0, {secs:.1f}s) — nie mogę potwierdzić, czy {title} faktycznie się odtworzyło."

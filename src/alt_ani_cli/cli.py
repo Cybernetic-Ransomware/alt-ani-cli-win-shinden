@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
+from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from alt_ani_cli import __version__, diagnostics, download, extract, history
 from alt_ani_cli.config import FLARESOLVERR_URL, SHINDEN_BASE
@@ -24,6 +25,7 @@ from alt_ani_cli.errors import (
     ParseError,
     PlayerNotFoundError,
     ShindenError,
+    ShindenXhrError,
 )
 from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.health import HealthTransition, ResolverHealth, Signal, classify_failure
@@ -217,6 +219,10 @@ _RESOLVE_DIAG_FIELDS = (
     "fallback_layer",
     "fallback_category",
     "fallback_http_status",
+    "stage",
+    "api_code",
+    "retry_after",
+    "reason",
 )
 
 
@@ -252,7 +258,9 @@ def _record_extraction_failure(
     ep_number: float,
 ) -> None:
     fields = {name: getattr(exc, name, None) for name in _RESOLVE_DIAG_FIELDS}
-    if isinstance(exc, AntiBotError):
+    if isinstance(exc, ShindenXhrError):
+        fields["xhr_outcome"] = shinden_api.xhr_outcome(exc).value
+    elif isinstance(exc, AntiBotError):
         fields.update(layer="shinden_api", category="anti_bot")
     if health is not None and host is not None:
         signal = classify_failure(
@@ -267,7 +275,9 @@ def _record_extraction_failure(
         transition = health.record(host, candidate.online_id, signal)
         _emit_health_transition(transition, category=fields.get("category"), http_status=fields.get("http_status"))
     diagnostics.resolve_result(host, False, type(exc).__name__, time.monotonic() - start, **fields)
-    progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=redact_text(exc)))
+    # a shared-API stop is not this player's failure; the caller reports it via stop_message()
+    if fields.get("xhr_outcome") in (None, shinden_api.XhrOutcome.NEXT_PLAYER):
+        progress.warn(_PROG["player_failed_long"].format(player=repr(candidate.player), number=ep_number, exc=redact_text(exc)))
 
 
 @dataclass
@@ -299,6 +309,7 @@ def _resolve_with_fallback(
     """Try chosen player; if it fails and auto-mode is active, walk down the sorted list.
 
     Returns (Stream, EmbedURL) on success, (None, None) when all players fail.
+    Re-raises a ShindenXhrError whose outcome is not NEXT_PLAYER (blocked/unavailable/protocol).
     For user-chosen players (auto=False) only the selected player is attempted.
     A candidate found in embed_cache skips the 5 s resolve; if extraction on the
     cached embed fails, one fresh resolve is attempted before giving up on it.
@@ -359,8 +370,10 @@ def _resolve_with_fallback(
                 stream = _extract_stream(embed, cookies_file, cookies_browser)
             _record_extraction_success(host_hint, candidate, health, start)
             return stream, embed
-        except (NoStreamError, AntiBotError) as exc:
+        except (NoStreamError, AntiBotError, ShindenXhrError) as exc:
             _record_extraction_failure(host_hint, candidate, exc, health, start, ep_number)
+            if isinstance(exc, ShindenXhrError) and shinden_api.xhr_outcome(exc) is not shinden_api.XhrOutcome.NEXT_PLAYER:
+                raise
 
     if deferred and health is not None:
         retried_hosts: set[str] = set()
@@ -418,7 +431,7 @@ def _setup_encoding() -> None:
         colorama.just_fix_windows_console()
 
 
-ANTIBOT_LABEL = "5 s antibot delay"
+ANTIBOT_LABEL = "antibot delay"
 
 
 # rc == 0 this fast rarely means real playback — mpv.net forwards the URL to an
@@ -701,6 +714,10 @@ def main() -> None:  # noqa: C901
         diagnostics.session_end("interrupted", None)
         progress.warn(_PROG["interrupted"])
         sys.exit(130)
+    except ShindenXhrError as exc:
+        diagnostics.session_end("error", type(exc).__name__)
+        progress.error(shinden_api.stop_message(exc))
+        sys.exit(1)
     except CurlHTTPError as exc:
         diagnostics.session_end("error", type(exc).__name__)
         if exc.response is not None:
@@ -714,6 +731,10 @@ def main() -> None:  # noqa: C901
                     progress.warn(_PROG["cloudflare_hint"])
         else:
             progress.error(redact_text(exc))
+        sys.exit(1)
+    except CurlRequestException as exc:
+        diagnostics.session_end("error", type(exc).__name__)
+        progress.error(_PROG["network_error"].format(exc=redact_text(exc)))
         sys.exit(1)
     except (
         AntiBotError,

@@ -132,8 +132,13 @@ def resolve_result(
     fallback_layer: str | None = None,
     fallback_category: str | None = None,
     fallback_http_status: int | None = None,
+    stage: str | None = None,
+    api_code: str | None = None,
+    retry_after: int | None = None,
+    reason: str | None = None,
+    xhr_outcome: str | None = None,
 ) -> None:
-    """``layer``/``category`` values come from the classifier in extract/__init__.py."""
+    """``layer``/``category`` come from failure.classify_exception; the XHR fields from shinden/api.py."""
     _emit(
         "resolve_result",
         host=host,
@@ -146,6 +151,11 @@ def resolve_result(
         fallback_layer=fallback_layer,
         fallback_category=fallback_category,
         fallback_http_status=fallback_http_status,
+        stage=stage,
+        api_code=api_code,
+        retry_after=retry_after,
+        reason=reason,
+        xhr_outcome=xhr_outcome,
         elapsed=f"{elapsed:.3f}",
     )
 

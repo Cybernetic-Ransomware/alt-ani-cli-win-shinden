@@ -20,8 +20,11 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 SHINDEN_BASE = "https://shinden.pl"
 SHINDEN_API_BASE = "https://api4.shinden.pl"
 
+# Minimum wait between player_load and player_show; the server's own value wins when it is longer.
 # Increase via env var if player_show keeps returning empty responses.
 ANTIBOT_DELAY_SEC = float(os.getenv("ALT_ANI_CLI_ANTIBOT_DELAY", "5.0"))
+# A player_load wait above this is treated as a malformed response, never clamped.
+MAX_XHR_WAIT_SEC = 30
 
 # FlareSolverr proxy for Cloudflare JS challenge resolution.
 # Set to e.g. http://localhost:8191 when running FlareSolverr locally.
