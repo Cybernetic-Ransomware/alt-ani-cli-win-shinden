@@ -654,6 +654,25 @@ class TestTokenRefresh:
         assert xhr.backend == BACKEND_NEW
         assert client.get.call_count == 2
 
+    @pytest.mark.parametrize(
+        "mutate",
+        [
+            lambda html: html.replace(f'"pulapka": {TRAP_ID}', '"pulapka_v2": 1', 1),
+            lambda html: html.replace(f'"pulapka": {TRAP_ID}', '"pulapka": 1234', 1),
+        ],
+        ids=["missing", "hidden_row_mismatch"],
+    )
+    def test_refreshed_page_with_broken_honeypot_contract_stops(self, episode_page, mutate):
+        client = _client(_expired(), _resp(text=mutate(episode_page(token=_NEW_TOKEN))))
+        xhr = _new_xhr()
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _run(client, xhr)
+        assert exc_info.value.reason == "refresh_page_invalid"
+        assert xhr_outcome(exc_info.value) is XhrOutcome.API_PROTOCOL_ERROR
+        assert xhr.context is not None
+        assert xhr.context.auth == _OLD_TOKEN
+        assert client.get.call_count == 2
+
     def test_refresh_transport_error_keeps_no_exception_chain(self):
         client = _client(_expired(), CurlConnectionError(f"failed {EPISODE_URL}?auth={_OLD_TOKEN}"))
         with pytest.raises(ShindenXhrError) as exc_info:

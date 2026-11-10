@@ -10,7 +10,7 @@ import pytest
 from alt_ani_cli import config, diagnostics
 from alt_ani_cli.cli import _run_noninteractive, main
 from alt_ani_cli.config import SHINDEN_API_BASE, SHINDEN_XHR_BASE
-from alt_ani_cli.errors import ShindenXhrError
+from alt_ani_cli.errors import ParseError, ShindenXhrError
 from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.models import EpisodeListing, EpisodeRow, SeriesRef
 from alt_ani_cli.player.runner import PlayResult
@@ -33,7 +33,8 @@ def _page(token: str | None, trap: str = _TRAP) -> str:
     html = _FIXTURE.read_text(encoding="utf-8")
     if token is not None:
         html = html.replace(_ISLAND, _ISLAND[:-1] + f' data-player-auth="{token}">', 1)
-    return html.replace(f'"pulapka": {_TRAP}', f'"pulapka": {trap}', 1)
+    # the honeypot id sits in both the JSON declaration and the hidden row; move both together
+    return html.replace(_TRAP, trap)
 
 
 def _first_player(html: str) -> str:
@@ -215,3 +216,16 @@ class TestForcedApi4:
         assert [f["action"] for f in forced] == ["forced", "forced"]
         results = [f for e, f in diag_events if e == "resolve_result"]
         assert {f["xhr_backend"] for f in results} == {"api4"}
+
+
+@pytest.mark.unit
+class TestEpisodePageDrift:
+    @pytest.mark.parametrize("backend", ["new", "api4"])
+    def test_page_without_honeypot_declaration_stops_before_any_xhr(self, monkeypatch, backend):
+        monkeypatch.setattr(config, "XHR_BACKEND", backend)
+        page = _page(_TOKEN_1).replace(f'"pulapka": {_TRAP}', '"renamed": 1', 1)
+        client = _client({_EP1.url: [page], _EP2.url: [_page(_TOKEN_2)]}, _ok)
+        with pytest.raises(ParseError, match="honeypot"), patch("alt_ani_cli.cli.progress") as mock_progress:
+            _run(client)
+        assert _xhr_calls(client) == []
+        mock_progress.warn.assert_not_called()

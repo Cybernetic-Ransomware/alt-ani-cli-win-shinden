@@ -1,16 +1,21 @@
-"""Tests for shinden/episode.py — parse_players (Shinden 2.5 JSON island) and sort_players."""
+"""Tests for shinden/episode.py — read_players/parse_players (Shinden 2.5 JSON island) and sort_players."""
 
 import json
 import re
 
 import pytest
+from selectolax.parser import HTMLParser
 
 from alt_ani_cli.errors import ParseError
 from alt_ani_cli.flow.pin import find_pinned, player_fingerprint
-from alt_ani_cli.shinden.episode import parse_players, sort_players
+from alt_ani_cli.shinden.episode import parse_players, read_players, sort_players
 from alt_ani_cli.shinden.models import PlayerEntry
 
+from .conftest import TEST_TOKEN
+
 _TRAP_ID = "2045542847"
+_HIDDEN_ROW = f'data-online-id="{_TRAP_ID}" hidden="" aria-hidden="true"'
+_VISIBLE_ROW_RE = re.compile(r'<li class="ep-pl-row" data-online-id="\d+">')
 _JSON_RE = re.compile(r'(<script type="application/json" id="episode-players-data">)(.*?)(</script>)', re.S)
 
 
@@ -38,24 +43,33 @@ def _replace_json(html: str, raw: str) -> str:
     return html[: m.start(2)] + raw + html[m.end(2) :]
 
 
+def _with_row(html: str, row: str) -> str:
+    return html.replace('<ul class="ep-pl-list">', '<ul class="ep-pl-list">' + row, 1)
+
+
+@pytest.fixture
+def fixture_html(shinden_html) -> str:
+    return shinden_html("episode_players.html")
+
+
 def _events(events, name):
     return [fields for event, fields in events if event == name]
 
 
 @pytest.mark.unit
 class TestParsePlayersFixture:
-    def test_all_real_players_parsed(self, shinden_html, diag_events):
-        players = parse_players(shinden_html("episode_players.html"))
+    def test_all_real_players_parsed(self, fixture_html, diag_events):
+        players = parse_players(fixture_html)
         assert len(players) == 9
         assert diag_events == []
 
-    def test_honeypot_never_returned(self, shinden_html):
-        html = shinden_html("episode_players.html")
+    def test_honeypot_never_returned(self, fixture_html):
+        html = fixture_html
         assert _TRAP_ID in html
         assert _TRAP_ID not in {p.online_id for p in parse_players(html)}
 
-    def test_field_mapping(self, shinden_html):
-        first = parse_players(shinden_html("episode_players.html"))[0]
+    def test_field_mapping(self, fixture_html):
+        first = parse_players(fixture_html)[0]
         assert first == PlayerEntry(
             online_id="1825161",
             player="Gdrive",
@@ -67,30 +81,30 @@ class TestParsePlayersFixture:
             source="https://subs.example/",
         )
 
-    def test_player_without_group_has_no_author_or_source(self, shinden_html):
-        dood = next(p for p in parse_players(shinden_html("episode_players.html")) if p.online_id == "1598004")
+    def test_player_without_group_has_no_author_or_source(self, fixture_html):
+        dood = next(p for p in parse_players(fixture_html) if p.online_id == "1598004")
         assert (dood.subs_author, dood.source, dood.max_res) == (None, None, "720p")
 
-    def test_json_order_preserved(self, shinden_html):
-        ids = [p.online_id for p in parse_players(shinden_html("episode_players.html"))]
+    def test_json_order_preserved(self, fixture_html):
+        ids = [p.online_id for p in parse_players(fixture_html)]
         assert ids[:3] == ["1825161", "1825160", "1879668"]
 
-    def test_sort_players_on_parsed_output(self, shinden_html):
-        ranked = sort_players(parse_players(shinden_html("episode_players.html")))
+    def test_sort_players_on_parsed_output(self, fixture_html):
+        ranked = sort_players(parse_players(fixture_html))
         assert [p.max_res for p in ranked[:6]] == ["1080p"] * 6
         assert ranked[-1].lang_subs == "en"
 
-    def test_empty_players_list_is_valid(self, shinden_html, diag_events):
-        html = _edit_json(shinden_html("episode_players.html"), lambda d: d.update(players=[]))
-        html = re.sub(r'<li class="ep-pl-row" data-online-id="\d+">', '<li class="ep-pl-gone">', html)
+    def test_empty_players_list_is_valid(self, fixture_html, diag_events):
+        html = _edit_json(fixture_html, lambda d: d.update(players=[]))
+        html = _VISIBLE_ROW_RE.sub('<li class="ep-pl-gone">', html)
         assert parse_players(html) == []
         assert diag_events == []
 
 
 @pytest.mark.unit
 class TestParsePlayersDrift:
-    def test_missing_script_raises(self, shinden_html):
-        html = shinden_html("episode_players.html").replace('id="episode-players-data"', 'id="renamed"')
+    def test_missing_script_raises(self, fixture_html):
+        html = fixture_html.replace('id="episode-players-data"', 'id="renamed"')
         with pytest.raises(ParseError, match="episode-players-data"):
             parse_players(html)
 
@@ -98,23 +112,19 @@ class TestParsePlayersDrift:
         with pytest.raises(ParseError):
             parse_players("<html><body><p>no players here</p></body></html>")
 
-    def test_invalid_json_raises(self, shinden_html):
+    def test_invalid_json_raises(self, fixture_html):
         with pytest.raises(ParseError, match="not valid JSON"):
-            parse_players(_replace_json(shinden_html("episode_players.html"), "{not json"))
+            parse_players(_replace_json(fixture_html, "{not json"))
 
     @pytest.mark.parametrize("data", [[], {"players": {}}, {"no_players": []}])
-    def test_wrong_top_level_shape_raises(self, shinden_html, data):
+    def test_wrong_top_level_shape_raises(self, fixture_html, data):
         with pytest.raises(ParseError, match="no players list"):
-            parse_players(_replace_json(shinden_html("episode_players.html"), json.dumps(data)))
+            parse_players(_replace_json(fixture_html, json.dumps(data)))
 
-    def test_honeypot_of_wrong_type_raises(self, shinden_html):
-        html = _edit_json(shinden_html("episode_players.html"), lambda d: d.update(pulapka="trap"))
+    def test_honeypot_of_wrong_type_raises(self, fixture_html):
+        html = _edit_json(fixture_html, lambda d: d.update(pulapka="trap"))
         with pytest.raises(ParseError, match="honeypot"):
             parse_players(html)
-
-    def test_missing_honeypot_is_fine(self, shinden_html):
-        html = _edit_json(shinden_html("episode_players.html"), lambda d: d.pop("pulapka"))
-        assert len(parse_players(html)) == 9
 
     def test_challenge_page_raises(self):
         with pytest.raises(ParseError, match="Cloudflare challenge"):
@@ -134,51 +144,52 @@ class TestParsePlayersPartial:
             ({"audio": 1}, "bad_lang"),
         ],
     )
-    def test_single_invalid_entry_is_skipped_and_logged(self, shinden_html, diag_events, patch, reason):
-        html = _edit_json(shinden_html("episode_players.html"), lambda d: d["players"][0].update(patch))
+    def test_single_invalid_entry_is_skipped_and_logged(self, fixture_html, diag_events, patch, reason):
+        html = _edit_json(fixture_html, lambda d: d["players"][0].update(patch))
         assert len(parse_players(html)) == 8
         (partial,) = _events(diag_events, "shinden_parse_partial")
         assert partial["invalid"] == f"{reason}:1"
         assert (partial["found"], partial["valid"]) == (9, 8)
 
-    def test_non_dict_entry_is_invalid(self, shinden_html, diag_events):
-        html = _edit_json(shinden_html("episode_players.html"), lambda d: d["players"].append("garbage"))
+    def test_non_dict_entry_is_invalid(self, fixture_html, diag_events):
+        html = _edit_json(fixture_html, lambda d: d["players"].append("garbage"))
         assert len(parse_players(html)) == 9
         assert _events(diag_events, "shinden_parse_partial")[0]["invalid"] == "bad_online_id:1"
 
-    def test_all_entries_invalid_raises(self, shinden_html):
+    def test_all_entries_invalid_raises(self, fixture_html):
         def _break(d):
             for p in d["players"]:
                 p["player"] = ""
 
         with pytest.raises(ParseError, match="all 9 expected records are invalid"):
-            parse_players(_edit_json(shinden_html("episode_players.html"), _break))
+            parse_players(_edit_json(fixture_html, _break))
 
-    def test_invalid_plus_honeypot_only_still_raises(self, shinden_html):
+    def test_invalid_plus_honeypot_only_still_raises(self, fixture_html):
         def _only_trap_and_broken(d):
             d["players"] = [{"online_id": d["pulapka"], "player": "Trap"}, {"online_id": 5, "player": ""}]
 
         with pytest.raises(ParseError):
-            parse_players(_edit_json(shinden_html("episode_players.html"), _only_trap_and_broken))
+            parse_players(_edit_json(fixture_html, _only_trap_and_broken))
 
-    def test_honeypot_only_returns_empty_without_error(self, shinden_html, diag_events):
+    def test_honeypot_only_without_visible_rows_returns_empty(self, fixture_html, diag_events):
         def _only_trap(d):
             d["players"] = [{"online_id": d["pulapka"], "player": "Trap"}]
 
-        assert parse_players(_edit_json(shinden_html("episode_players.html"), _only_trap)) == []
+        html = _VISIBLE_ROW_RE.sub('<li class="ep-pl-gone">', fixture_html)
+        assert parse_players(_edit_json(html, _only_trap)) == []
         assert _events(diag_events, "shinden_parse_partial") == []
 
-    def test_duplicate_entry_is_excluded(self, shinden_html, diag_events):
-        html = _edit_json(shinden_html("episode_players.html"), lambda d: d["players"].append(dict(d["players"][0])))
+    def test_duplicate_entry_is_excluded(self, fixture_html, diag_events):
+        html = _edit_json(fixture_html, lambda d: d["players"].append(dict(d["players"][0])))
         assert len(parse_players(html)) == 9
         assert _events(diag_events, "shinden_parse_partial") == []
 
-    def test_string_online_id_accepted(self, shinden_html):
-        html = _edit_json(shinden_html("episode_players.html"), lambda d: d["players"][0].update(online_id="1825161"))
+    def test_string_online_id_accepted(self, fixture_html):
+        html = _edit_json(fixture_html, lambda d: d["players"][0].update(online_id="1825161"))
         assert parse_players(html)[0].online_id == "1825161"
 
-    def test_malformed_optional_fields_are_dropped(self, shinden_html, diag_events):
-        html = _edit_json(shinden_html("episode_players.html"), lambda d: d["players"][0].update(res="hd", group=[1]))
+    def test_malformed_optional_fields_are_dropped(self, fixture_html, diag_events):
+        html = _edit_json(fixture_html, lambda d: d["players"][0].update(res="hd", group=[1]))
         first = parse_players(html)[0]
         assert (first.max_res, first.subs_author, first.source) == (None, None, None)
         assert _events(diag_events, "shinden_parse_partial") == []
@@ -186,67 +197,182 @@ class TestParsePlayersPartial:
 
 @pytest.mark.unit
 class TestPlayersDomConsistency:
-    def test_healthy_page_has_no_mismatch(self, shinden_html, diag_events):
-        parse_players(shinden_html("episode_players.html"))
+    def test_healthy_page_has_no_mismatch(self, fixture_html, diag_events):
+        parse_players(fixture_html)
         assert _events(diag_events, "shinden_players_mismatch") == []
 
-    def test_visible_row_missing_from_json(self, shinden_html, diag_events):
-        html = _edit_json(shinden_html("episode_players.html"), lambda d: d["players"].pop(0))
+    def test_visible_row_missing_from_json(self, fixture_html, diag_events):
+        html = _edit_json(fixture_html, lambda d: d["players"].pop(0))
         assert len(parse_players(html)) == 8
         assert _events(diag_events, "shinden_players_mismatch") == [
             {"dom_only": 1, "json_only": 0, "trap_visible": False, "dom_duplicates": 0}
         ]
 
-    def test_json_player_missing_from_dom(self, shinden_html, diag_events):
-        html = shinden_html("episode_players.html").replace('data-online-id="1825161"', 'data-gone="1825161"')
+    def test_json_player_missing_from_dom(self, fixture_html, diag_events):
+        html = fixture_html.replace('data-online-id="1825161"', 'data-gone="1825161"')
         parse_players(html)
         assert _events(diag_events, "shinden_players_mismatch")[0]["json_only"] == 1
 
-    def test_visible_honeypot_row_is_reported(self, shinden_html, diag_events):
-        html = shinden_html("episode_players.html").replace(
-            f'data-online-id="{_TRAP_ID}" hidden', f'data-online-id="{_TRAP_ID}"'
-        )
+    def test_visible_honeypot_row_is_reported(self, fixture_html, diag_events):
+        html = fixture_html.replace(_HIDDEN_ROW, f'data-online-id="{_TRAP_ID}"')
         players = parse_players(html)
         assert _TRAP_ID not in {p.online_id for p in players}
         assert _events(diag_events, "shinden_players_mismatch")[0]["trap_visible"] is True
 
-    def test_invalid_json_entry_shown_in_dom_is_not_dom_only(self, shinden_html, diag_events):
-        html = _edit_json(shinden_html("episode_players.html"), lambda d: d["players"][0].update(player=""))
+    def test_invalid_json_entry_shown_in_dom_is_not_dom_only(self, fixture_html, diag_events):
+        html = _edit_json(fixture_html, lambda d: d["players"][0].update(player=""))
         parse_players(html)
         assert _events(diag_events, "shinden_players_mismatch") == []
 
-    def test_duplicate_dom_rows_are_counted(self, shinden_html, diag_events):
-        row = '<li class="ep-pl-row" data-online-id="1825161"></li>'
-        html = shinden_html("episode_players.html").replace('<ul class="ep-pl-list">', '<ul class="ep-pl-list">' + row)
-        parse_players(html)
+    def test_duplicate_dom_rows_are_counted(self, fixture_html, diag_events):
+        parse_players(_with_row(fixture_html, '<li class="ep-pl-row" data-online-id="1825161"></li>'))
         assert _events(diag_events, "shinden_players_mismatch")[0]["dom_duplicates"] == 1
 
 
 @pytest.mark.unit
+class TestReadPlayers:
+    def test_page_contract_is_read_once(self, fixture_html):
+        page = read_players(HTMLParser(fixture_html))
+        assert len(page.players) == 9
+        assert page.player_ids == frozenset(p.online_id for p in page.players)
+        assert (page.trap_id, page.xhr_endpoint) == (_TRAP_ID, "//shinden.pl/xhr")
+        assert parse_players(fixture_html) == list(page.players)
+
+    def test_auth_token_never_reaches_the_result(self, episode_page):
+        assert TEST_TOKEN not in repr(read_players(HTMLParser(episode_page())))
+
+
+@pytest.mark.unit
+class TestHoneypotPolicy:
+    @pytest.mark.parametrize("hidden_row", [True, False])
+    def test_missing_declaration_raises(self, fixture_html, hidden_row):
+        html = fixture_html if hidden_row else fixture_html.replace(_HIDDEN_ROW, 'class="gone"')
+        with pytest.raises(ParseError, match="honeypot declaration is missing"):
+            parse_players(_edit_json(html, lambda d: d.pop("pulapka")))
+
+    @pytest.mark.parametrize("value", ["trap", 0, -1, True, 1.5, [], {}, ""])
+    def test_invalid_value_raises(self, fixture_html, value):
+        with pytest.raises(ParseError, match="honeypot id has an unexpected type"):
+            parse_players(_edit_json(fixture_html, lambda d: d.update(pulapka=value)))
+
+    def test_null_without_hidden_row_means_no_honeypot(self, fixture_html):
+        html = _edit_json(fixture_html.replace(_HIDDEN_ROW, 'class="gone"'), lambda d: d.update(pulapka=None))
+        page = read_players(HTMLParser(html))
+        assert (page.trap_id, len(page.players)) == (None, 9)
+
+    @pytest.mark.parametrize("value", [None, 1234], ids=["null", "other_id"])
+    def test_declaration_disagreeing_with_hidden_row_raises(self, fixture_html, value):
+        with pytest.raises(ParseError, match="hidden player row"):
+            parse_players(_edit_json(fixture_html, lambda d: d.update(pulapka=value)))
+
+    @pytest.mark.parametrize(
+        "row",
+        [
+            '<li class="ep-pl-row" hidden=""></li>',
+            '<li class="ep-pl-row" data-online-id="abc" hidden=""></li>',
+            '<li class="ep-pl-row" data-online-id="" aria-hidden="true"></li>',
+            '<div data-online-id="777" hidden=""></div>',
+        ],
+    )
+    def test_extra_hidden_row_without_the_honeypot_id_raises(self, fixture_html, row):
+        with pytest.raises(ParseError, match="hidden player row"):
+            parse_players(_with_row(fixture_html, row))
+
+    @pytest.mark.parametrize("row_id", [_TRAP_ID, f"0{_TRAP_ID}"])
+    def test_extra_hidden_honeypot_row_never_becomes_a_player(self, fixture_html, row_id):
+        players = parse_players(_with_row(fixture_html, f'<li class="ep-pl-row" data-online-id="{row_id}" hidden=""></li>'))
+        assert len(players) == 9
+        assert _TRAP_ID not in {p.online_id for p in players}
+
+    def test_honeypot_inside_players_is_excluded(self, fixture_html):
+        def _add_trap(d):
+            d["players"].insert(0, dict(d["players"][0], online_id=d["pulapka"]))
+
+        page = read_players(HTMLParser(_edit_json(fixture_html, _add_trap)))
+        assert _TRAP_ID not in page.player_ids | {p.online_id for p in page.players}
+
+
+@pytest.mark.unit
+class TestDomCriticalChecks:
+    @pytest.mark.parametrize(
+        "players",
+        [[], [{"online_id": int(_TRAP_ID), "player": "Trap"}]],
+        ids=["empty", "honeypot_only"],
+    )
+    def test_no_valid_player_with_visible_rows_raises(self, fixture_html, players):
+        with pytest.raises(ParseError, match="9 player rows are visible"):
+            parse_players(_edit_json(fixture_html, lambda d: d.update(players=players)))
+
+    def test_visible_row_without_id_counts_against_empty_json(self, fixture_html):
+        html = _with_row(_VISIBLE_ROW_RE.sub('<li class="ep-pl-gone">', fixture_html), '<li class="ep-pl-row"></li>')
+        with pytest.raises(ParseError, match="1 player rows are visible"):
+            parse_players(_edit_json(html, lambda d: d.update(players=[])))
+
+    @pytest.mark.parametrize(
+        ("old", "new"),
+        [
+            (_HIDDEN_ROW, f'data-online-id="{_TRAP_ID}" aria-hidden="true"'),
+            ('data-online-id="1825161"', 'data-online-id="01825161"'),
+        ],
+        ids=["aria_hidden_only", "zero_padded_id"],
+    )
+    def test_equivalent_dom_markup_is_no_mismatch(self, fixture_html, diag_events, old, new):
+        parse_players(fixture_html.replace(old, new))
+        assert _events(diag_events, "shinden_players_mismatch") == []
+
+    def test_visible_row_with_invalid_id_is_only_reported(self, fixture_html, diag_events):
+        assert len(parse_players(_with_row(fixture_html, '<li class="ep-pl-row"></li>'))) == 9
+        assert _events(diag_events, "shinden_players_mismatch")[0]["dom_only"] == 1
+
+
+def _rename_lang_and_res(d):
+    for p in d["players"]:
+        p["lang_audio"], p["max_res"] = p.pop("audio"), p.pop("res")
+
+
+@pytest.mark.unit
+class TestPlayersDegraded:
+    @pytest.mark.parametrize(
+        ("mutate", "expected"),
+        [
+            (lambda d: None, []),
+            (_rename_lang_and_res, [{"missing": "audio,res", "affected": 9}]),
+            (lambda d: d["players"][0].pop("group"), [{"missing": "group", "affected": 1}]),
+            (lambda d: d["players"][0].update(audio="", sub=None, res=None, group=None), []),
+            (lambda d: d["players"].append({"online_id": d["pulapka"], "player": "Trap"}), []),
+        ],
+        ids=["complete", "renamed_keys", "one_record_missing_key", "empty_values", "excluded_record"],
+    )
+    def test_missing_contract_keys_are_reported_once(self, fixture_html, diag_events, mutate, expected):
+        parse_players(_edit_json(fixture_html, mutate))
+        assert _events(diag_events, "shinden_players_degraded") == expected
+
+
+@pytest.mark.unit
 class TestPinCompatibility:
-    def test_pin_from_one_episode_matches_same_source_in_next(self, shinden_html):
+    def test_pin_from_one_episode_matches_same_source_in_next(self, fixture_html):
         """Pins hold group name/url + host/lang/res, none of which change between episodes."""
-        ep1 = parse_players(shinden_html("episode_players.html"))
+        ep1 = parse_players(fixture_html)
 
         def _next_episode(d):
             for p in d["players"]:
                 p["online_id"] += 1000
 
-        ep2 = parse_players(_edit_json(shinden_html("episode_players.html"), _next_episode))
+        ep2 = parse_players(_edit_json(fixture_html, _next_episode))
         match = find_pinned(ep2, player_fingerprint(ep1[2]))
         assert match is not None
         assert (match.player, match.subs_author, match.source) == ("Vidara", "Example Subs", "https://subs.example/")
         assert match.online_id != ep1[2].online_id
 
-    def test_different_group_does_not_match_pin(self, shinden_html):
-        pin = player_fingerprint(parse_players(shinden_html("episode_players.html"))[0])
+    def test_different_group_does_not_match_pin(self, fixture_html):
+        pin = player_fingerprint(parse_players(fixture_html)[0])
 
         def _regroup(d):
             for p in d["players"]:
                 if p.get("group"):
                     p["group"] = {"name": "Other Subs", "url": "https://other.example/"}
 
-        other = parse_players(_edit_json(shinden_html("episode_players.html"), _regroup))
+        other = parse_players(_edit_json(fixture_html, _regroup))
         assert find_pinned(other, pin) is None
 
 
@@ -277,10 +403,10 @@ class TestSortPlayers:
 
     def test_stable_full_priority(self):
         players = [
-            _p("D", "en", "en",  "720p",  "2024-06-01"),
-            _p("C", "jp", "pl",  "720p",  "2024-01-01"),
-            _p("A", "pl", "pl",  "1080p", "2024-03-01"),
-            _p("B", "pl", "pl",  "720p",  "2024-05-01"),
+            _p("D", "en", "en", "720p", "2024-06-01"),
+            _p("C", "jp", "pl", "720p", "2024-01-01"),
+            _p("A", "pl", "pl", "1080p", "2024-03-01"),
+            _p("B", "pl", "pl", "720p", "2024-05-01"),
         ]
         assert [p.player for p in sort_players(players)] == ["A", "B", "C", "D"]
 
@@ -298,10 +424,10 @@ class TestSortPlayers:
 
     def test_download_full_order(self):
         players = [
-            _p("PL",    "pl",  "pl",  "1080p"),
-            _p("EN",    "en",  "pl",  "1080p"),
-            _p("JP",    "jp",  "pl",  "1080p"),
-            _p("OTHER", "ru",  "pl",  "1080p"),
+            _p("PL", "pl", "pl", "1080p"),
+            _p("EN", "en", "pl", "1080p"),
+            _p("JP", "jp", "pl", "1080p"),
+            _p("OTHER", "ru", "pl", "1080p"),
         ]
         assert [p.player for p in sort_players(players, download=True)] == ["JP", "EN", "PL", "OTHER"]
 

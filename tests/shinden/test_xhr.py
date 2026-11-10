@@ -113,6 +113,31 @@ class TestNoFallbackOnProtectionPages:
 
 
 @pytest.mark.unit
+class TestPageContract:
+    @pytest.mark.parametrize("backend", [BACKEND_NEW, BACKEND_API4])
+    def test_missing_honeypot_declaration_raises_on_every_backend(self, episode_page, backend):
+        html = episode_page().replace(f'"pulapka": {TRAP_ID}', '"renamed": 1', 1)
+        with pytest.raises(ParseError, match="honeypot"):
+            _read(html, backend=backend)
+
+    def test_empty_player_data_with_visible_rows_is_drift_not_a_missing_token(self, episode_page):
+        html = episode_page(token=None)
+        start = html.index('"players": [') + len('"players": ')
+        end = html.index('], "episodeId"') + 1
+        with pytest.raises(ParseError, match="player rows are visible"):
+            _read(html[:start] + "[]" + html[end:])
+
+    def test_player_json_is_parsed_once(self, episode_page, monkeypatch):
+        from alt_ani_cli.shinden import episode
+
+        calls = []
+        original = episode._player_data
+        monkeypatch.setattr(episode, "_player_data", lambda tree: calls.append(1) or original(tree))
+        _read(episode_page())
+        assert len(calls) == 1
+
+
+@pytest.mark.unit
 class TestForcedApi4:
     def test_forced_api4_skips_the_token_but_keeps_page_validation(self, episode_page):
         players, xhr = _read(episode_page(), backend=BACKEND_API4)

@@ -14,6 +14,14 @@ from alt_ani_cli.cli import _run_noninteractive, main
 from alt_ani_cli.config import GUEST_AUTH
 from alt_ani_cli.errors import AntiBotError, DownloadFailedError, IncompleteEpisodeListError, NoStreamError
 from alt_ani_cli.models import EmbedURL, EpisodeListing, EpisodeRow, PlayerEntry, SeriesRef
+from alt_ani_cli.shinden.episode import EpisodePlayers
+
+
+def _players_page(players) -> EpisodePlayers:
+    return EpisodePlayers(
+        players=tuple(players), player_ids=frozenset(p.online_id for p in players), trap_id=None, xhr_endpoint=None
+    )
+
 
 _REF = SeriesRef(id="1", slug="fate", title="Fate", url="http://shinden.pl/series/1-fate")
 _EP1 = EpisodeRow(number=1.0, title="Ep 1", url="http://shinden.pl/ep/1")
@@ -63,7 +71,7 @@ class TestNoninteractiveDiagnosticsContext:
         with (
             patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
             patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=EpisodeListing(_REF, [_EP1])),
-            patch("alt_ani_cli.cli.shinden_episode.parse_players", return_value=[_PLAYER_A, _PLAYER_B]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER_A, _PLAYER_B])),
             patch("alt_ani_cli.cli.shinden_episode.sort_players", return_value=[_PLAYER_A, _PLAYER_B]),
             patch("alt_ani_cli.cli.shinden_api.resolve_embed", side_effect=AntiBotError("blocked")),
         ):
@@ -95,7 +103,7 @@ class TestNoninteractiveDiagnosticsContext:
         with (
             patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
             patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=EpisodeListing(_REF, [_EP1])),
-            patch("alt_ani_cli.cli.shinden_episode.parse_players", return_value=[]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([])),
         ):
             _run_noninteractive(args, client)
 
@@ -172,7 +180,9 @@ class TestNoninteractiveHealthDeferAcrossEpisodes:
         with (
             patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
             patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=EpisodeListing(_REF, [_EP1, ep2])),
-            patch("alt_ani_cli.cli.shinden_episode.parse_players", side_effect=[players_ep1, players_ep2]),
+            patch(
+                "alt_ani_cli.shinden.episode.read_players", side_effect=[_players_page(players_ep1), _players_page(players_ep2)]
+            ),
             patch("alt_ani_cli.cli.shinden_episode.sort_players", side_effect=lambda players, download: players),
             patch("alt_ani_cli.cli.shinden_api.resolve_embed", side_effect=_resolve_embed_side_effect),
             patch("alt_ani_cli.cli.extract.resolve", side_effect=_extract_side_effect) as mock_extract,
@@ -213,7 +223,7 @@ class TestNoninteractiveReorder:
         with (
             patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
             patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=EpisodeListing(_REF, [_EP1])),
-            patch("alt_ani_cli.cli.shinden_episode.parse_players", return_value=[_PLAYER_A, _PLAYER_B]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER_A, _PLAYER_B])),
             patch("alt_ani_cli.cli.shinden_episode.sort_players", return_value=[_PLAYER_A, _PLAYER_B]),
             patch("alt_ani_cli.cli.shinden_api.resolve_embed", side_effect=AntiBotError("blocked")),
             patch("alt_ani_cli.cli.diagnostics.health_reorder") as mock_reorder,
@@ -268,7 +278,9 @@ class TestNoninteractiveReorder:
         with (
             patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
             patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=EpisodeListing(_REF, [_EP1, ep2])),
-            patch("alt_ani_cli.cli.shinden_episode.parse_players", side_effect=[players_ep1, players_ep2]),
+            patch(
+                "alt_ani_cli.shinden.episode.read_players", side_effect=[_players_page(players_ep1), _players_page(players_ep2)]
+            ),
             patch("alt_ani_cli.cli.shinden_episode.sort_players", side_effect=lambda players, download: players),
             patch("alt_ani_cli.cli.shinden_api.resolve_embed", side_effect=_resolve_embed_side_effect),
             patch("alt_ani_cli.cli.extract.resolve", side_effect=_extract_side_effect),
@@ -320,7 +332,7 @@ def _resume_env(watch=(), downloads=(), download_side_effect=None):
         patch("alt_ani_cli.cli.history.list_downloads", return_value=list(downloads)),
         patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
         patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=EpisodeListing(_REF, _EPISODES)),
-        patch("alt_ani_cli.cli.shinden_episode.parse_players", return_value=[_PLAYER_A]),
+        patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER_A])),
         patch("alt_ani_cli.cli.shinden_episode.sort_players", return_value=[_PLAYER_A]),
         patch("alt_ani_cli.cli._resolve_with_fallback", return_value=(_STREAM, None)),
         patch("alt_ani_cli.cli._pick_quality", return_value=_STREAM),
@@ -490,7 +502,7 @@ def _xhr_env(client):
         patch("alt_ani_cli.cli.shinden_http.make_client", return_value=client),
         patch("alt_ani_cli.cli.shinden_series.parse_series_url", return_value=_REF),
         patch("alt_ani_cli.cli.shinden_series.list_episodes", return_value=EpisodeListing(_REF, [_EP1, _EP2])),
-        patch("alt_ani_cli.cli.shinden_episode.parse_players", return_value=[_PLAYER_A, _PLAYER_B]),
+        patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER_A, _PLAYER_B])),
         patch("alt_ani_cli.cli.shinden_episode.sort_players", return_value=[_PLAYER_A, _PLAYER_B]),
         patch("alt_ani_cli.shinden.api.time.sleep") as mock_sleep,
         patch("alt_ani_cli.cli.history.upsert") as mock_upsert,

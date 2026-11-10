@@ -117,6 +117,11 @@ def shinden_players_mismatch(dom_only: int, json_only: int, trap_visible: bool, 
     )
 
 
+def shinden_players_degraded(missing: str, affected: int) -> None:
+    """``missing`` lists contract key names from a fixed set, never page values."""
+    _emit("shinden_players_degraded", missing=missing, affected=affected)
+
+
 def shinden_episodes_incomplete(series_id: str, pages_fetched: int, pages_total: int, reason: str) -> None:
     _emit("shinden_episodes_incomplete", id=series_id, fetched=pages_fetched, total=pages_total, reason=reason)
 
