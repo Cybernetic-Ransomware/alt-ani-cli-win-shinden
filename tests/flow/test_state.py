@@ -8,8 +8,16 @@ import pytest
 from alt_ani_cli.flow.handlers import handle_episode_dispatch, handle_resolve_stream
 from alt_ani_cli.flow.state import FlowState
 from alt_ani_cli.health import HostState, ResolverHealth, Signal
+from alt_ani_cli.shinden.episode import EpisodePlayers
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesRef
 from alt_ani_cli.shinden.xhr import BACKEND_API4, EpisodeXhr
+
+
+def _players_page(players) -> EpisodePlayers:
+    return EpisodePlayers(
+        players=tuple(players), player_ids=frozenset(p.online_id for p in players), trap_id=None, xhr_endpoint=None
+    )
+
 
 _SERIES_REF = SeriesRef(id="1", slug="fate", title="Fate", url="http://shinden.pl/series/1-fate")
 _EP1 = EpisodeRow(number=1.0, title="Ep 1", url="http://shinden.pl/ep/1")
@@ -66,7 +74,7 @@ class TestFlowStateHealth:
         state.client.get.return_value = mock_resp
 
         with (
-            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER])),
             patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER]),
             patch("alt_ani_cli.diagnostics.player_selected"),
         ):

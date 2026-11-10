@@ -1,4 +1,4 @@
-"""Opt-in live checks (``just test-live``): structural asserts only, ~8 requests, CF cache never written."""
+"""Opt-in live checks (``just test-live``): structural asserts only, ~20 requests, CF cache never written."""
 
 import json
 import re
@@ -58,14 +58,38 @@ def test_episode_list_is_complete_and_ascending(listing):
     assert all("/episode/" in ep.url for ep in listing.episodes)
 
 
+_CONTRACT_QUERIES = ("frieren", "one piece", "spy x family")
+
+
+@pytest.mark.parametrize("query", _CONTRACT_QUERIES)
+def test_honeypot_contract_holds_across_series(client, query):
+    """Page reads only, no XHR; one fixture is no proof that every page shares the honeypot contract."""
+    hits = [h for h in search.search_series(client, query) if "/series/" in h.url]
+    assert hits, f"no series hit for {query!r}"
+    found = series.list_episodes(client, series.parse_series_url(hits[0].url))
+    assert found.episodes
+    resp = client.get(found.episodes[-1].url)
+    resp.raise_for_status()
+    tree = HTMLParser(resp.text)
+    data = json.loads(tree.css_first("script#episode-players-data").text())
+    assert "pulapka" in data
+    page = episode.read_players(tree)
+    assert page.trap_id is not None
+    assert page.trap_id not in page.player_ids
+    hidden = [
+        n
+        for n in tree.css(".ep-pl-list li.ep-pl-row, .ep-pl-list [data-online-id]")
+        if "hidden" in n.attributes or n.attributes.get("aria-hidden") == "true"
+    ]
+    assert all(n.attributes.get("data-online-id") == page.trap_id for n in hidden)
+
+
 def test_players_parse_and_exclude_honeypot(client, listing):
     resp = client.get(listing.episodes[-1].url)
     resp.raise_for_status()
-    players = episode.parse_players(resp.text)
-    assert players
-    script = HTMLParser(resp.text).css_first("script#episode-players-data")
-    trap = json.loads(script.text()).get("pulapka")
-    assert str(trap) not in {p.online_id for p in players}
+    page = episode.read_players(HTMLParser(resp.text))
+    assert page.players
+    assert page.trap_id not in {p.online_id for p in page.players}
 
 
 def test_player_load_body_is_whole_seconds(client, listing):

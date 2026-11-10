@@ -9,10 +9,9 @@ from selectolax.parser import HTMLParser
 
 from alt_ani_cli.config import SHINDEN_BASE, SHINDEN_XHR_BASE
 from alt_ani_cli.content import EXCEPTIONS
-from alt_ani_cli.errors import ShindenError
 from alt_ani_cli.models import PlayerEntry
 from alt_ani_cli.shinden import episode as shinden_episode
-from alt_ani_cli.shinden.utils import _check_age_gate, _check_challenge
+from alt_ani_cli.shinden.utils import _check_age_gate
 
 BACKEND_NEW = "new_xhr"
 BACKEND_API4 = "api4"
@@ -22,7 +21,6 @@ _BACKEND_CHOICES = {"new": BACKEND_NEW, "api4": BACKEND_API4}
 # Base64 as served by Shinden 2.5 (verified 2026-11-10). No "%", so the raw value is URL-encoded exactly once.
 _AUTH_RE = re.compile(r"[A-Za-z0-9+/=_-]{16,4096}")
 _SHINDEN_HOST = urlsplit(SHINDEN_BASE).hostname
-_PAGE = "players"
 
 
 def parse_backend(value: str) -> str:
@@ -69,36 +67,25 @@ def read_episode(html: str, episode_url: str, *, backend: str) -> tuple[list[Pla
     """Page checks and the player list come first, so a protection page or broken HTML is never read as a missing token."""
     _check_age_gate(html)
     tree = HTMLParser(html)
-    _check_challenge(tree, _PAGE)
-    players = shinden_episode.parse_players(html)
-    data = _page_data(tree)
+    page = shinden_episode.read_players(tree)
 
     xhr = EpisodeXhr(
         episode_url=episode_url,
-        player_ids=frozenset(p.online_id for p in players),
-        trap_id=shinden_episode.trap_id(data),
+        player_ids=page.player_ids,
+        trap_id=page.trap_id,
         backend=BACKEND_API4,
         forced=backend == BACKEND_API4,
     )
     if backend == BACKEND_NEW:
-        context, reason = _context(tree, data)
+        context, reason = _context(tree, page.xhr_endpoint)
         if context is not None:
             xhr.backend, xhr.context = BACKEND_NEW, context
         else:
             xhr.fallback_reason = reason
-    return players, xhr
+    return list(page.players), xhr
 
 
-def _page_data(tree: HTMLParser) -> dict:
-    try:
-        return shinden_episode._player_data(tree)
-    except ShindenError:
-        # a page parse_players accepted always has it; without it there is simply no XHR context to read
-        return {}
-
-
-def _context(tree: HTMLParser, data: dict) -> tuple[EpisodeXhrContext | None, str | None]:
-    endpoint = data.get("xhr")
+def _context(tree: HTMLParser, endpoint: object) -> tuple[EpisodeXhrContext | None, str | None]:
     if not isinstance(endpoint, str) or not endpoint.strip():
         return None, "endpoint_missing"
     if not _is_shinden_xhr(endpoint):

@@ -19,6 +19,7 @@ from alt_ani_cli.errors import (
     DownloadFailedError,
     DownloadTargetError,
     NoStreamError,
+    ParseError,
     ShindenError,
     ShindenXhrError,
 )
@@ -35,6 +36,7 @@ from alt_ani_cli.flow.pin import player_fingerprint
 from alt_ani_cli.flow.state import BACK, FlowState, Screen, _BackSentinel
 from alt_ani_cli.models import EmbedURL, EpisodeListing, PlayerSource, RelatedSeries, SeriesMetadata
 from alt_ani_cli.player.runner import PlayResult
+from alt_ani_cli.shinden.episode import EpisodePlayers
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesRef
 from alt_ani_cli.shinden.xhr import BACKEND_API4, BACKEND_NEW, EpisodeXhr, read_episode
 
@@ -87,6 +89,12 @@ def _attach_episode_xhr(state: FlowState) -> None:
 
 def _api4_xhr(ep: EpisodeRow, players=()) -> EpisodeXhr:
     return EpisodeXhr(ep.url, frozenset(p.online_id for p in players), None, BACKEND_API4)
+
+
+def _players_page(players) -> EpisodePlayers:
+    return EpisodePlayers(
+        players=tuple(players), player_ids=frozenset(p.online_id for p in players), trap_id=None, xhr_endpoint=None
+    )
 
 
 _SERIES_REF = SeriesRef(id="1", slug="fate", title="Fate", url="http://shinden.pl/series/1-fate")
@@ -552,7 +560,7 @@ class TestInteractiveFlow:
             return ("pick", _PLAYER) if len(player_calls) == 1 else ("back", None)
 
         with (
-            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER, _PLAYER2])),
             patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
             patch("alt_ani_cli.cli._resolve_with_fallback", return_value=(mock_stream, mock_embed)),
             patch("alt_ani_cli.ui.menus.select_player_once", side_effect=_fake_player),
@@ -1013,7 +1021,7 @@ class TestEpisodeDispatchFilterMiss:
     def test_filters_match_proceeds_without_confirm(self):
         state = _make_ep_dispatch_state(lang="jp")
         with (
-            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER, _PLAYER2])),
             patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
             patch("alt_ani_cli.ui.menus.confirm") as mock_confirm,
         ):
@@ -1025,7 +1033,7 @@ class TestEpisodeDispatchFilterMiss:
     def test_filter_miss_confirm_true_uses_full_list(self):
         state = _make_ep_dispatch_state(lang="xx")
         with (
-            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER, _PLAYER2])),
             patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
             patch("alt_ani_cli.ui.menus.confirm", return_value=True),
         ):
@@ -1036,7 +1044,7 @@ class TestEpisodeDispatchFilterMiss:
     def test_filter_miss_confirm_false_returns_episodes_pick(self):
         state = _make_ep_dispatch_state(lang="xx")
         with (
-            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER, _PLAYER2])),
             patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
             patch("alt_ani_cli.ui.menus.confirm", return_value=False),
         ):
@@ -1046,7 +1054,7 @@ class TestEpisodeDispatchFilterMiss:
     def test_filter_miss_confirm_none_esc_returns_episodes_pick(self):
         state = _make_ep_dispatch_state(lang="xx")
         with (
-            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER, _PLAYER2])),
             patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
             patch("alt_ani_cli.ui.menus.confirm", return_value=None),
         ):
@@ -1056,7 +1064,7 @@ class TestEpisodeDispatchFilterMiss:
     def test_allow_fallback_skips_confirm_and_warns(self):
         state = _make_ep_dispatch_state(lang="xx", allow_fallback=True)
         with (
-            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER, _PLAYER2])),
             patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
             patch("alt_ani_cli.ui.menus.confirm") as mock_confirm,
             patch("alt_ani_cli.ui.progress.warn") as mock_warn,
@@ -1072,7 +1080,7 @@ class TestEpisodeDispatchSinglePlayerAutoPick:
     def test_auto_picks_only_player_and_logs_diagnostics(self):
         state = _make_ep_dispatch_state()
         with (
-            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER])),
             patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER]),
             patch("alt_ani_cli.diagnostics.player_selected") as mock_diag,
         ):
@@ -1164,9 +1172,9 @@ class TestPrefetchSeriesMetadata:
         with (
             patch("alt_ani_cli.flow.handlers._safe_fetch_one", side_effect=ValueError("unexpected")),
             patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            pytest.raises(ValueError, match="unexpected"),
         ):
-            with pytest.raises(ValueError, match="unexpected"):
-                _prefetch_series_metadata(client, [_SERIES_HIT])
+            _prefetch_series_metadata(client, [_SERIES_HIT])
 
     def test_empty_hits_returns_empty_dict(self):
         client = MagicMock()
@@ -1246,7 +1254,7 @@ class TestPrefetchPlayerSources:
         state = _make_ep_dispatch_state()
         state.args.show_sources = True
         with (
-            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER, _PLAYER2])),
             patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
             patch("alt_ani_cli.flow.handlers._prefetch_player_sources") as mock_prefetch,
         ):
@@ -1257,7 +1265,7 @@ class TestPrefetchPlayerSources:
     def test_episode_dispatch_skips_prefetch_without_flag(self):
         state = _make_ep_dispatch_state()
         with (
-            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER, _PLAYER2])),
             patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]),
             patch("alt_ani_cli.flow.handlers._prefetch_player_sources") as mock_prefetch,
         ):
@@ -1571,7 +1579,7 @@ class TestEpisodeDispatchDownloadSorting:
         state = _make_ep_dispatch_state()
         state.episode_action = "download"
         with (
-            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER, _PLAYER2])),
             patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]) as mock_sort,
         ):
             HANDLERS[Screen.EPISODE_DISPATCH](state)
@@ -1581,7 +1589,7 @@ class TestEpisodeDispatchDownloadSorting:
         state = _make_ep_dispatch_state()
         state.episode_action = "play"
         with (
-            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER, _PLAYER2])),
             patch("alt_ani_cli.shinden.episode.sort_players", return_value=[_PLAYER, _PLAYER2]) as mock_sort,
         ):
             HANDLERS[Screen.EPISODE_DISPATCH](state)
@@ -1946,7 +1954,9 @@ class TestEpisodeArgConsumedOnce:
 
     def test_new_series_reapplies_episode_arg(self):
         state = self._state(episode_arg_consumed=True)
-        with patch("alt_ani_cli.shinden.series.list_episodes", return_value=EpisodeListing(_SERIES_REF, [_EP4, _EP5, _EP6, _EP7])):
+        with patch(
+            "alt_ani_cli.shinden.series.list_episodes", return_value=EpisodeListing(_SERIES_REF, [_EP4, _EP5, _EP6, _EP7])
+        ):
             HANDLERS[Screen.FETCH_EPISODES](state)
         assert state.episode_arg_consumed is False
         with patch("alt_ani_cli.ui.menus.select_episodes") as mock_sel:
@@ -2037,7 +2047,7 @@ def _pin_dispatch(players, *, state=None, confirm=True, **arg_overrides):
     resp.text = ""
     state.client.get.return_value = resp
     with (
-        patch("alt_ani_cli.shinden.episode.parse_players", return_value=list(players)),
+        patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page(list(players))),
         patch("alt_ani_cli.shinden.episode.sort_players", return_value=list(players)) as mock_sort,
         patch("alt_ani_cli.shinden.api.resolve_embed") as mock_embed,
         patch("alt_ani_cli.diagnostics.player_selected") as mock_diag,
@@ -2480,9 +2490,7 @@ class TestResolveStreamXhrStop:
         state = self._state()
         stream = MagicMock(qualities={})
         with (
-            patch(
-                "alt_ani_cli.shinden.api.resolve_embed", side_effect=[_xhr(http_status=429), _EMBED]
-            ) as mock_resolve,
+            patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=[_xhr(http_status=429), _EMBED]) as mock_resolve,
             patch("alt_ani_cli.extract.resolve", return_value=stream),
             patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
             patch("alt_ani_cli.ui.progress.warn"),
@@ -2589,6 +2597,23 @@ class TestEpisodeXhrState:
         assert xhr.player_ids == frozenset(p.online_id for p in state.players)
         assert _FLOW_TOKEN_1 not in repr(state)
 
+    @pytest.mark.parametrize("backend", ["new", "api4"])
+    def test_drifted_page_is_an_error_not_an_empty_player_list(self, monkeypatch, backend):
+        monkeypatch.setattr(config, "XHR_BACKEND", backend)
+        state = _make_state(targets=[_EP1, _EP2], ep_idx=0)
+        page = _token_page(_FLOW_TOKEN_1).replace('"pulapka": 2045542847', '"renamed": 1', 1)
+        state.client.get.return_value = MagicMock(text=page, raise_for_status=MagicMock())
+        with (
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+            patch("alt_ani_cli.shinden.api.resolve_embed") as mock_resolve,
+            pytest.raises(ParseError, match="honeypot"),
+        ):
+            HANDLERS[Screen.EPISODE_DISPATCH](state)
+        mock_warn.assert_not_called()
+        mock_resolve.assert_not_called()
+        assert state.ep_idx == 0
+        assert state.client.get.call_count == 1
+
     def test_next_episode_gets_a_new_context(self, monkeypatch):
         monkeypatch.setattr(config, "XHR_BACKEND", "new")
         state = _make_state(targets=[_EP1, _EP2], ep_idx=0)
@@ -2666,7 +2691,7 @@ class TestPlayersChangedReloadLimit:
     @contextmanager
     def _env(self, resolve=_PLAYERS_CHANGED, fallback=_PLAYERS_CHANGED):
         with (
-            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.episode.read_players", return_value=_players_page([_PLAYER, _PLAYER2])),
             patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=resolve) as mock_resolve,
             patch("alt_ani_cli.cli._resolve_with_fallback", side_effect=fallback),
             patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
