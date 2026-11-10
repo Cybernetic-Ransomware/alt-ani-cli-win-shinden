@@ -8,7 +8,7 @@ from selectolax.parser import HTMLParser
 
 from alt_ani_cli.errors import ParseError
 from alt_ani_cli.flow.pin import find_pinned, player_fingerprint
-from alt_ani_cli.shinden.episode import parse_players, read_players, sort_players
+from alt_ani_cli.shinden.episode import _online_id, parse_players, read_players, sort_players
 from alt_ani_cli.shinden.models import PlayerEntry
 
 from .conftest import TEST_TOKEN
@@ -45,6 +45,10 @@ def _replace_json(html: str, raw: str) -> str:
 
 def _with_row(html: str, row: str) -> str:
     return html.replace('<ul class="ep-pl-list">', '<ul class="ep-pl-list">' + row, 1)
+
+
+def _outside_list(html: str, markup: str) -> str:
+    return html.replace("<body>", "<body>" + markup, 1)
 
 
 @pytest.fixture
@@ -112,9 +116,10 @@ class TestParsePlayersDrift:
         with pytest.raises(ParseError):
             parse_players("<html><body><p>no players here</p></body></html>")
 
-    def test_invalid_json_raises(self, fixture_html):
+    @pytest.mark.parametrize("raw", ["{not json", '{"players": [], "pulapka": ' + "9" * 5000 + "}"], ids=["syntax", "huge_int"])
+    def test_invalid_json_raises(self, fixture_html, raw):
         with pytest.raises(ParseError, match="not valid JSON"):
-            parse_players(_replace_json(fixture_html, "{not json"))
+            parse_players(_replace_json(fixture_html, raw))
 
     @pytest.mark.parametrize("data", [[], {"players": {}}, {"no_players": []}])
     def test_wrong_top_level_shape_raises(self, fixture_html, data):
@@ -139,6 +144,13 @@ class TestParsePlayersPartial:
             ({"online_id": None}, "bad_online_id"),
             ({"online_id": True}, "bad_online_id"),
             ({"online_id": -5}, "bad_online_id"),
+            ({"online_id": 0}, "bad_online_id"),
+            ({"online_id": 1.5}, "bad_online_id"),
+            ({"online_id": 10**30}, "bad_online_id"),
+            ({"online_id": "\u00b2"}, "bad_online_id"),
+            ({"online_id": "\u0661\u0662\u0663"}, "bad_online_id"),
+            pytest.param({"online_id": "9" * 5000}, "bad_online_id", id="huge_digit_string"),
+            ({"online_id": "000"}, "bad_online_id"),
             ({"player": ""}, "bad_player"),
             ({"player": 7}, "bad_player"),
             ({"audio": 1}, "bad_lang"),
@@ -184,9 +196,11 @@ class TestParsePlayersPartial:
         assert len(parse_players(html)) == 9
         assert _events(diag_events, "shinden_parse_partial") == []
 
-    def test_string_online_id_accepted(self, fixture_html):
-        html = _edit_json(fixture_html, lambda d: d["players"][0].update(online_id="1825161"))
+    @pytest.mark.parametrize("value", ["1825161", "0001825161", " 1825161 "])
+    def test_string_online_id_accepted(self, fixture_html, diag_events, value):
+        html = _edit_json(fixture_html, lambda d: d["players"][0].update(online_id=value))
         assert parse_players(html)[0].online_id == "1825161"
+        assert diag_events == []
 
     def test_malformed_optional_fields_are_dropped(self, fixture_html, diag_events):
         html = _edit_json(fixture_html, lambda d: d["players"][0].update(res="hd", group=[1]))
@@ -223,6 +237,24 @@ class TestPlayersDomConsistency:
         html = _edit_json(fixture_html, lambda d: d["players"][0].update(player=""))
         parse_players(html)
         assert _events(diag_events, "shinden_players_mismatch") == []
+
+    @pytest.mark.parametrize(
+        "markup",
+        [
+            '<div data-online-id="777" hidden=""></div>',
+            '<span data-online-id="abc" aria-hidden="true"></span>',
+            '<div data-online-id="1825161"></div><li class="ep-pl-row" data-online-id="555"></li>',
+        ],
+        ids=["hidden_other_id", "hidden_invalid_id", "visible_rows"],
+    )
+    def test_markup_outside_the_player_list_is_ignored(self, fixture_html, diag_events, markup):
+        assert len(parse_players(_outside_list(fixture_html, markup))) == 9
+        assert diag_events == []
+
+    def test_row_in_nested_list_is_counted_once(self, fixture_html, diag_events):
+        nested = '<li><ul class="ep-pl-list"><li class="ep-pl-row" data-online-id="1825161"></li></ul></li>'
+        parse_players(_with_row(fixture_html, nested))
+        assert _events(diag_events, "shinden_players_mismatch")[0]["dom_duplicates"] == 1
 
     def test_duplicate_dom_rows_are_counted(self, fixture_html, diag_events):
         parse_players(_with_row(fixture_html, '<li class="ep-pl-row" data-online-id="1825161"></li>'))
@@ -271,6 +303,9 @@ class TestHoneypotPolicy:
             '<li class="ep-pl-row" hidden=""></li>',
             '<li class="ep-pl-row" data-online-id="abc" hidden=""></li>',
             '<li class="ep-pl-row" data-online-id="" aria-hidden="true"></li>',
+            '<li class="ep-pl-row" data-online-id="\u00b2" hidden=""></li>',
+            '<li class="ep-pl-row" data-online-id="\u0662\u0660\u0664" aria-hidden="true"></li>',
+            pytest.param(f'<li class="ep-pl-row" data-online-id="{"9" * 5000}" hidden=""></li>', id="huge_id"),
             '<div data-online-id="777" hidden=""></div>',
         ],
     )
@@ -320,8 +355,20 @@ class TestDomCriticalChecks:
         parse_players(fixture_html.replace(old, new))
         assert _events(diag_events, "shinden_players_mismatch") == []
 
-    def test_visible_row_with_invalid_id_is_only_reported(self, fixture_html, diag_events):
-        assert len(parse_players(_with_row(fixture_html, '<li class="ep-pl-row"></li>'))) == 9
+    @pytest.mark.parametrize(
+        "row",
+        [
+            '<li class="ep-pl-row"></li>',
+            '<li class="ep-pl-row" data-online-id="abc"></li>',
+            '<li class="ep-pl-row" data-online-id="\u00b2"></li>',
+            '<li class="ep-pl-row" data-online-id="\u0661\u0662"></li>',
+            f'<li class="ep-pl-row" data-online-id="{"9" * 5000}"></li>',
+            '<div data-online-id="0"></div>',
+        ],
+        ids=["missing", "letters", "superscript", "non_ascii_digits", "too_long", "zero"],
+    )
+    def test_visible_row_with_invalid_id_is_only_reported(self, fixture_html, diag_events, row):
+        assert len(parse_players(_with_row(fixture_html, row))) == 9
         assert _events(diag_events, "shinden_players_mismatch")[0]["dom_only"] == 1
 
 
@@ -337,15 +384,74 @@ class TestPlayersDegraded:
         [
             (lambda d: None, []),
             (_rename_lang_and_res, [{"missing": "audio,res", "affected": 9}]),
-            (lambda d: d["players"][0].pop("group"), [{"missing": "group", "affected": 1}]),
+            (lambda d: d["players"][0].pop("sub"), []),
+            (lambda d: [p.pop("sub") for p in d["players"]], [{"missing": "sub", "affected": 9}]),
+            (lambda d: [p.pop("group", None) for p in d["players"]], []),
             (lambda d: d["players"][0].update(audio="", sub=None, res=None, group=None), []),
             (lambda d: d["players"].append({"online_id": d["pulapka"], "player": "Trap"}), []),
+            (lambda d: d["players"].append({"online_id": 5, "player": ""}), []),
         ],
-        ids=["complete", "renamed_keys", "one_record_missing_key", "empty_values", "excluded_record"],
+        ids=[
+            "complete",
+            "renamed_keys",
+            "one_record_missing_key",
+            "key_missing_everywhere",
+            "group_is_optional",
+            "empty_values",
+            "excluded_record",
+            "rejected_record",
+        ],
     )
     def test_missing_contract_keys_are_reported_once(self, fixture_html, diag_events, mutate, expected):
         parse_players(_edit_json(fixture_html, mutate))
         assert _events(diag_events, "shinden_players_degraded") == expected
+
+
+@pytest.mark.unit
+class TestOnlineId:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (1825161, "1825161"),
+            ("1825161", "1825161"),
+            ("0001825161", "1825161"),
+            (" 42 ", "42"),
+            ("9" * 19, "9" * 19),
+            (10**19 - 1, "9" * 19),
+        ],
+    )
+    def test_valid(self, value, expected):
+        assert _online_id(value) == expected
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            True,
+            False,
+            0,
+            -1,
+            1.5,
+            10**19,
+            pytest.param(10**5000, id="huge_int"),
+            "",
+            "0",
+            "000",
+            "-5",
+            "+5",
+            "1_000",
+            "1e3",
+            "\u00b2",
+            "\u0661\u0662\u0663",
+            "\uff11\uff12",
+            "9" * 20,
+            pytest.param("9" * 5000, id="huge_digit_string"),
+            None,
+            [],
+            {},
+        ],
+    )
+    def test_invalid(self, value):
+        assert _online_id(value) is None
 
 
 @pytest.mark.unit

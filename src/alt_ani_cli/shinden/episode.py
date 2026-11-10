@@ -11,11 +11,13 @@ from alt_ani_cli.models import PlayerEntry
 from alt_ani_cli.shinden.utils import ParseTally, _check_challenge, drift
 
 _RES_RE = re.compile(r"(\d+)")
+_ASCII_DIGITS_RE = re.compile(r"[0-9]+")
+_MAX_ID_DIGITS = 19  # int64 range; also keeps str() of a JSON integer under Python's int/str digit limit
 _PAGE = "players"
 _EPISODE_PATH_RE = re.compile(r"/episode/\d+-[A-Za-z0-9-]+/view/\d+")
 _SHINDEN_HOST = urlsplit(SHINDEN_BASE).hostname
-# keys every 2.5 player record carries, even when their value is null or empty
-_CONTRACT_KEYS = ("audio", "sub", "res", "group")
+# 2.5 schema keys, null or empty when unset; a key no accepted record carries means the schema changed
+_CONTRACT_KEYS = ("audio", "sub", "res")
 
 
 def episode_path(url: str) -> str | None:
@@ -60,8 +62,7 @@ def read_players(tree: HTMLParser) -> EpisodePlayers:
     tally = ParseTally(_PAGE)
     players: list[PlayerEntry] = []
     json_ids: set[str] = set()
-    missing_keys: set[str] = set()
-    degraded = 0
+    present_keys: set[str] = set()
     for raw in data["players"]:
         online_id = _online_id(raw.get("online_id")) if isinstance(raw, dict) else None
         if online_id is None:
@@ -81,15 +82,14 @@ def read_players(tree: HTMLParser) -> EpisodePlayers:
             continue
         tally.accept()
         players.append(entry)
-        missing = {key for key in _CONTRACT_KEYS if key not in raw}
-        missing_keys |= missing
-        degraded += bool(missing)
+        present_keys.update(key for key in _CONTRACT_KEYS if key in raw)
 
     valid_ids = frozenset(p.online_id for p in players)
     tally.finish()
     _check_dom_consistency(visible_rows, json_ids, valid_ids, trap)
-    if missing_keys:
-        diagnostics.shinden_players_degraded(missing=",".join(sorted(missing_keys)), affected=degraded)
+    missing_keys = [key for key in _CONTRACT_KEYS if key not in present_keys]
+    if players and missing_keys:
+        diagnostics.shinden_players_degraded(missing=",".join(sorted(missing_keys)), affected=len(players))
     return EpisodePlayers(players=tuple(players), player_ids=valid_ids, trap_id=trap, xhr_endpoint=data.get("xhr"))
 
 
@@ -99,7 +99,7 @@ def _player_data(tree: HTMLParser) -> dict:
         raise drift(_PAGE, "player data script#episode-players-data not found")
     try:
         data = json.loads(script.text())
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:  # JSONDecodeError, or an integer literal over Python's int/str digit limit
         raise drift(_PAGE, "player data is not valid JSON") from exc
     if not isinstance(data, dict) or not isinstance(data.get("players"), list):
         raise drift(_PAGE, "player data has no players list")
@@ -122,11 +122,13 @@ def _trap_id(data: dict, hidden_rows: list[str | None]) -> str | None:
 def _online_id(value: object) -> str | None:
     if isinstance(value, bool):
         return None
-    if isinstance(value, int) and value > 0:
-        return str(value)
-    if isinstance(value, str) and value.strip().isdigit() and int(value) > 0:
-        return str(int(value))
-    return None
+    if isinstance(value, int):
+        digits = str(value) if 0 < value < 10**_MAX_ID_DIGITS else ""
+    elif isinstance(value, str) and _ASCII_DIGITS_RE.fullmatch(value.strip()):
+        digits = value.strip().lstrip("0")
+    else:
+        return None
+    return digits if 0 < len(digits) <= _MAX_ID_DIGITS else None
 
 
 def _opt_text(value: object) -> str | None:
@@ -164,11 +166,15 @@ def _is_hidden(node: Node) -> bool:
 
 
 def _player_rows(tree: HTMLParser) -> tuple[list[str | None], list[str | None]]:
-    """Normalised ids of visible and hidden player rows, ``None`` for a row without a valid id."""
-    rows = [*tree.css("li.ep-pl-row"), *tree.css("[data-online-id]:not(li.ep-pl-row)")]
+    """Normalised ids of visible and hidden rows inside the player list, ``None`` for a row without a valid id."""
+    rows: dict[int, Node] = {}
+    for container in tree.css(".ep-pl-list"):
+        # selector lists and nested lists repeat elements; Node hashes by identity (mem_id) but == compares markup
+        for node in container.css("li.ep-pl-row, [data-online-id]"):
+            rows.setdefault(hash(node), node)
     visible: list[str | None] = []
     hidden: list[str | None] = []
-    for node in rows:
+    for node in rows.values():
         (hidden if _is_hidden(node) else visible).append(_online_id(node.attributes.get("data-online-id")))
     return visible, hidden
 

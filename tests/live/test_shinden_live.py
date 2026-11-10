@@ -78,7 +78,7 @@ def test_honeypot_contract_holds_across_series(client, query):
     assert page.trap_id not in page.player_ids
     hidden = [
         n
-        for n in tree.css("li.ep-pl-row, [data-online-id]")
+        for n in tree.css(".ep-pl-list li.ep-pl-row, .ep-pl-list [data-online-id]")
         if "hidden" in n.attributes or n.attributes.get("aria-hidden") == "true"
     ]
     assert all(n.attributes.get("data-online-id") == page.trap_id for n in hidden)
