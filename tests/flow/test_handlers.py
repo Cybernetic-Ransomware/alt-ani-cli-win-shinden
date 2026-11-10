@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
+from alt_ani_cli import config
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.errors import (
     AntiBotError,
@@ -35,6 +36,13 @@ from alt_ani_cli.flow.state import BACK, FlowState, Screen, _BackSentinel
 from alt_ani_cli.models import EmbedURL, EpisodeListing, PlayerSource, RelatedSeries, SeriesMetadata
 from alt_ani_cli.player.runner import PlayResult
 from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesRef
+from alt_ani_cli.shinden.xhr import BACKEND_API4, BACKEND_NEW, EpisodeXhr, read_episode
+
+
+@pytest.fixture(autouse=True)
+def _api4_backend(monkeypatch):
+    """FSM tests use stub episode pages without an XHR token; forcing api4 keeps the fallback warning out of them."""
+    monkeypatch.setattr(config, "XHR_BACKEND", "api4")
 
 
 def _make_args(**overrides):
@@ -66,7 +74,19 @@ def _make_state(**overrides) -> FlowState:
     state = FlowState(args=_make_args(), client=MagicMock())
     for k, v in overrides.items():
         setattr(state, k, v)
+    if "episode_xhr" not in overrides:
+        _attach_episode_xhr(state)
     return state
+
+
+def _attach_episode_xhr(state: FlowState) -> None:
+    """A state built past EPISODE_DISPATCH needs the XHR state dispatch would have read from the episode page."""
+    if state.current_ep is not None:
+        state.episode_xhr = _api4_xhr(state.current_ep, state.players)
+
+
+def _api4_xhr(ep: EpisodeRow, players=()) -> EpisodeXhr:
+    return EpisodeXhr(ep.url, frozenset(p.online_id for p in players), None, BACKEND_API4)
 
 
 _SERIES_REF = SeriesRef(id="1", slug="fate", title="Fate", url="http://shinden.pl/series/1-fate")
@@ -789,6 +809,8 @@ def _download_state(players=(_PLAYER, _PLAYER2), **overrides) -> FlowState:
     )
     for k, v in overrides.items():
         setattr(state, k, v)
+    if "episode_xhr" not in overrides:
+        _attach_episode_xhr(state)
     return state
 
 
@@ -1187,7 +1209,7 @@ _EMBED = EmbedURL(url="https://www.filemoon.sx/e/abc", referer="https://shinden.
 @pytest.mark.unit
 class TestPrefetchPlayerSources:
     def test_success_records_host_and_embed(self):
-        state = _make_state(players=[_PLAYER])
+        state = _make_state(targets=[_EP1], players=[_PLAYER])
         with (
             patch("alt_ani_cli.shinden.api.resolve_embed", return_value=_EMBED),
             patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
@@ -1198,9 +1220,9 @@ class TestPrefetchPlayerSources:
         assert state.player_embeds[_PLAYER.online_id] is _EMBED
 
     def test_antibot_error_leaves_host_unknown(self):
-        state = _make_state(players=[_PLAYER, _PLAYER2])
+        state = _make_state(targets=[_EP1], players=[_PLAYER, _PLAYER2])
 
-        def _resolve(client, online_id):
+        def _resolve(client, online_id, **_kwargs):
             if online_id == _PLAYER.online_id:
                 raise AntiBotError("blocked")
             return _EMBED
@@ -1214,7 +1236,7 @@ class TestPrefetchPlayerSources:
         assert _PLAYER2.online_id in state.player_sources
 
     def test_known_ids_are_skipped(self):
-        state = _make_state(players=[_PLAYER])
+        state = _make_state(targets=[_EP1], players=[_PLAYER])
         state.player_sources = {_PLAYER.online_id: MagicMock()}
         with patch("alt_ani_cli.shinden.api.resolve_embed") as mock_resolve:
             _prefetch_player_sources(state)
@@ -2513,7 +2535,7 @@ class TestPrefetchPlayerSourcesXhrStop:
         ids=["429", "503", "timeout", "invalid-wait"],
     )
     def test_stop_sends_no_further_xhr(self, err):
-        state = _make_state(players=[_PLAYER, _PLAYER2, self._P3])
+        state = _make_state(targets=[_EP1], players=[_PLAYER, _PLAYER2, self._P3])
         with (
             patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=[_EMBED, err, _EMBED]) as mock_resolve,
             patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
@@ -2525,7 +2547,7 @@ class TestPrefetchPlayerSourcesXhrStop:
         mock_warn.assert_called_once()
 
     def test_player_local_failure_continues_sequentially(self):
-        state = _make_state(players=[_PLAYER, _PLAYER2, self._P3])
+        state = _make_state(targets=[_EP1], players=[_PLAYER, _PLAYER2, self._P3])
         no_iframe = _xhr(stage="player_show", category="no_stream_url", reason="no_iframe", http_status=200)
         with (
             patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=[no_iframe, _EMBED, _EMBED]) as mock_resolve,
@@ -2536,3 +2558,192 @@ class TestPrefetchPlayerSourcesXhrStop:
         assert [c.args[1] for c in mock_resolve.call_args_list] == ["pid1", "pid2", "pid3"]
         assert set(state.player_sources) == {"pid2", "pid3"}
         mock_warn.assert_not_called()
+
+
+_PAGE_FIXTURE = Path(__file__).parent.parent / "fixtures" / "shinden" / "episode_players.html"
+_PAGE_ISLAND = '<div class="ep-players__island" data-sh-module="episode-players">'
+_FLOW_TOKEN_1 = "Rmxvd0VwaXNvZGVPbmVUb2tlbg=="
+_FLOW_TOKEN_2 = "Rmxvd0VwaXNvZGVUd29Ub2tlbg=="
+_INVALID_TOKEN_BODY = '{"error": {"code": "invalid_token"}}'
+
+
+def _token_page(token: str) -> str:
+    html = _PAGE_FIXTURE.read_text(encoding="utf-8")
+    return html.replace(_PAGE_ISLAND, _PAGE_ISLAND[:-1] + f' data-player-auth="{token}">', 1)
+
+
+@pytest.mark.unit
+class TestEpisodeXhrState:
+    def _dispatch(self, state, page: str):
+        state.client.get.return_value = MagicMock(text=page, raise_for_status=MagicMock())
+        with patch("alt_ani_cli.ui.progress.warn"):
+            return HANDLERS[Screen.EPISODE_DISPATCH](state)
+
+    def test_dispatch_stores_the_page_context_for_the_current_episode(self, monkeypatch):
+        monkeypatch.setattr(config, "XHR_BACKEND", "new")
+        state = _make_state(targets=[_EP1, _EP2], ep_idx=0)
+        assert self._dispatch(state, _token_page(_FLOW_TOKEN_1)) is Screen.PLAYER_PICK
+        xhr = state.episode_xhr
+        assert xhr is not None
+        assert (xhr.episode_url, xhr.backend) == (_EP1.url, BACKEND_NEW)
+        assert xhr.player_ids == frozenset(p.online_id for p in state.players)
+        assert _FLOW_TOKEN_1 not in repr(state)
+
+    def test_next_episode_gets_a_new_context(self, monkeypatch):
+        monkeypatch.setattr(config, "XHR_BACKEND", "new")
+        state = _make_state(targets=[_EP1, _EP2], ep_idx=0)
+        self._dispatch(state, _token_page(_FLOW_TOKEN_1))
+        first = state.episode_xhr
+        state.ep_idx = 1
+        self._dispatch(state, _token_page(_FLOW_TOKEN_2))
+        second = state.episode_xhr
+        assert first is not None and second is not None
+        assert first is not second
+        assert second.episode_url == _EP2.url
+        assert second.context is not None
+        assert second.context.auth == _FLOW_TOKEN_2
+
+    def test_resolve_stream_refuses_a_context_from_another_episode(self):
+        state = _make_state(targets=[_EP1, _EP2], ep_idx=1, players=[_PLAYER], chosen_player=_PLAYER)
+        state.episode_xhr = _api4_xhr(_EP1, [_PLAYER])
+        with patch("alt_ani_cli.cli._resolve_with_fallback") as mock_fallback, pytest.raises(AssertionError):
+            HANDLERS[Screen.RESOLVE_STREAM](state)
+        mock_fallback.assert_not_called()
+
+    def test_players_changed_reloads_the_episode(self):
+        state = _make_state(targets=[_EP1], ep_idx=0, players=[_PLAYER, _PLAYER2], chosen_player=_PLAYER)
+        err = ShindenXhrError("changed", stage="token_refresh", category="player_list_changed", reason="player_not_listed")
+        with (
+            patch("alt_ani_cli.cli._resolve_with_fallback", side_effect=err),
+            patch("alt_ani_cli.ui.progress.error") as mock_error,
+            patch("alt_ani_cli.ui.progress.info"),
+        ):
+            assert HANDLERS[Screen.RESOLVE_STREAM](state) is Screen.EPISODE_DISPATCH
+        assert state.failed_ids == set()
+        assert state.ep_idx == 0
+        assert "player list" in mock_error.call_args.args[0]
+
+    def test_prefetch_shares_one_refresh_and_stops_on_a_second_invalid_token(self, monkeypatch):
+        page = _token_page(_FLOW_TOKEN_1)
+        players, xhr = read_episode(page, _EP1.url, backend=BACKEND_NEW)
+        first, second = players[0].online_id, players[1].online_id
+        state = _make_state(targets=[_EP1], ep_idx=0, players=players[:2], episode_xhr=xhr)
+        loads = {first: [(403, _INVALID_TOKEN_BODY), (200, "5")], second: [(403, _INVALID_TOKEN_BODY)]}
+
+        def get(url, **_kw):
+            if url == _EP1.url:
+                return MagicMock(status_code=200, text=_token_page(_FLOW_TOKEN_2), headers={})
+            online_id = url.split("/xhr/")[1].split("/")[0]
+            status, body = loads[online_id].pop(0) if "/player_load" in url else (200, '<iframe src="https://h.example/e/1">')
+            return MagicMock(status_code=status, text=body, headers={})
+
+        state.client.get.side_effect = get
+        with (
+            patch("alt_ani_cli.shinden.api.time.sleep"),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            _prefetch_player_sources(state)
+        urls = [c.args[0] for c in state.client.get.call_args_list]
+        assert urls.count(_EP1.url) == 1
+        assert set(state.player_sources) == {first}
+        assert "blocked" in mock_warn.call_args.args[0]
+
+
+_PLAYERS_CHANGED = ShindenXhrError("changed", stage="token_refresh", category="player_list_changed", reason="player_not_listed")
+
+
+@pytest.mark.unit
+class TestPlayersChangedReloadLimit:
+    def _state(self, targets=(_EP1,), show_sources=True):
+        state = _make_ep_dispatch_state()
+        state.ref = _SERIES_REF
+        state.episodes = list(targets)
+        state.targets = list(targets)
+        state.args.show_sources = show_sources
+        return state
+
+    @contextmanager
+    def _env(self, resolve=_PLAYERS_CHANGED, fallback=_PLAYERS_CHANGED):
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=resolve) as mock_resolve,
+            patch("alt_ani_cli.cli._resolve_with_fallback", side_effect=fallback),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+            patch("alt_ani_cli.ui.progress.info"),
+            patch("alt_ani_cli.ui.progress.error"),
+        ):
+            yield mock_resolve, mock_warn
+
+    def _limit_warned(self, mock_warn) -> bool:
+        return any("znów się zmieniła" in c.args[0] for c in mock_warn.call_args_list)
+
+    def test_prefetch_players_changed_reloads_the_episode(self):
+        state = self._state()
+        with self._env(resolve=[_PLAYERS_CHANGED, _EMBED]) as (mock_resolve, _):
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.EPISODE_DISPATCH
+        assert mock_resolve.call_count == 1
+        assert state.players_reloaded_ep == _EP1.url
+        assert state.ep_idx == 0
+
+    def test_other_prefetch_stop_does_not_reload(self):
+        state = self._state()
+        with self._env(resolve=_xhr(http_status=403)):
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.PLAYER_PICK
+        assert state.players_reloaded_ep is None
+        assert state.client.get.call_count == 1
+
+    def test_second_change_stops_without_another_get(self):
+        state = self._state()
+        screen = Screen.EPISODE_DISPATCH
+        with self._env() as (mock_resolve, mock_warn):
+            for _ in range(5):
+                screen = HANDLERS[screen](state)
+                if screen is not Screen.EPISODE_DISPATCH:
+                    break
+        assert screen is Screen.PLAYER_PICK
+        assert state.client.get.call_count == 2
+        assert mock_resolve.call_count == 2
+        assert self._limit_warned(mock_warn)
+
+    def test_limit_is_shared_between_resolve_stream_and_prefetch(self):
+        state = self._state(show_sources=False)
+        with self._env() as (_, mock_warn):
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.PLAYER_PICK
+            state.chosen_player = _PLAYER
+            assert HANDLERS[Screen.RESOLVE_STREAM](state) is Screen.EPISODE_DISPATCH
+            state.args.show_sources = True
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.PLAYER_PICK
+            state.chosen_player = _PLAYER
+            assert HANDLERS[Screen.RESOLVE_STREAM](state) is Screen.PLAYER_PICK
+        assert state.client.get.call_count == 2
+        assert self._limit_warned(mock_warn)
+
+    def test_prefetch_reload_then_resolve_stream_change_stops(self):
+        state = self._state()
+        with self._env() as (_, mock_warn):
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.EPISODE_DISPATCH
+            state.args.show_sources = False
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.PLAYER_PICK
+            state.chosen_player = _PLAYER
+            assert HANDLERS[Screen.RESOLVE_STREAM](state) is Screen.PLAYER_PICK
+        assert state.client.get.call_count == 2
+        assert self._limit_warned(mock_warn)
+
+    def test_limit_resets_for_another_episode(self):
+        state = self._state(targets=(_EP1, _EP2))
+        state.players_reloaded_ep = _EP1.url
+        state.ep_idx = 1
+        with self._env():
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.EPISODE_DISPATCH
+        assert state.players_reloaded_ep == _EP2.url
+
+    def test_limit_resets_on_a_new_episode_pick(self):
+        state = self._state()
+        state.players_reloaded_ep = _EP1.url
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP1]):
+            assert HANDLERS[Screen.EPISODES_PICK](state) is Screen.EPISODE_DISPATCH
+        assert state.players_reloaded_ep is None
+        with self._env():
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.EPISODE_DISPATCH

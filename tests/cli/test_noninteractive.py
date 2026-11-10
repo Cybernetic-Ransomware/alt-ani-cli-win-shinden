@@ -75,13 +75,16 @@ class TestNoninteractiveDiagnosticsContext:
         assert _events(content) == [
             "event=series_selected",
             "event=episode_selected",
+            # the stub page has players but no XHR token, so the episode is served by api4
+            "event=shinden_xhr_context",
             "event=player_selected",
             "event=resolve_result",
             "event=player_selected",
             "event=resolve_result",
         ]
-        assert f"online_id={_PLAYER_A.online_id}" in content.splitlines()[2]
-        assert f"online_id={_PLAYER_B.online_id}" in content.splitlines()[4]
+        assert "action=fallback" in content.splitlines()[2]
+        assert f"online_id={_PLAYER_A.online_id}" in content.splitlines()[3]
+        assert f"online_id={_PLAYER_B.online_id}" in content.splitlines()[5]
 
     def test_episode_selected_uses_final_episode_number_and_title(self):
         diagnostics.configure()
@@ -159,7 +162,7 @@ class TestNoninteractiveHealthDeferAcrossEpisodes:
 
         resolve_embed_ids: list[str] = []
 
-        def _resolve_embed_side_effect(_client, online_id):
+        def _resolve_embed_side_effect(_client, online_id, **_kwargs):
             resolve_embed_ids.append(online_id)
             return embeds[online_id]
 
@@ -255,7 +258,7 @@ class TestNoninteractiveReorder:
 
         resolve_embed_ids: list[str] = []
 
-        def _resolve_embed_side_effect(_client, online_id):
+        def _resolve_embed_side_effect(_client, online_id, **_kwargs):
             resolve_embed_ids.append(online_id)
             return embeds[online_id]
 

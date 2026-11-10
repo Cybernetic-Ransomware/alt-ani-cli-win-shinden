@@ -89,8 +89,14 @@ def series_selected(series_id: str, title: str) -> None:
     _emit("series_selected", id=series_id, title=title)
 
 
-def episode_selected(number: float, title: str) -> None:
-    _emit("episode_selected", number=number, title=title)
+def episode_selected(number: float, title: str, path: str | None = None) -> None:
+    """``path`` is the validated episode page path (no host, no query) so replay can reopen this exact episode."""
+    _emit("episode_selected", number=number, title=title, path=path)
+
+
+def shinden_xhr_context(action: str, backend: str, reason: str | None, online_id: str | None = None) -> None:
+    """Backend choice and token refresh; ``reason`` is a fixed code, never page data, a URL or the token."""
+    _emit("shinden_xhr_context", action=action, backend=backend, reason=reason, online_id=online_id)
 
 
 def shinden_parse_partial(page: str, found: int, valid: int, invalid: str, excluded: str) -> None:
@@ -137,6 +143,9 @@ def resolve_result(
     retry_after: int | None = None,
     reason: str | None = None,
     xhr_outcome: str | None = None,
+    xhr_backend: str | None = None,
+    token_refreshed: bool | None = None,
+    xhr_fallback: str | None = None,
 ) -> None:
     """``layer``/``category`` come from failure.classify_exception; the XHR fields from shinden/api.py."""
     _emit(
@@ -156,6 +165,9 @@ def resolve_result(
         retry_after=retry_after,
         reason=reason,
         xhr_outcome=xhr_outcome,
+        xhr_backend=xhr_backend,
+        token_refreshed=token_refreshed,
+        xhr_fallback=xhr_fallback,
         elapsed=f"{elapsed:.3f}",
     )
 

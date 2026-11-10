@@ -30,6 +30,7 @@ from alt_ani_cli.shinden import search as shinden_search
 from alt_ani_cli.shinden import series as shinden_series
 from alt_ani_cli.shinden.metadata import fetch_series_metadata
 from alt_ani_cli.shinden.series import parse_series_url
+from alt_ani_cli.shinden.xhr import EpisodeXhr
 from alt_ani_cli.ui import menus, progress
 
 _PROG = CONTENT["progress"]
@@ -67,16 +68,34 @@ def _record_player_source(state: FlowState, online_id: str, embed: EmbedURL) -> 
     state.player_sources[online_id] = PlayerSource(online_id=online_id, host=host, embed_url=embed.url)
 
 
-def _prefetch_player_sources(state: FlowState) -> None:
+def _episode_xhr(state: FlowState, ep: EpisodeRow | None) -> EpisodeXhr:
+    xhr = state.episode_xhr
+    if ep is None or xhr is None or xhr.episode_url != ep.url:
+        raise AssertionError("XHR state does not belong to the current episode")
+    return xhr
+
+
+def _reload_players(state: FlowState, ep: EpisodeRow) -> ScreenResult:
+    if state.players_reloaded_ep == ep.url:
+        progress.warn(_PROG["players_reload_limit"].format(number=ep.number))
+        return Screen.PLAYER_PICK
+    state.players_reloaded_ep = ep.url
+    progress.info(_PROG["players_reload"].format(number=ep.number))
+    return Screen.EPISODE_DISPATCH
+
+
+def _prefetch_player_sources(state: FlowState) -> shinden_api.XhrOutcome | None:
     """Sequential on purpose: a block or outage must stop before the next XHR, which concurrent workers can't guarantee."""
     players = [p for p in state.players if p.online_id not in state.player_sources]
     if not players:
-        return
+        return None
+    xhr = _episode_xhr(state, state.current_ep)
+    xhr.begin_operation()
     stop: ShindenXhrError | None = None
     with progress.spinner(_PROG["prefetch_sources"].format(count=len(players))):
         for p in players:
             try:
-                embed = shinden_api.resolve_embed(state.client, p.online_id)
+                embed = shinden_api.resolve_embed(state.client, p.online_id, xhr=xhr)
             except ShindenXhrError as exc:
                 if shinden_api.xhr_outcome(exc) is shinden_api.XhrOutcome.NEXT_PLAYER:
                     continue
@@ -85,8 +104,10 @@ def _prefetch_player_sources(state: FlowState) -> None:
             except ShindenError:
                 continue
             _record_player_source(state, p.online_id, embed)
-    if stop is not None:
-        progress.warn(_PROG["prefetch_stopped"].format(reason=shinden_api.stop_message(stop)))
+    if stop is None:
+        return None
+    progress.warn(_PROG["prefetch_stopped"].format(reason=shinden_api.stop_message(stop)))
+    return shinden_api.xhr_outcome(stop)
 
 
 def _sorted_by_date_desc(hits: list[SeriesHit], metadata: dict[str, SeriesMetadata]) -> list[SeriesHit]:
@@ -329,6 +350,7 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
             return BACK
         state.targets = targets
         state.ep_idx = 0
+        state.players_reloaded_ep = None
         state.overwrite_existing_batch = False
         state.pinned_player = None
         state.episode_arg_consumed = True
@@ -363,6 +385,7 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
         return BACK
     state.targets = result
     state.ep_idx = 0
+    state.players_reloaded_ep = None
     state.overwrite_existing_batch = False
     state.pinned_player = None
     return Screen.EPISODE_DISPATCH
@@ -374,13 +397,16 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
 
     ep = state.targets[state.ep_idx]
     progress.info(_PROG["episode"].format(number=ep.number, title=ep.title))
-    diagnostics.episode_selected(ep.number, ep.title)
+    diagnostics.episode_selected(ep.number, ep.title, shinden_episode.episode_path(ep.url))
 
-    ep_resp = state.client.get(ep.url)
-    ep_resp.raise_for_status()
+    from alt_ani_cli.cli import _filter_players, _load_episode
+
+    if state.players_reloaded_ep != ep.url:
+        state.players_reloaded_ep = None
+    state.episode_xhr = None
+    raw_players, xhr = _load_episode(state.client, ep)
 
     args = state.args
-    raw_players = shinden_episode.parse_players(ep_resp.text)
     download_mode = args.download or state.episode_action == "download"
     players = shinden_episode.sort_players(raw_players, download=download_mode)
 
@@ -388,8 +414,6 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
         progress.warn(_PROG["no_players"].format(number=ep.number))
         state.ep_idx += 1
         return Screen.EPISODE_DISPATCH
-
-    from alt_ani_cli.cli import _filter_players
 
     filtered, unmatched = _filter_players(
         players,
@@ -417,6 +441,7 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
     state.embed = None
     state.player_sources = {}
     state.player_embeds = {}
+    state.episode_xhr = xhr
 
     if args.select_nth:
         return _auto_pick_player(state, players[0])
@@ -431,8 +456,8 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
     elif len(players) == 1:
         return _auto_pick_player(state, players[0])
 
-    if args.show_sources:
-        _prefetch_player_sources(state)
+    if args.show_sources and _prefetch_player_sources(state) is shinden_api.XhrOutcome.PLAYERS_CHANGED:
+        return _reload_players(state, ep)
 
     return Screen.PLAYER_PICK
 
@@ -486,6 +511,7 @@ def handle_resolve_stream(state: FlowState) -> ScreenResult:
             state.chosen_player,
             auto=False,  # user already picked — try only chosen player
             ep_number=ep.number,
+            xhr=_episode_xhr(state, ep),
             cookies_file=state.args.cookies_file,
             cookies_browser=state.args.cookies_browser,
             embed_cache=state.player_embeds,
@@ -494,6 +520,9 @@ def handle_resolve_stream(state: FlowState) -> ScreenResult:
     except ShindenXhrError as exc:
         # shared-API failure, not this player's: keep it pickable and leave any retry to the user
         progress.error(shinden_api.stop_message(exc))
+        if shinden_api.xhr_outcome(exc) is shinden_api.XhrOutcome.PLAYERS_CHANGED:
+            # the shown list is stale: reload this episode's page instead of offering ids that are gone
+            return _reload_players(state, ep)
         return Screen.PLAYER_PICK
 
     if stream is not None:

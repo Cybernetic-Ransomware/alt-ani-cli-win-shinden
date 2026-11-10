@@ -19,6 +19,11 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 SHINDEN_BASE = "https://shinden.pl"
 SHINDEN_API_BASE = "https://api4.shinden.pl"
+# The episode page names its XHR endpoint, but only this one is ever called; the page value is checked against it.
+SHINDEN_XHR_BASE = f"{SHINDEN_BASE}/xhr"
+
+# "new" = shinden.pl/xhr with the episode page's signed token; "api4" = legacy api4 endpoint with GUEST_AUTH.
+XHR_BACKEND = os.getenv("ALT_ANI_CLI_XHR_BACKEND", "new")
 
 # Minimum wait between player_load and player_show; the server's own value wins when it is longer.
 # Increase via env var if player_show keeps returning empty responses.

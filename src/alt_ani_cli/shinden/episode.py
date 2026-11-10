@@ -1,33 +1,44 @@
 import json
 import re
+from urllib.parse import urlsplit
 
 from selectolax.parser import HTMLParser
 
 from alt_ani_cli import diagnostics
+from alt_ani_cli.config import SHINDEN_BASE
 from alt_ani_cli.models import PlayerEntry
 from alt_ani_cli.shinden.utils import ParseTally, _check_challenge, drift
 
 _RES_RE = re.compile(r"(\d+)")
 _PAGE = "players"
+_EPISODE_PATH_RE = re.compile(r"/episode/\d+-[A-Za-z0-9-]+/view/\d+")
+_SHINDEN_HOST = urlsplit(SHINDEN_BASE).hostname
+
+
+def episode_path(url: str) -> str | None:
+    """The page path alone, for the diagnostics log — only for a plain shinden.pl episode URL without a query."""
+    if any(c in url for c in "?#@"):
+        return None
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme != "https" or parts.hostname != _SHINDEN_HOST or port is not None:
+        return None
+    return parts.path if _EPISODE_PATH_RE.fullmatch(parts.path) else None
+
+
+def episode_url_from_path(path: str) -> str | None:
+    return f"{SHINDEN_BASE}{path}" if _EPISODE_PATH_RE.fullmatch(path) else None
 
 
 def parse_players(html: str) -> list[PlayerEntry]:
     """Parse the player JSON island; the ``pulapka`` honeypot id is excluded because loading it flags the client."""
     tree = HTMLParser(html)
     _check_challenge(tree, _PAGE)
-    script = tree.css_first("script#episode-players-data")
-    if script is None:
-        raise drift(_PAGE, "player data script#episode-players-data not found")
-    try:
-        data = json.loads(script.text())
-    except json.JSONDecodeError as exc:
-        raise drift(_PAGE, "player data is not valid JSON") from exc
-    if not isinstance(data, dict) or not isinstance(data.get("players"), list):
-        raise drift(_PAGE, "player data has no players list")
-    trap_raw = data.get("pulapka")
-    if trap_raw is not None and _online_id(trap_raw) is None:
-        raise drift(_PAGE, "honeypot id has an unexpected type")
-    trap = _online_id(trap_raw) if trap_raw is not None else None
+    data = _player_data(tree)
+    trap = trap_id(data)
 
     tally = ParseTally(_PAGE)
     players: list[PlayerEntry] = []
@@ -55,6 +66,29 @@ def parse_players(html: str) -> list[PlayerEntry]:
     _report_dom_mismatch(tree, json_ids, {p.online_id for p in players}, trap)
     tally.finish()
     return players
+
+
+def _player_data(tree: HTMLParser) -> dict:
+    script = tree.css_first("script#episode-players-data")
+    if script is None:
+        raise drift(_PAGE, "player data script#episode-players-data not found")
+    try:
+        data = json.loads(script.text())
+    except json.JSONDecodeError as exc:
+        raise drift(_PAGE, "player data is not valid JSON") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("players"), list):
+        raise drift(_PAGE, "player data has no players list")
+    return data
+
+
+def trap_id(data: dict) -> str | None:
+    trap_raw = data.get("pulapka")
+    if trap_raw is None:
+        return None
+    trap = _online_id(trap_raw)
+    if trap is None:
+        raise drift(_PAGE, "honeypot id has an unexpected type")
+    return trap
 
 
 def _online_id(value: object) -> str | None:

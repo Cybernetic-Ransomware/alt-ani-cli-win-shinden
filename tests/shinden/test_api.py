@@ -5,15 +5,19 @@ from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from urllib.parse import quote
 
 import pytest
 from curl_cffi.requests.exceptions import ConnectionError as CurlConnectionError
 from curl_cffi.requests.exceptions import DNSError, Timeout
 
 from alt_ani_cli.cli import _record_extraction_failure
-from alt_ani_cli.config import GUEST_AUTH, SHINDEN_API_BASE
+from alt_ani_cli.config import GUEST_AUTH, SHINDEN_API_BASE, SHINDEN_XHR_BASE
 from alt_ani_cli.errors import ShindenXhrError
 from alt_ani_cli.shinden.api import XhrOutcome, resolve_embed, stop_message, xhr_outcome
+from alt_ani_cli.shinden.xhr import BACKEND_API4, BACKEND_NEW, EpisodeXhr, EpisodeXhrContext
+
+from .conftest import EPISODE_URL, TRAP_ID
 
 _BASE = f"{SHINDEN_API_BASE}/xhr/42"
 _LOAD_URL = f"{_BASE}/player_load?auth={GUEST_AUTH}"
@@ -21,6 +25,7 @@ _SHOW_URL = f"{_BASE}/player_show?auth={GUEST_AUTH}&width=0&height=-1"
 _IFRAME_HTML = '<html><body><iframe src="//video.sibnet.ru/shell.php?videoid=9999"></iframe></body></html>'
 _LIVE_LOAD_BODY = (Path(__file__).parent.parent / "fixtures" / "shinden" / "xhr_player_load_ok.txt").read_text(encoding="utf-8")
 _SECRET_MESSAGE = "token=abc123secret cf_clearance=zzz"
+_EPISODE_URL = "https://shinden.pl/episode/1-example/view/2"
 
 
 def _resp(status_code: int = 200, text: str = "", headers: dict | None = None) -> MagicMock:
@@ -46,7 +51,12 @@ def _client(*responses) -> MagicMock:
     return client
 
 
+def _api4_xhr() -> EpisodeXhr:
+    return EpisodeXhr(episode_url=_EPISODE_URL, player_ids=frozenset({"42"}), trap_id=None, backend=BACKEND_API4)
+
+
 def _resolve(client, **kw):
+    kw.setdefault("xhr", _api4_xhr())
     with patch("alt_ani_cli.shinden.api.time.sleep") as mock_sleep:
         try:
             return resolve_embed(client, "42", **kw), mock_sleep
@@ -73,7 +83,7 @@ class TestPlayerLoadWait:
         client = MagicMock()
         client.get.side_effect = lambda url, **kw: (order.append(url), _resp(text="5" if url == _LOAD_URL else _IFRAME_HTML))[1]
         with patch("alt_ani_cli.shinden.api.time.sleep", side_effect=lambda s: order.append("sleep")):
-            resolve_embed(client, "42", min_sleep_seconds=0.0)
+            resolve_embed(client, "42", xhr=_api4_xhr(), min_sleep_seconds=0.0)
         assert order == [_LOAD_URL, "sleep", _SHOW_URL]
 
     @pytest.mark.parametrize(
@@ -266,7 +276,9 @@ class TestTransportErrors:
             _resolve(client)
         err = exc_info.value
         assert (err.stage, err.category, err.reason, err.http_status) == (stage, category, "transport", None)
-        assert err.__cause__ is exc
+        # the curl exception text can carry the auth URL, so nothing of it stays on the error
+        assert err.__cause__ is None
+        assert err.__context__ is None
         assert xhr_outcome(err) is XhrOutcome.SERVICE_UNAVAILABLE
 
 
@@ -413,3 +425,322 @@ class TestStopMessage:
 
     def test_no_wait_hint_without_retry_after(self):
         assert " s." not in stop_message(_xhr_error(http_status=429))
+
+
+_PAGE_ID = "1825161"
+_OLD_TOKEN = "T2xkRXBpc29kZVRva2Vu+/8="
+_NEW_TOKEN = "TmV3RXBpc29kZVRva2Vu+/8="
+
+
+def _new_xhr(token: str = _OLD_TOKEN, ids=(_PAGE_ID, "1825160"), trap: str | None = TRAP_ID) -> EpisodeXhr:
+    return EpisodeXhr(
+        episode_url=EPISODE_URL,
+        player_ids=frozenset(ids),
+        trap_id=trap,
+        backend=BACKEND_NEW,
+        context=EpisodeXhrContext(endpoint=SHINDEN_XHR_BASE, auth=token),
+    )
+
+
+def _new_urls(online_id: str, token: str) -> tuple[str, str]:
+    auth = "auth=" + quote(token, safe="")
+    base = f"{SHINDEN_XHR_BASE}/{online_id}"
+    return f"{base}/player_load?{auth}", f"{base}/player_show?{auth}&width=0&height=-1"
+
+
+def _urls(client) -> list[str]:
+    return [c.args[0] for c in client.get.call_args_list]
+
+
+def _run(client, xhr, online_id=_PAGE_ID):
+    with patch("alt_ani_cli.shinden.api.time.sleep"):
+        return resolve_embed(client, online_id, xhr=xhr)
+
+
+def _expired() -> MagicMock:
+    return _resp(403, _error_json("invalid_token"))
+
+
+_CHALLENGE_PAGE = "<html><head><title>Just a moment...</title></head></html>"
+
+
+@pytest.mark.unit
+class TestNewBackend:
+    def test_token_is_url_encoded_exactly_once(self):
+        client = _client(_resp(text="5"), _resp(text=_IFRAME_HTML))
+        _run(client, _new_xhr())
+        load_url, show_url = _new_urls(_PAGE_ID, _OLD_TOKEN)
+        assert _urls(client) == [load_url, show_url]
+        assert load_url.endswith("auth=T2xkRXBpc29kZVRva2Vu%2B%2F8%3D")
+        assert "%25" not in load_url
+
+    def test_both_backends_share_the_parsing_and_return_the_same_embed(self):
+        api4 = EpisodeXhr(EPISODE_URL, frozenset({_PAGE_ID}), None, BACKEND_API4)
+        new = _run(_client(_resp(text="5"), _resp(text=_IFRAME_HTML)), _new_xhr())
+        old = _run(_client(_resp(text="5"), _resp(text=_IFRAME_HTML)), api4)
+        assert new == old
+
+    def test_errors_carry_the_backend(self):
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _run(_client(_resp(503, "")), _new_xhr())
+        assert exc_info.value.backend == BACKEND_NEW
+
+    @pytest.mark.parametrize(
+        "first",
+        [
+            _resp(403, _error_json("turnstile")),
+            _resp(403, _error_json("konto_robot")),
+            _resp(401, ""),
+            _resp(403, ""),
+            _resp(429, "", {"Retry-After": "30"}),
+            _resp(503, ""),
+            _resp(404, ""),
+            _resp(text="7.5"),
+            Timeout("timed out"),
+        ],
+        ids=["turnstile", "konto_robot", "401", "403", "429", "503", "404", "drift", "timeout"],
+    )
+    def test_no_new_backend_answer_ever_leads_to_api4_or_a_refresh(self, first):
+        client = _client(first)
+        xhr = _new_xhr()
+        with pytest.raises(ShindenXhrError):
+            _run(client, xhr)
+        assert len(_urls(client)) == 1
+        assert all(url.startswith(SHINDEN_XHR_BASE) for url in _urls(client))
+        assert (xhr.backend, xhr.refresh_used) == (BACKEND_NEW, False)
+
+    def test_api4_invalid_token_is_not_refreshed(self):
+        client = _client(_expired())
+        xhr = EpisodeXhr(EPISODE_URL, frozenset({_PAGE_ID}), None, BACKEND_API4)
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _run(client, xhr)
+        assert xhr_outcome(exc_info.value) is XhrOutcome.ACCESS_BLOCKED
+        assert client.get.call_count == 1
+
+
+@pytest.mark.unit
+class TestPlayerGuard:
+    def test_honeypot_never_gets_a_request(self):
+        client = MagicMock()
+        with pytest.raises(AssertionError):
+            _run(client, _new_xhr(), online_id=TRAP_ID)
+        client.get.assert_not_called()
+
+    def test_player_from_another_page_never_gets_a_request(self):
+        client = MagicMock()
+        with pytest.raises(AssertionError):
+            _run(client, _new_xhr(), online_id="999")
+        client.get.assert_not_called()
+
+    def test_forced_api4_keeps_the_honeypot_guard(self):
+        client = MagicMock()
+        xhr = EpisodeXhr(EPISODE_URL, frozenset({_PAGE_ID}), TRAP_ID, BACKEND_API4, forced=True)
+        with pytest.raises(AssertionError):
+            _run(client, xhr, online_id=TRAP_ID)
+        client.get.assert_not_called()
+
+
+@pytest.mark.unit
+class TestTokenRefresh:
+    def test_invalid_token_refreshes_once_and_retries_on_the_new_backend(self, episode_page, diag_events):
+        client = _client(_expired(), _resp(text=episode_page(token=_NEW_TOKEN)), _resp(text="5"), _resp(text=_IFRAME_HTML))
+        xhr = _new_xhr()
+        embed = _run(client, xhr)
+        old_load, _ = _new_urls(_PAGE_ID, _OLD_TOKEN)
+        new_load, new_show = _new_urls(_PAGE_ID, _NEW_TOKEN)
+        assert _urls(client) == [old_load, EPISODE_URL, new_load, new_show]
+        assert embed.url == "https://video.sibnet.ru/shell.php?videoid=9999"
+        assert xhr.context is not None
+        assert xhr.context.auth == _NEW_TOKEN
+        assert (xhr.refresh_used, xhr.list_refreshed, xhr.backend) == (True, True, BACKEND_NEW)
+        refresh = {"action": "token_refresh", "backend": BACKEND_NEW, "reason": None, "online_id": _PAGE_ID}
+        assert ("shinden_xhr_context", refresh) in diag_events
+
+    def test_invalid_token_on_player_show_also_refreshes(self, episode_page):
+        client = _client(
+            _resp(text="5"),
+            _expired(),
+            _resp(text=episode_page(token=_NEW_TOKEN)),
+            _resp(text="5"),
+            _resp(text=_IFRAME_HTML),
+        )
+        _run(client, _new_xhr())
+        assert client.get.call_count == 5
+
+    def test_repeated_invalid_token_stops_without_api4(self, episode_page):
+        client = _client(_expired(), _resp(text=episode_page(token=_NEW_TOKEN)), _expired())
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _run(client, _new_xhr())
+        assert xhr_outcome(exc_info.value) is XhrOutcome.ACCESS_BLOCKED
+        assert client.get.call_count == 3
+        assert not any("api4" in url for url in _urls(client))
+
+    def test_one_refresh_per_operation(self):
+        client = _client(_expired())
+        xhr = _new_xhr()
+        xhr.refresh_used = True
+        with pytest.raises(ShindenXhrError):
+            _run(client, xhr)
+        assert client.get.call_count == 1
+
+    def test_next_operation_gets_a_fresh_budget(self, episode_page):
+        xhr = _new_xhr()
+        xhr.refresh_used = True
+        xhr.begin_operation()
+        client = _client(_expired(), _resp(text=episode_page(token=_NEW_TOKEN)), _resp(text="5"), _resp(text=_IFRAME_HTML))
+        _run(client, xhr)
+        assert client.get.call_count == 4
+
+    def test_refreshed_list_drops_a_player_that_is_gone(self, episode_page):
+        xhr = _new_xhr(ids=(_PAGE_ID, "777"))
+        client = _client(_expired(), _resp(text=episode_page(token=_NEW_TOKEN)))
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _run(client, xhr, online_id="777")
+        err = exc_info.value
+        assert (err.stage, err.reason) == ("token_refresh", "player_not_listed")
+        assert xhr_outcome(err) is XhrOutcome.PLAYERS_CHANGED
+        assert client.get.call_count == 2
+
+    def test_player_that_became_the_honeypot_is_never_loaded(self, episode_page):
+        xhr = _new_xhr(ids=(_PAGE_ID, TRAP_ID), trap="1")
+        client = _client(_expired(), _resp(text=episode_page(token=_NEW_TOKEN)))
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _run(client, xhr, online_id=TRAP_ID)
+        assert exc_info.value.reason == "player_is_honeypot"
+        assert xhr_outcome(exc_info.value) is XhrOutcome.PLAYERS_CHANGED
+        assert client.get.call_count == 2
+
+    def test_old_list_candidate_missing_after_refresh_gets_no_request(self, episode_page):
+        xhr = _new_xhr(ids=(_PAGE_ID, "777"))
+        client = _client(_expired(), _resp(text=episode_page(token=_NEW_TOKEN)), _resp(text="5"), _resp(text=_IFRAME_HTML))
+        _run(client, xhr)
+        client.get.reset_mock()
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _run(client, xhr, online_id="777")
+        assert xhr_outcome(exc_info.value) is XhrOutcome.PLAYERS_CHANGED
+        client.get.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("page", "outcome", "reason"),
+        [
+            (_resp(404, ""), XhrOutcome.API_PROTOCOL_ERROR, "http_status"),
+            (_resp(410, ""), XhrOutcome.API_PROTOCOL_ERROR, "http_status"),
+            (_resp(403, ""), XhrOutcome.ACCESS_BLOCKED, "http_status"),
+            (_resp(503, ""), XhrOutcome.SERVICE_UNAVAILABLE, "http_status"),
+            (Timeout("timed out"), XhrOutcome.SERVICE_UNAVAILABLE, "transport"),
+            (_resp(200, _CHALLENGE_PAGE), XhrOutcome.API_PROTOCOL_ERROR, "refresh_page_invalid"),
+        ],
+        ids=["404", "410", "403", "503", "timeout", "challenge"],
+    )
+    def test_refresh_failure_is_never_one_players_failure(self, page, outcome, reason):
+        client = _client(_expired(), page)
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _run(client, _new_xhr())
+        err = exc_info.value
+        assert (err.stage, err.reason) == ("token_refresh", reason)
+        assert xhr_outcome(err) is outcome
+        assert client.get.call_count == 2
+
+    @pytest.mark.parametrize(
+        ("kw", "reason"), [({"token": None}, "refresh_auth_missing"), ({"xhr": None}, "refresh_endpoint_missing")]
+    )
+    def test_refreshed_page_without_context_stops_without_api4(self, episode_page, kw, reason):
+        client = _client(_expired(), _resp(text=episode_page(**kw)))
+        xhr = _new_xhr()
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _run(client, xhr)
+        assert exc_info.value.reason == reason
+        assert xhr_outcome(exc_info.value) is XhrOutcome.API_PROTOCOL_ERROR
+        assert xhr.backend == BACKEND_NEW
+        assert client.get.call_count == 2
+
+    def test_refresh_transport_error_keeps_no_exception_chain(self):
+        client = _client(_expired(), CurlConnectionError(f"failed {EPISODE_URL}?auth={_OLD_TOKEN}"))
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _run(client, _new_xhr())
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
+        assert exc_info.value.category == "network_error"
+
+
+@pytest.mark.unit
+class TestNoSecretLeak:
+    def test_token_never_reaches_messages_diagnostics_or_errors(self, episode_page, diag_events, capsys):
+        leak = f"https://shinden.pl/xhr/{_PAGE_ID}/player_load?auth={_OLD_TOKEN}"
+        client = _client(_expired(), _resp(text=episode_page(token=_NEW_TOKEN)), Timeout(leak))
+        xhr = _new_xhr()
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _run(client, xhr)
+        err = exc_info.value
+        texts = [str(err), repr(err), stop_message(err), repr(diag_events), repr(xhr), capsys.readouterr().out]
+        for token in (_OLD_TOKEN, _NEW_TOKEN, quote(_OLD_TOKEN, safe=""), quote(_NEW_TOKEN, safe="")):
+            assert all(token not in text for text in texts)
+        assert "shinden.pl/xhr" not in stop_message(err)
+        assert err.__context__ is None
+        assert err.__cause__ is None
+
+
+@pytest.mark.unit
+class TestRefreshStageOutcome:
+    @pytest.mark.parametrize(
+        ("fields", "outcome"),
+        [
+            ({"http_status": 404}, XhrOutcome.API_PROTOCOL_ERROR),
+            ({"http_status": 410}, XhrOutcome.API_PROTOCOL_ERROR),
+            ({"category": "no_stream_url", "reason": "x"}, XhrOutcome.API_PROTOCOL_ERROR),
+            ({"http_status": 403}, XhrOutcome.ACCESS_BLOCKED),
+            ({"http_status": 429}, XhrOutcome.ACCESS_BLOCKED),
+            ({"http_status": 502}, XhrOutcome.SERVICE_UNAVAILABLE),
+            ({"category": "timeout", "reason": "transport"}, XhrOutcome.SERVICE_UNAVAILABLE),
+            ({"category": "player_list_changed", "reason": "player_not_listed"}, XhrOutcome.PLAYERS_CHANGED),
+            ({"category": "player_list_changed", "reason": "player_is_honeypot"}, XhrOutcome.PLAYERS_CHANGED),
+        ],
+    )
+    def test_token_refresh_stage(self, fields, outcome):
+        assert xhr_outcome(_xhr_error(stage="token_refresh", **fields)) is outcome
+
+    def test_players_changed_has_its_own_stop_message(self):
+        msg = stop_message(_xhr_error(stage="token_refresh", category="player_list_changed", reason="player_not_listed"))
+        assert "player list" in msg
+        assert "reason=player_not_listed" in msg
+
+
+@pytest.mark.unit
+class TestTarget:
+    def test_api4_goes_to_the_legacy_endpoint(self):
+        client = _client(_resp(text="5"), _resp(text=_IFRAME_HTML))
+        _run(client, EpisodeXhr(EPISODE_URL, frozenset({_PAGE_ID}), None, BACKEND_API4))
+        assert all(url.startswith(f"{SHINDEN_API_BASE}/xhr/") for url in _urls(client))
+
+    def test_api4_ignores_a_stray_context(self):
+        xhr = _new_xhr()
+        xhr.backend = BACKEND_API4
+        client = _client(_resp(text="5"), _resp(text=_IFRAME_HTML))
+        _run(client, xhr)
+        assert all(url.startswith(f"{SHINDEN_API_BASE}/xhr/") and _OLD_TOKEN not in url for url in _urls(client))
+
+    def test_new_backend_with_context_goes_to_the_new_endpoint(self):
+        client = _client(_resp(text="5"), _resp(text=_IFRAME_HTML))
+        _run(client, _new_xhr())
+        assert _urls(client) == list(_new_urls(_PAGE_ID, _OLD_TOKEN))
+
+    @pytest.mark.parametrize(
+        ("backend", "with_context", "reason"),
+        [
+            (BACKEND_NEW, False, "context_missing"),
+            ("unknown", False, "backend_unknown"),
+            ("unknown", True, "backend_unknown"),
+        ],
+        ids=["new-without-context", "unknown", "unknown-with-context"],
+    )
+    def test_inconsistent_state_stops_before_any_request(self, backend, with_context, reason):
+        xhr = _new_xhr()
+        xhr.backend = backend
+        if not with_context:
+            xhr.context = None
+        client = MagicMock()
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _run(client, xhr)
+        client.get.assert_not_called()
+        assert exc_info.value.reason == reason
+        assert xhr_outcome(exc_info.value) is XhrOutcome.API_PROTOCOL_ERROR

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from alt_ani_cli.errors import AntiBotError, NoStreamError, ShindenXhrError
+from alt_ani_cli.shinden.xhr import BACKEND_API4, EpisodeXhr
 
 # tests/ has no top-level __init__.py, so pytest puts tests/ (not the repo root) on sys.path.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -25,6 +26,15 @@ from tools.replay_failed_resolvers import (  # noqa: E402
 )
 
 _PREFIX = "2026-09-25 21:03:11,482"
+_EP_PATH = "/episode/1-fate/view/11"
+
+
+@pytest.fixture(autouse=True)
+def _episode_page():
+    """The replayed episode page lists the logged players; individual tests override it when the page matters."""
+    xhr = EpisodeXhr("https://shinden.pl" + _EP_PATH, frozenset({"42", "a", "b", "c"}), None, BACKEND_API4)
+    with patch("tools.replay_failed_resolvers.shinden_xhr.load_episode", return_value=([], xhr)) as mock_load:
+        yield mock_load
 
 
 def _line(event: str, **fields: object) -> str:
@@ -57,6 +67,7 @@ def _case(**overrides: object) -> ReplayCase:
         fallback_layer_before=None,
         fallback_category_before=None,
         fallback_http_status_before=None,
+        episode_path=_EP_PATH,
     )
     base.update(overrides)
     return ReplayCase(**base)
@@ -652,7 +663,10 @@ class TestReplayXhrErrors:
         assert outcome.xhr_stop is not None
 
     def test_main_stops_replaying_after_a_block(self, tmp_path):
-        lines = [_line("series_selected", id="1", title="Fate"), _line("episode_selected", number=1.0, title="Ep 1")]
+        lines = [
+            _line("series_selected", id="1", title="Fate"),
+            _line("episode_selected", number=1.0, title="Ep 1", path=_EP_PATH),
+        ]
         for oid in ("a", "b", "c"):
             lines += [
                 _line("player_selected", online_id=oid, player="Cda"),
@@ -667,3 +681,116 @@ class TestReplayXhrErrors:
         ):
             assert main([str(log)]) == 0
         mock_resolve.assert_called_once()
+
+
+@pytest.mark.unit
+class TestReplayEpisodeContext:
+    def test_episode_path_and_token_refreshed_are_parsed(self, tmp_path):
+        lines = [
+            _line("series_selected", id="1", title="Fate"),
+            _line("episode_selected", number=1.0, title="Ep 1", path=_EP_PATH),
+            _line("player_selected", online_id="42", player="Cda"),
+            _line("resolve_result", ok=False, exc="ShindenXhrError", xhr_backend="new_xhr", token_refreshed=True, elapsed=0.1),
+        ]
+        log = tmp_path / "session.log"
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        cases, skipped = parse_diagnostics_log(log)
+        assert skipped == 0
+        assert [c.episode_path for c in cases] == [_EP_PATH]
+
+    def test_old_log_without_episode_path_is_a_replay_error_without_requests(self, _episode_page, tmp_path):
+        lines = [
+            _line("series_selected", id="1", title="Fate"),
+            _line("episode_selected", number=1.0, title="Ep 1"),
+            _line("player_selected", online_id="42", player="Cda"),
+            _line("resolve_result", ok=False, exc="NoStreamError", elapsed=0.1),
+        ]
+        log = tmp_path / "session.log"
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        (case,), _ = parse_diagnostics_log(log)
+        with patch("tools.replay_failed_resolvers.shinden_api.resolve_embed") as mock_resolve:
+            outcome = replay_case(MagicMock(), case)
+        assert outcome.verdict is Verdict.REPLAY_ERROR
+        assert outcome.note == "missing episode context in log"
+        _episode_page.assert_not_called()
+        mock_resolve.assert_not_called()
+
+    @pytest.mark.parametrize("path", ["//evil.example/episode/1-x/view/2", "/xhr/42/player_load", "/episode/1-x/view/2?auth=x"])
+    def test_untrusted_logged_path_is_never_fetched(self, _episode_page, path):
+        outcome = replay_case(MagicMock(), _case(episode_path=path))
+        assert outcome.note == "missing episode context in log"
+        _episode_page.assert_not_called()
+
+    def test_page_is_rebuilt_from_the_logged_path_without_pagination(self, _episode_page):
+        client = MagicMock()
+        with (
+            patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", side_effect=AntiBotError("x")),
+            patch("alt_ani_cli.shinden.series.list_episodes") as mock_list,
+        ):
+            replay_case(client, _case(), backend="new_xhr")
+        _episode_page.assert_called_once_with(client, "https://shinden.pl" + _EP_PATH, backend="new_xhr")
+        mock_list.assert_not_called()
+
+    def test_player_now_the_honeypot_gets_no_request(self, _episode_page):
+        _episode_page.return_value[1].trap_id = "42"
+        with patch("tools.replay_failed_resolvers.shinden_api.resolve_embed") as mock_resolve:
+            outcome = replay_case(MagicMock(), _case())
+        assert outcome.verdict is Verdict.REPLAY_ERROR
+        assert "honeypot" in (outcome.note or "")
+        mock_resolve.assert_not_called()
+
+    def test_player_no_longer_listed_gets_no_request(self, _episode_page):
+        with patch("tools.replay_failed_resolvers.shinden_api.resolve_embed") as mock_resolve:
+            outcome = replay_case(MagicMock(), _case(online_id="999"))
+        assert outcome.verdict is Verdict.REPLAY_ERROR
+        assert "no longer listed" in (outcome.note or "")
+        mock_resolve.assert_not_called()
+
+    def test_outcome_reports_the_backend_and_any_fallback(self, _episode_page):
+        _episode_page.return_value[1].fallback_reason = "auth_missing"
+        embed = MagicMock(url="https://cda.pl/video/abc", referer="https://shinden.pl/")
+        with (
+            patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", return_value=embed),
+            patch("tools.replay_failed_resolvers.extract.resolve", return_value=MagicMock()),
+        ):
+            outcome = replay_case(MagicMock(), _case(host_before="cda.pl"))
+        assert outcome.now_backend == BACKEND_API4
+        assert outcome.note == "api4 fallback: auth_missing"
+
+
+@pytest.mark.unit
+class TestReplayBackendChoice:
+    def _main(self, tmp_path, argv_extra=()):
+        lines = [
+            _line("series_selected", id="1", title="Fate"),
+            _line("episode_selected", number=1.0, title="Ep 1", path=_EP_PATH),
+            _line("player_selected", online_id="42", player="Cda"),
+            _line("resolve_result", ok=False, exc="NoStreamError", elapsed=0.1),
+        ]
+        log = tmp_path / "session.log"
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        with (
+            patch("tools.replay_failed_resolvers.shinden_http.make_client"),
+            patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", side_effect=AntiBotError("x")),
+            patch("tools.replay_failed_resolvers.progress"),
+        ):
+            return main([str(log), *argv_extra])
+
+    @pytest.mark.parametrize(
+        ("env", "flag", "expected"),
+        [
+            ("new", None, "new_xhr"),
+            ("api4", None, "api4"),
+            ("api4", "new", "new_xhr"),
+            ("new", "api4", "api4"),
+        ],
+    )
+    def test_flag_wins_over_env(self, monkeypatch, tmp_path, _episode_page, env, flag, expected):
+        monkeypatch.setattr("alt_ani_cli.config.XHR_BACKEND", env)
+        assert self._main(tmp_path, ("--xhr-backend", flag) if flag else ()) == 0
+        assert _episode_page.call_args.kwargs["backend"] == expected
+
+    def test_invalid_env_value_fails_before_any_request(self, monkeypatch, tmp_path, _episode_page):
+        monkeypatch.setattr("alt_ani_cli.config.XHR_BACKEND", "legacy")
+        assert self._main(tmp_path) == 1
+        _episode_page.assert_not_called()

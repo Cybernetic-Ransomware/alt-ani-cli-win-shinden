@@ -17,6 +17,29 @@ def shinden_html():
     return _load
 
 
+TEST_TOKEN = "VGVzdFRva2VuRm9yVW5pdFRlc3RzT25seQ+/=="
+EPISODE_URL = "https://shinden.pl/episode/61064-sousou-no-frieren/view/227851"
+TRAP_ID = "2045542847"
+_ISLAND = '<div class="ep-players__island" data-sh-module="episode-players">'
+
+
+@pytest.fixture
+def episode_page(shinden_html):
+    """episode_players.html with a test token injected; fixture files never hold data-player-auth themselves."""
+
+    def _make(token: str | None = TEST_TOKEN, xhr: str | None = "//shinden.pl/xhr") -> str:
+        html = shinden_html("episode_players.html")
+        if token is not None:
+            html = html.replace(_ISLAND, _ISLAND[:-1] + f' data-player-auth="{token}">', 1)
+        if xhr is None:
+            html = html.replace('"xhr": "//shinden.pl/xhr", ', "", 1)
+        else:
+            html = html.replace('"xhr": "//shinden.pl/xhr"', f'"xhr": "{xhr}"', 1)
+        return html
+
+    return _make
+
+
 @pytest.fixture
 def diag_events(monkeypatch):
     """Record diagnostics events as (event, fields) instead of writing the log."""

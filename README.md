@@ -148,6 +148,7 @@ Failed players are marked with `✗` and can be retried interactively.
 | `ALT_ANI_CLI_FLARESOLVERR_URL` | FlareSolverr URL for Cloudflare bypass (e.g. `http://localhost:8191`) |
 | `ANI_CLI_PLAYER` | Full path to mpv/mpvnet executable |
 | `ALT_ANI_CLI_ANTIBOT_DELAY` | Seconds to wait between API calls (default: `5.0`) |
+| `ALT_ANI_CLI_XHR_BACKEND` | Player API backend: `new` (shinden.pl/xhr with the episode page token, default) or `api4` (legacy guest endpoint) |
 
 ## Downloads
 
@@ -195,6 +196,8 @@ custom decrypting proxy — the host fails fast with a clear message instead of 
 **`GUEST_AUTH` token** — the value hardcoded in `config.py` is a public guest token issued by shinden.pl for unauthenticated API access.
 
 It encodes the literal string `_guest_:0,5,21000000,255,4174293644` in Base64. Any visitor to shinden.pl receives the same token, so it is safe to commit and share openly.
+
+**Episode page token** — the default player API uses the short-lived token each episode page carries. It is kept in memory for that episode only and is never written to history, caches or the diagnostics log.
 
 ## Developer tools
 
