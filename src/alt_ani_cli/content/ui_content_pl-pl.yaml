@@ -75,6 +75,7 @@ progress:
   prefetch_stopped: "Przerwano pobieranie źródeł playerów: {reason}"
   xhr_fallback_api4: "Strona odcinka {number:g} nie ma poprawnego kontekstu nowego API playerów ({reason}) — ten odcinek używa zapasowego api4."
   players_reload: "Wczytuję ponownie listę playerów odcinka {number:g} …"
+  players_reload_limit: "Lista playerów odcinka {number:g} znów się zmieniła — nie wczytuję jej ponownie automatycznie. Wybierz player ręcznie albo wróć (ESC) i wybierz odcinek jeszcze raz."
   network_error: "Błąd sieci: {exc}"
   playing: "Odtwarzam w {kind}: {title}"
   playing_failed: "Player {kind} zakończył się kodem {rc}: {title}"

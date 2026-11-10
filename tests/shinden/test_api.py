@@ -703,3 +703,44 @@ class TestRefreshStageOutcome:
         msg = stop_message(_xhr_error(stage="token_refresh", category="player_list_changed", reason="player_not_listed"))
         assert "player list" in msg
         assert "reason=player_not_listed" in msg
+
+
+@pytest.mark.unit
+class TestTarget:
+    def test_api4_goes_to_the_legacy_endpoint(self):
+        client = _client(_resp(text="5"), _resp(text=_IFRAME_HTML))
+        _run(client, EpisodeXhr(EPISODE_URL, frozenset({_PAGE_ID}), None, BACKEND_API4))
+        assert all(url.startswith(f"{SHINDEN_API_BASE}/xhr/") for url in _urls(client))
+
+    def test_api4_ignores_a_stray_context(self):
+        xhr = _new_xhr()
+        xhr.backend = BACKEND_API4
+        client = _client(_resp(text="5"), _resp(text=_IFRAME_HTML))
+        _run(client, xhr)
+        assert all(url.startswith(f"{SHINDEN_API_BASE}/xhr/") and _OLD_TOKEN not in url for url in _urls(client))
+
+    def test_new_backend_with_context_goes_to_the_new_endpoint(self):
+        client = _client(_resp(text="5"), _resp(text=_IFRAME_HTML))
+        _run(client, _new_xhr())
+        assert _urls(client) == list(_new_urls(_PAGE_ID, _OLD_TOKEN))
+
+    @pytest.mark.parametrize(
+        ("backend", "with_context", "reason"),
+        [
+            (BACKEND_NEW, False, "context_missing"),
+            ("unknown", False, "backend_unknown"),
+            ("unknown", True, "backend_unknown"),
+        ],
+        ids=["new-without-context", "unknown", "unknown-with-context"],
+    )
+    def test_inconsistent_state_stops_before_any_request(self, backend, with_context, reason):
+        xhr = _new_xhr()
+        xhr.backend = backend
+        if not with_context:
+            xhr.context = None
+        client = MagicMock()
+        with pytest.raises(ShindenXhrError) as exc_info:
+            _run(client, xhr)
+        client.get.assert_not_called()
+        assert exc_info.value.reason == reason
+        assert xhr_outcome(exc_info.value) is XhrOutcome.API_PROTOCOL_ERROR

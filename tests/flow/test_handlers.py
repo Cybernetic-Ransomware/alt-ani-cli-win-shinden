@@ -2648,3 +2648,102 @@ class TestEpisodeXhrState:
         assert urls.count(_EP1.url) == 1
         assert set(state.player_sources) == {first}
         assert "blocked" in mock_warn.call_args.args[0]
+
+
+_PLAYERS_CHANGED = ShindenXhrError("changed", stage="token_refresh", category="player_list_changed", reason="player_not_listed")
+
+
+@pytest.mark.unit
+class TestPlayersChangedReloadLimit:
+    def _state(self, targets=(_EP1,), show_sources=True):
+        state = _make_ep_dispatch_state()
+        state.ref = _SERIES_REF
+        state.episodes = list(targets)
+        state.targets = list(targets)
+        state.args.show_sources = show_sources
+        return state
+
+    @contextmanager
+    def _env(self, resolve=_PLAYERS_CHANGED, fallback=_PLAYERS_CHANGED):
+        with (
+            patch("alt_ani_cli.shinden.episode.parse_players", return_value=[_PLAYER, _PLAYER2]),
+            patch("alt_ani_cli.shinden.api.resolve_embed", side_effect=resolve) as mock_resolve,
+            patch("alt_ani_cli.cli._resolve_with_fallback", side_effect=fallback),
+            patch("alt_ani_cli.ui.progress.spinner", _noop_spinner),
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+            patch("alt_ani_cli.ui.progress.info"),
+            patch("alt_ani_cli.ui.progress.error"),
+        ):
+            yield mock_resolve, mock_warn
+
+    def _limit_warned(self, mock_warn) -> bool:
+        return any("znów się zmieniła" in c.args[0] for c in mock_warn.call_args_list)
+
+    def test_prefetch_players_changed_reloads_the_episode(self):
+        state = self._state()
+        with self._env(resolve=[_PLAYERS_CHANGED, _EMBED]) as (mock_resolve, _):
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.EPISODE_DISPATCH
+        assert mock_resolve.call_count == 1
+        assert state.players_reloaded_ep == _EP1.url
+        assert state.ep_idx == 0
+
+    def test_other_prefetch_stop_does_not_reload(self):
+        state = self._state()
+        with self._env(resolve=_xhr(http_status=403)):
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.PLAYER_PICK
+        assert state.players_reloaded_ep is None
+        assert state.client.get.call_count == 1
+
+    def test_second_change_stops_without_another_get(self):
+        state = self._state()
+        screen = Screen.EPISODE_DISPATCH
+        with self._env() as (mock_resolve, mock_warn):
+            for _ in range(5):
+                screen = HANDLERS[screen](state)
+                if screen is not Screen.EPISODE_DISPATCH:
+                    break
+        assert screen is Screen.PLAYER_PICK
+        assert state.client.get.call_count == 2
+        assert mock_resolve.call_count == 2
+        assert self._limit_warned(mock_warn)
+
+    def test_limit_is_shared_between_resolve_stream_and_prefetch(self):
+        state = self._state(show_sources=False)
+        with self._env() as (_, mock_warn):
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.PLAYER_PICK
+            state.chosen_player = _PLAYER
+            assert HANDLERS[Screen.RESOLVE_STREAM](state) is Screen.EPISODE_DISPATCH
+            state.args.show_sources = True
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.PLAYER_PICK
+            state.chosen_player = _PLAYER
+            assert HANDLERS[Screen.RESOLVE_STREAM](state) is Screen.PLAYER_PICK
+        assert state.client.get.call_count == 2
+        assert self._limit_warned(mock_warn)
+
+    def test_prefetch_reload_then_resolve_stream_change_stops(self):
+        state = self._state()
+        with self._env() as (_, mock_warn):
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.EPISODE_DISPATCH
+            state.args.show_sources = False
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.PLAYER_PICK
+            state.chosen_player = _PLAYER
+            assert HANDLERS[Screen.RESOLVE_STREAM](state) is Screen.PLAYER_PICK
+        assert state.client.get.call_count == 2
+        assert self._limit_warned(mock_warn)
+
+    def test_limit_resets_for_another_episode(self):
+        state = self._state(targets=(_EP1, _EP2))
+        state.players_reloaded_ep = _EP1.url
+        state.ep_idx = 1
+        with self._env():
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.EPISODE_DISPATCH
+        assert state.players_reloaded_ep == _EP2.url
+
+    def test_limit_resets_on_a_new_episode_pick(self):
+        state = self._state()
+        state.players_reloaded_ep = _EP1.url
+        with patch("alt_ani_cli.ui.menus.select_episodes", return_value=[_EP1]):
+            assert HANDLERS[Screen.EPISODES_PICK](state) is Screen.EPISODE_DISPATCH
+        assert state.players_reloaded_ep is None
+        with self._env():
+            assert HANDLERS[Screen.EPISODE_DISPATCH](state) is Screen.EPISODE_DISPATCH

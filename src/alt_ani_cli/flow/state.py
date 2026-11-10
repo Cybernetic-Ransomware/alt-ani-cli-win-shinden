@@ -90,6 +90,8 @@ class FlowState:
     player_embeds: dict = field(default_factory=dict)  # online_id → EmbedURL
     # XHR state of the current episode page only; replaced on every dispatch, never persisted
     episode_xhr: EpisodeXhr | None = None
+    # URL of the episode already reloaded once after PLAYERS_CHANGED; a second change must not reload again
+    players_reloaded_ep: str | None = None
 
     # cached user choices
     quality: str | None = None

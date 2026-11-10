@@ -75,11 +75,20 @@ def _episode_xhr(state: FlowState, ep: EpisodeRow | None) -> EpisodeXhr:
     return xhr
 
 
-def _prefetch_player_sources(state: FlowState) -> None:
+def _reload_players(state: FlowState, ep: EpisodeRow) -> ScreenResult:
+    if state.players_reloaded_ep == ep.url:
+        progress.warn(_PROG["players_reload_limit"].format(number=ep.number))
+        return Screen.PLAYER_PICK
+    state.players_reloaded_ep = ep.url
+    progress.info(_PROG["players_reload"].format(number=ep.number))
+    return Screen.EPISODE_DISPATCH
+
+
+def _prefetch_player_sources(state: FlowState) -> shinden_api.XhrOutcome | None:
     """Sequential on purpose: a block or outage must stop before the next XHR, which concurrent workers can't guarantee."""
     players = [p for p in state.players if p.online_id not in state.player_sources]
     if not players:
-        return
+        return None
     xhr = _episode_xhr(state, state.current_ep)
     xhr.begin_operation()
     stop: ShindenXhrError | None = None
@@ -95,8 +104,10 @@ def _prefetch_player_sources(state: FlowState) -> None:
             except ShindenError:
                 continue
             _record_player_source(state, p.online_id, embed)
-    if stop is not None:
-        progress.warn(_PROG["prefetch_stopped"].format(reason=shinden_api.stop_message(stop)))
+    if stop is None:
+        return None
+    progress.warn(_PROG["prefetch_stopped"].format(reason=shinden_api.stop_message(stop)))
+    return shinden_api.xhr_outcome(stop)
 
 
 def _sorted_by_date_desc(hits: list[SeriesHit], metadata: dict[str, SeriesMetadata]) -> list[SeriesHit]:
@@ -339,6 +350,7 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
             return BACK
         state.targets = targets
         state.ep_idx = 0
+        state.players_reloaded_ep = None
         state.overwrite_existing_batch = False
         state.pinned_player = None
         state.episode_arg_consumed = True
@@ -373,6 +385,7 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
         return BACK
     state.targets = result
     state.ep_idx = 0
+    state.players_reloaded_ep = None
     state.overwrite_existing_batch = False
     state.pinned_player = None
     return Screen.EPISODE_DISPATCH
@@ -388,6 +401,8 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
 
     from alt_ani_cli.cli import _filter_players, _load_episode
 
+    if state.players_reloaded_ep != ep.url:
+        state.players_reloaded_ep = None
     state.episode_xhr = None
     raw_players, xhr = _load_episode(state.client, ep)
 
@@ -441,8 +456,8 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
     elif len(players) == 1:
         return _auto_pick_player(state, players[0])
 
-    if args.show_sources:
-        _prefetch_player_sources(state)
+    if args.show_sources and _prefetch_player_sources(state) is shinden_api.XhrOutcome.PLAYERS_CHANGED:
+        return _reload_players(state, ep)
 
     return Screen.PLAYER_PICK
 
@@ -507,8 +522,7 @@ def handle_resolve_stream(state: FlowState) -> ScreenResult:
         progress.error(shinden_api.stop_message(exc))
         if shinden_api.xhr_outcome(exc) is shinden_api.XhrOutcome.PLAYERS_CHANGED:
             # the shown list is stale: reload this episode's page instead of offering ids that are gone
-            progress.info(_PROG["players_reload"].format(number=ep.number))
-            return Screen.EPISODE_DISPATCH
+            return _reload_players(state, ep)
         return Screen.PLAYER_PICK
 
     if stream is not None:

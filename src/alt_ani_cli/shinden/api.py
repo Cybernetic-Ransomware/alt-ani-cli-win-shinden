@@ -35,6 +35,7 @@ STAGE_SHOW = "player_show"
 STAGE_REFRESH = "token_refresh"
 
 CATEGORY_PLAYERS_CHANGED = "player_list_changed"
+CATEGORY_CONTEXT_INVALID = "xhr_context_invalid"
 _PLAYERS_CHANGED_REASONS = frozenset({"player_not_listed", "player_is_honeypot"})
 
 # Protection and auth states: the API refuses this client, not this player.
@@ -229,9 +230,13 @@ class _Target:
 _API4_TARGET = _Target(base=f"{SHINDEN_API_BASE}/xhr", auth_query=f"auth={GUEST_AUTH}")
 
 
-def _target(xhr: EpisodeXhr) -> _Target:
-    if xhr.backend != BACKEND_NEW or xhr.context is None:
+def _target(xhr: EpisodeXhr, online_id: str) -> _Target:
+    """api4 only when read_episode chose it; an inconsistent state stops before any request instead of falling back."""
+    if xhr.backend == BACKEND_API4:
         return _API4_TARGET
+    if xhr.backend != BACKEND_NEW or xhr.context is None:
+        reason = "context_missing" if xhr.backend == BACKEND_NEW else "backend_unknown"
+        raise _xhr_error(online_id, stage=STAGE_LOAD, category=CATEGORY_CONTEXT_INVALID, reason=reason, backend=xhr.backend)
     # GUEST_AUTH is stored pre-encoded; the page token is raw and is encoded here and nowhere else
     return _Target(base=xhr.context.endpoint, auth_query="auth=" + quote(xhr.context.auth, safe=""), backend=BACKEND_NEW)
 
@@ -246,12 +251,12 @@ def resolve_embed(
     """Only invalid_token on the new backend earns one page refresh per operation; nothing ever retries on api4."""
     _check_listed(xhr, online_id)
     try:
-        return _resolve_once(client, online_id, _target(xhr), min_sleep_seconds)
+        return _resolve_once(client, online_id, _target(xhr, online_id), min_sleep_seconds)
     except ShindenXhrError as exc:
         if exc.backend != BACKEND_NEW or exc.api_code != "invalid_token" or xhr.refresh_used:
             raise
     _refresh(client, xhr, online_id)
-    return _resolve_once(client, online_id, _target(xhr), min_sleep_seconds)
+    return _resolve_once(client, online_id, _target(xhr, online_id), min_sleep_seconds)
 
 
 def _check_listed(xhr: EpisodeXhr, online_id: str) -> None:
