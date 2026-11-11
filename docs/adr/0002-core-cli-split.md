@@ -23,8 +23,11 @@ A uv workspace with two Python distributions and one host project:
 
 - `packages/core` — distribution `alt-ani-core`, import `alt_ani_core`. Depends on `yt-dlp` only; `curl-cffi` and
   `selectolax` are extras (`alt-ani-core[curl,selectolax]`).
-- the CLI — distribution `alt-ani-cli-win`, import `alt_ani_cli`, command `alt-ani-cli` (unchanged for users).
+- `apps/cli` — distribution `alt-ani-cli-win`, import `alt_ani_cli`, command `alt-ani-cli` (unchanged for users).
 - `apps/android` — Gradle spike plus `alt_ani_bridge`, a JSON facade over the engine.
+
+Tests stay in one `tests/` tree for the whole workspace: they share fixtures (fake transport, isolated paths), and
+the layer rules are enforced by import contracts and `tests/architecture`, not by where a test file lives.
 
 No compatibility shims: `alt_ani_cli.shinden`, `alt_ani_cli.extract`, `alt_ani_cli.cli` and friends are gone.
 
@@ -43,7 +46,8 @@ The engine never imports the CLI, `rich`, `InquirerPy`, `argparse`, `platformdir
 reads the environment and never prints. `curl_cffi` appears only in `transport/curl.py`, `selectolax` only in
 `dom/selectolax_backend.py`, `yt_dlp` only in `extract/ytdlp_resolver.py` and `download.py`, `sqlite3` only in
 `history/sqlite.py`. `tests/architecture/test_boundaries.py` checks all of this on the AST (so imports inside
-functions count) and in a fresh interpreter.
+functions count) and in a fresh interpreter; import-linter contracts in `pyproject.toml` check the layer order, and
+`tools/check_packaging.py` installs the engine wheel alone in a clean environment.
 
 ### Synchronous engine, driven from worker threads
 
