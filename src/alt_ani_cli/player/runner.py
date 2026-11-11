@@ -4,7 +4,8 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
-from alt_ani_cli.extract.common import Stream
+from alt_ani_core.models import StreamVariant
+
 from alt_ani_cli.player import build_command
 
 
@@ -15,7 +16,7 @@ class PlayResult:
 
 
 def play(
-    stream: Stream,
+    stream: StreamVariant,
     *,
     kind: Literal["mpv", "vlc"],
     title: str,

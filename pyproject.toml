@@ -6,16 +6,20 @@ description = "CLI for watching and downloading anime from shinden.pl on Windows
 license = { text = "EUPL-1.2" }
 authors = [{ name = "Aleksander Marszałkiewicz" }]
 dependencies = [
-    "selectolax>=0.3",
+    "alt-ani-core[curl,selectolax]",
     "inquirerpy>=0.3",
-    "yt-dlp>=2024.1",
     "platformdirs>=4.0",
     "rich>=13.0",
     "colorama>=0.4",
     "brotli>=1.2.0",
     "pyyaml>=6.0",
-    "curl-cffi>=0.15.0",
 ]
+
+[tool.uv.workspace]
+members = ["packages/core"]
+
+[tool.uv.sources]
+alt-ani-core = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -34,7 +38,7 @@ dev = [
 Repository = "https://github.com/Cybernetic-Ransomware/alt-ani-cli-win-shinden"
 
 [project.scripts]
-alt-ani-cli = "alt_ani_cli.cli:main"
+alt-ani-cli = "alt_ani_cli.main:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -45,7 +49,7 @@ packages = ["src/alt_ani_cli"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=src --cov-report=html:tests/result/html --cov-report=term-missing -q -m 'not integration' --junitxml=tests/result/pytest_result.xml"
+addopts = "--cov=alt_ani_cli --cov=alt_ani_core --cov-report=html:tests/result/html --cov-report=term-missing -q -m 'not integration' --junitxml=tests/result/pytest_result.xml"
 markers = [
     "unit: tests with no external dependencies",
     "integration: tests requiring network access",
@@ -72,7 +76,7 @@ select = ["E", "F", "UP", "B", "SIM", "I"]
 exclude = ["tests/*", "tools/*"]
 
 [tool.ty.environment]
-extra-paths = ["src"]
+extra-paths = ["src", "packages/core/src"]
 
 [tool.codespell]
 skip = "./.git,./.github,./tests/*,./temp/*,./tools/*"
@@ -91,6 +95,8 @@ tag_format = "v$version"
 version_files = [
     "pyproject.toml:version",
     "src/alt_ani_cli/__init__.py:__version__",
+    "packages/core/pyproject.toml:version",
+    "packages/core/src/alt_ani_core/__init__.py:__version__",
 ]
 change_type_order = ["feat", "fix", "hotfix", "chore", "docs", "refactor", "test"]
 schema_pattern = "(build|chore|ci|docs|feature|feat|fix|hotfix|perf|refactor|style|test|config)(\\(.+\\))?!?: .+"

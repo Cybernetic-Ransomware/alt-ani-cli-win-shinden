@@ -2,13 +2,14 @@ import os
 import shutil
 import sys
 
-from alt_ani_cli.config import USER_AGENT
+from alt_ani_core.config import USER_AGENT
+from alt_ani_core.errors import PlayerNotFoundError
+from alt_ani_core.models import StreamVariant
+
 from alt_ani_cli.content import EXCEPTIONS
-from alt_ani_cli.errors import PlayerNotFoundError
-from alt_ani_cli.extract.common import Stream
 
 
-def build(stream: Stream, *, title: str) -> list[str]:
+def build(stream: StreamVariant, *, title: str) -> list[str]:
     path = _find()
     referer = stream.headers.get("Referer") or stream.headers.get("referer", "")
     cmd = [

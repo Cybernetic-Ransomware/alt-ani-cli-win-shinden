@@ -4,15 +4,15 @@ import re
 from unittest.mock import MagicMock
 
 import pytest
-from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
-from curl_cffi.requests.exceptions import RequestException as CurlRequestException
-
-from alt_ani_cli.config import SHINDEN_BASE
-from alt_ani_cli.errors import ParseError, ShindenError
-from alt_ani_cli.models import SeriesRef
-from alt_ani_cli.shinden import series
-from alt_ani_cli.shinden.series import MAX_EPISODE_PAGES, _parse_page, list_episodes, parse_series_url
-from alt_ani_cli.shinden.utils import ParseTally
+from alt_ani_core.cancel import CancelToken
+from alt_ani_core.config import SHINDEN_BASE
+from alt_ani_core.errors import OperationCancelled, ParseError, ShindenError
+from alt_ani_core.models import SeriesRef
+from alt_ani_core.shinden import series
+from alt_ani_core.shinden.series import MAX_EPISODE_PAGES, _parse_page, list_episodes, parse_series_url
+from alt_ani_core.shinden.utils import ParseTally
+from alt_ani_core.testing import RecordingCancel
+from alt_ani_core.transport.api import HttpStatusError, NetworkError
 
 _FRIEREN = SeriesRef(
     id="61064", slug="sousou-no-frieren", title="Sousou No Frieren", url=f"{SHINDEN_BASE}/series/61064-sousou-no-frieren"
@@ -55,7 +55,7 @@ def _events(events, name):
 
 @pytest.fixture(autouse=True)
 def _no_page_delay(monkeypatch):
-    monkeypatch.setattr(series.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(CancelToken, "wait", lambda _self, _seconds: None)
 
 
 @pytest.fixture
@@ -362,14 +362,14 @@ class TestListEpisodes:
 
     def test_transport_error_after_first_page_is_partial(self, shinden_html, client_for):
         def _boom(_url):
-            raise CurlRequestException("connection reset")
+            raise NetworkError()
 
         p1 = _paged(_with_links(shinden_html("episodes_titles_p1.html")), total=200, last_page=2)
         listing = list_episodes(client_for({1: p1, 2: _boom}), _ONE_PIECE)
         assert listing.incomplete_reason == "http_error"
 
     def test_first_page_http_error_propagates(self, client_for, fake_response):
-        with pytest.raises(CurlHTTPError):
+        with pytest.raises(HttpStatusError):
             list_episodes(client_for({1: lambda _url: fake_response("", status=503)}), _FRIEREN)
 
     def test_drift_on_later_page_raises(self, shinden_html, client_for):
@@ -409,5 +409,24 @@ class TestListEpisodes:
     def test_404_on_both_routes_raises(self, fake_response):
         client = MagicMock()
         client.get.side_effect = [fake_response("", status=404), fake_response("", status=404)]
-        with pytest.raises(CurlHTTPError):
+        with pytest.raises(HttpStatusError):
             list_episodes(client, _FRIEREN)
+
+
+@pytest.mark.unit
+class TestCancellation:
+    def _two_pages(self, shinden_html):
+        p1 = _paged(_with_links(shinden_html("episodes_titles_p1.html")), total=200, last_page=2)
+        return {1: p1, 2: _with_links(shinden_html("episodes_titles_p2.html"))}
+
+    def test_page_delay_goes_through_the_token(self, shinden_html, client_for):
+        cancel = RecordingCancel()
+        listing = list_episodes(client_for(self._two_pages(shinden_html)), _ONE_PIECE, cancel=cancel)
+        assert listing.pages_fetched == 2
+        assert cancel.waits == [series._PAGE_DELAY_SEC]
+
+    def test_cancel_during_pagination_stops_before_the_next_page(self, shinden_html, client_for):
+        client = client_for(self._two_pages(shinden_html))
+        with pytest.raises(OperationCancelled):
+            list_episodes(client, _ONE_PIECE, cancel=RecordingCancel(cancel_on_wait=1))
+        assert [call.kwargs["params"]["strona"] for call in client.get.call_args_list] == [1]

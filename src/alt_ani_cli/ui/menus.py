@@ -9,13 +9,15 @@ Enter (numbered fallback), signalling "go back".
 """
 
 import re
+from collections.abc import Sequence
 from contextlib import suppress
 from typing import Literal
 from urllib.parse import urlparse
 
+from alt_ani_core.models import EpisodeRow, PlayerEntry, PlayerSource, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_core.redaction import redact_text
+
 from alt_ani_cli.content import CONTENT
-from alt_ani_cli.models import EpisodeRow, PlayerEntry, PlayerSource, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
-from alt_ani_cli.redaction import redact_text
 from alt_ani_cli.ui import progress
 
 _RES_RE = re.compile(r"(\d+)")
@@ -689,8 +691,8 @@ def prompt_url() -> str | None:
     return result.strip() if result is not None else None
 
 
-def select_quality(qualities: dict[str, str], prompt: str = _M["quality"]["default_prompt"]) -> str | None:
-    if not qualities:
+def select_quality(labels: Sequence[str], prompt: str = _M["quality"]["default_prompt"]) -> str | None:
+    if not labels:
         return "best"
 
     _q = _M["quality"]
@@ -699,7 +701,7 @@ def select_quality(qualities: dict[str, str], prompt: str = _M["quality"]["defau
         m = _RES_RE.search(key)
         return float(m.group(1)) if m else 0.0
 
-    sorted_keys = sorted(qualities.keys(), key=_height, reverse=True)
+    sorted_keys = sorted(labels, key=_height, reverse=True)
     all_options = ["best"] + sorted_keys + ["worst"]
 
     def _label(opt: str) -> str:

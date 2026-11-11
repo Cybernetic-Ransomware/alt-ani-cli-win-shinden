@@ -1,12 +1,13 @@
 from typing import Literal
 
-from alt_ani_cli.extract.common import Stream
+from alt_ani_core.models import StreamVariant
+
 from alt_ani_cli.player import mpv, vlc
 
 
 def build_command(
     kind: Literal["mpv", "vlc"],
-    stream: Stream,
+    stream: StreamVariant,
     *,
     title: str,
     no_detach: bool = False,

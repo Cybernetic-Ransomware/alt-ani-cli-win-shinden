@@ -2,11 +2,15 @@
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Literal
+from typing import Literal
 
-from alt_ani_cli.flow.pin import PlayerFingerprint
-from alt_ani_cli.health import ResolverHealth
-from alt_ani_cli.shinden.xhr import EpisodeXhr
+from alt_ani_core.models import EpisodeRow, PlayerEntry, ResolvedStream, SeriesHit, SeriesRef
+from alt_ani_core.rules.pin import PlayerFingerprint
+from alt_ani_core.services.engine import Engine
+from alt_ani_core.services.episode_session import EpisodeSession
+
+from alt_ani_cli.args import CliOptions
+from alt_ani_cli.paths import CliPaths
 
 
 class Screen(Enum):
@@ -16,14 +20,14 @@ class Screen(Enum):
     RESUME_PICK = auto()
     DOWNLOAD_RESUME_PICK = auto()
     SERIES_PICK = auto()
-    FETCH_EPISODES = auto()  # wirtualny — I/O bez UI
+    FETCH_EPISODES = auto()  # virtual — I/O without UI
     EPISODES_PICK = auto()
-    EPISODE_DISPATCH = auto()  # wirtualny — wybiera następny ep z targets
+    EPISODE_DISPATCH = auto()  # virtual — picks the next episode from targets
     PLAYER_PICK = auto()
-    RESOLVE_STREAM = auto()  # wirtualny — sieć bez UI
+    RESOLVE_STREAM = auto()  # virtual — network without UI
     QUALITY_PICK = auto()
     ACTION_PICK = auto()
-    RUN_ACTION = auto()  # wirtualny — odtwarzanie/pobranie
+    RUN_ACTION = auto()  # virtual — playback/download
 
 
 _VIRTUAL_SCREENS: frozenset[Screen] = frozenset(
@@ -54,22 +58,25 @@ ScreenResult = Screen | _BackSentinel | None
 
 @dataclass
 class FlowState:
-    args: Any
-    client: Any
+    """Navigation, batch and UI choices only; everything about an opened episode lives in its EpisodeSession."""
+
+    options: CliOptions
+    engine: Engine
+    paths: CliPaths
 
     # search / series
     query: str | None = None
-    hits: list = field(default_factory=list)
-    ref: Any = None
+    hits: list[SeriesHit] = field(default_factory=list)
+    ref: SeriesRef | None = None
     last_ep: float = 0.0
     resume_mode: Literal["watch", "download"] | None = None
     downloaded_eps: set[float] = field(default_factory=set)
 
     # episodes
-    episodes: list = field(default_factory=list)
+    episodes: list[EpisodeRow] = field(default_factory=list)
     # False when pagination stopped early — the oldest episodes are missing, so nothing may be auto-selected
     episodes_complete: bool = True
-    targets: list = field(default_factory=list)
+    targets: list[EpisodeRow] = field(default_factory=list)
     ep_idx: int = 0
     completed_eps: set[float] = field(default_factory=set)
     # replace already-downloaded files without asking — scoped to the current targets batch only
@@ -78,28 +85,24 @@ class FlowState:
     # download source pin — scoped to the current targets batch, never persisted
     pinned_player: PlayerFingerprint | None = None
 
+    # the opened episode; replaced on every dispatch except the one internal reload after PLAYERS_CHANGED
+    session: EpisodeSession | None = None
+    reload_pending: bool = False
+
     # player / stream
-    players: list = field(default_factory=list)
-    chosen_player: Any = None
+    players: list[PlayerEntry] = field(default_factory=list)
+    chosen_player: PlayerEntry | None = None
     # True only when chosen_player came from PLAYER_PICK (not pin / --select-nth / single-player auto-pick)
     player_picked_manually: bool = False
     failed_ids: set[str] = field(default_factory=set)
-    stream: Any = None
-    embed: Any = None
-    player_sources: dict = field(default_factory=dict)  # online_id → PlayerSource
-    player_embeds: dict = field(default_factory=dict)  # online_id → EmbedURL
-    # XHR state of the current episode page only; replaced on every dispatch, never persisted
-    episode_xhr: EpisodeXhr | None = None
-    # URL of the episode already reloaded once after PLAYERS_CHANGED; a second change must not reload again
-    players_reloaded_ep: str | None = None
+    # sources whose stream resolved but then failed to download: picking one again forces a fresh resolve
+    expired_ids: set[str] = field(default_factory=set)
+    resolved: ResolvedStream | None = None
 
     # cached user choices
     quality: str | None = None
     episode_action: str | None = None
 
-    # observability only — never gates player choice, order, or skipping
-    health: ResolverHealth = field(default_factory=ResolverHealth)
-
     @property
-    def current_ep(self):
+    def current_ep(self) -> EpisodeRow | None:
         return self.targets[self.ep_idx] if self.ep_idx < len(self.targets) else None

@@ -3,10 +3,10 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from alt_ani_core.models import EpisodeRow, PlayerEntry, PlayerSource, RelatedSeries, SeriesHit, SeriesRef
+from alt_ani_core.testing import make_stream
 
 from alt_ani_cli.content import CONTENT
-from alt_ani_cli.models import PlayerSource
-from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, RelatedSeries, SeriesHit, SeriesRef
 from alt_ani_cli.ui.menus import (
     _anchor_choice_window,
     _origin_similar,
@@ -32,21 +32,21 @@ from alt_ani_cli.ui.menus import (
 @pytest.mark.unit
 class TestSelectQuality:
     def test_empty_returns_best(self):
-        assert select_quality({}) == "best"
+        assert select_quality([]) == "best"
 
     def test_fallback_picks_best(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value="1"):
-            assert select_quality({"1080p": "u1", "720p": "u2"}) == "best"
+            assert select_quality(["1080p", "720p"]) == "best"
 
     def test_fallback_picks_1080p(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value="2"):
-            assert select_quality({"1080p": "u1", "720p": "u2"}) == "1080p"
+            assert select_quality(["1080p", "720p"]) == "1080p"
 
     def test_fallback_picks_worst(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
-        qualities = {"1080p": "u1", "720p": "u2"}
+        qualities = ("1080p", "720p")
         last_idx = str(len(qualities) + 2)
         with patch("builtins.input", return_value=last_idx):
             assert select_quality(qualities) == "worst"
@@ -58,14 +58,24 @@ class TestSelectQuality:
             patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
             patch("builtins.input", return_value="1"),
         ):
-            select_quality({"480p": "u3", "1080p": "u1", "720p": "u2"})
+            select_quality(["480p", "1080p", "720p"])
         resolution_lines = [line for line in printed if any(r in line for r in ("1080p", "720p", "480p"))]
         assert resolution_lines[0].find("1080p") < resolution_lines[1].find("720p") or "1080p" in resolution_lines[0]
 
     def test_empty_enter_returns_none(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value=""):
-            assert select_quality({"1080p": "u1"}) is None
+            assert select_quality(["1080p"]) is None
+
+    def test_accepts_stream_labels_and_picks_by_sorted_position(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        labels = make_stream(
+            "https://cdn.example/480.m3u8",
+            qualities={"480p": "https://cdn.example/480.m3u8", "1080p": "https://cdn.example/1080.m3u8"},
+            ext="m3u8",
+        ).labels
+        with patch("builtins.input", return_value="3"):
+            assert select_quality(labels) == "480p"
 
 
 def _start_mode_options(monkeypatch, **counts) -> tuple[list[str], str | None]:
@@ -385,13 +395,19 @@ class TestPickRelated:
 
     def test_fallback_picks_item(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
-        items = (RelatedSeries(id="10", slug="sequel", title="Sequel Anime", url="https://shinden.pl/series/10-sequel", relation="Sequel"),)
+        items = (
+            RelatedSeries(
+                id="10", slug="sequel", title="Sequel Anime", url="https://shinden.pl/series/10-sequel", relation="Sequel"
+            ),
+        )
         with patch("builtins.input", return_value="1"):
             assert pick_related(items) == items[0]
 
     def test_fallback_empty_enter_returns_none(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
-        items = (RelatedSeries(id="10", slug="sequel", title="Sequel", url="https://shinden.pl/series/10-sequel", relation="Sequel"),)
+        items = (
+            RelatedSeries(id="10", slug="sequel", title="Sequel", url="https://shinden.pl/series/10-sequel", relation="Sequel"),
+        )
         with patch("builtins.input", return_value=""):
             assert pick_related(items) is None
 
@@ -505,8 +521,12 @@ class TestSelectPlayerOnce:
 class TestFormatPlayerSource:
     def test_full_info(self):
         p = PlayerEntry(
-            online_id="p1", player="CDA", lang_audio="jp", lang_subs="pl",
-            subs_author="Mioro-Subs", source="https://miorosubs.com/",
+            online_id="p1",
+            player="CDA",
+            lang_audio="jp",
+            lang_subs="pl",
+            subs_author="Mioro-Subs",
+            source="https://miorosubs.com/",
         )
         resolved = PlayerSource(online_id="p1", host="ebd.cda.pl", embed_url="https://ebd.cda.pl/620x395/xyz")
         title, body = format_player_source(p, resolved)

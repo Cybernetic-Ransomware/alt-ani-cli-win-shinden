@@ -3,23 +3,25 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from alt_ani_core.models import StreamProtocol, StreamVariant
 
-from alt_ani_cli.extract.common import Stream
 from alt_ani_cli.player.runner import play
 
 
 def _stream():
-    return Stream(url="https://cdn.example.com/v.m3u8", headers={}, ext="m3u8")
+    return StreamVariant(url="https://cdn.example.com/v.m3u8", protocol=StreamProtocol.HLS)
 
 
 @pytest.mark.unit
 class TestPlay:
     def test_no_detach_returns_real_rc_and_measured_elapsed(self):
         with (
-            patch("alt_ani_cli.player.runner.build_command", return_value=["mpv", "url"]),
-            patch("alt_ani_cli.player.runner.subprocess.run", return_value=MagicMock(returncode=7)),
+            patch("alt_ani_cli.player.runner.build_command", return_value=["mpv", "url"]) as build,
+            patch("alt_ani_cli.player.runner.subprocess.run", return_value=MagicMock(returncode=7)) as run,
         ):
             result = play(_stream(), kind="mpv", title="X", no_detach=True)
+        build.assert_called_once_with("mpv", _stream(), title="X", no_detach=True)
+        run.assert_called_once_with(["mpv", "url"])
         assert result.rc == 7
         assert result.elapsed >= 0.0
 
@@ -32,3 +34,4 @@ class TestPlay:
         assert result.rc == 0
         assert result.elapsed == 0.0
         mock_popen.assert_called_once()
+        assert mock_popen.call_args.args[0] == ["mpv", "url"]

@@ -1,0 +1,237 @@
+"""Local-only session diagnostics log for interactive and noninteractive runs.
+
+Never sent over the network — written to a plain-text file under
+the directory given to ``configure``. Every public function here accepts only
+already-redacted primitives (hosts, exception class names, ids, titles,
+numbers) — never a raw URL, header dict, or exception message — so redaction
+is enforced by the function signatures, not by caller discipline.
+"""
+
+import logging
+import shlex
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlparse
+
+_MAX_SESSIONS = 20
+
+_logger = logging.getLogger("alt_ani_core.diagnostics")
+_logger.setLevel(logging.INFO)
+_logger.propagate = False
+_logger.addHandler(logging.NullHandler())
+
+
+def configure(directory: Path) -> Path:
+    """Safe to call repeatedly — closes any prior handler first, so events never duplicate across two open files."""
+    directory.mkdir(parents=True, exist_ok=True)
+
+    for handler in [h for h in _logger.handlers if not isinstance(h, logging.NullHandler)]:
+        _logger.removeHandler(handler)
+        handler.close()
+
+    path = directory / f"session_{datetime.now():%Y%m%d_%H%M%S_%f}.log"
+    handler = logging.FileHandler(path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _logger.addHandler(handler)
+
+    _prune(directory)
+    return path
+
+
+def _prune(directory: Path) -> None:
+    """Runs after the new file exists, so the count includes it — pruning first would leave one file too many."""
+    sessions = sorted(directory.glob("session_*.log"), key=lambda p: p.stat().st_mtime)
+    excess = len(sessions) - _MAX_SESSIONS
+    for old in sessions[: max(excess, 0)]:
+        old.unlink(missing_ok=True)
+
+
+def host_of_url(url: str) -> str:
+    """Reduce a full URL to its bare hostname — the only function in this module that touches a raw URL."""
+    try:
+        host = urlparse(url).hostname
+    except ValueError:
+        return "unknown-host"
+    return host.removeprefix("www.") if host else "unknown-host"
+
+
+def _safe_value(value: object) -> str:
+    """Collapse whitespace/newlines and shell-quote via shlex, so shlex.split round-trips it exactly."""
+    text = " ".join(str(value).split())
+    return shlex.quote(text)
+
+
+def _emit(event: str, **fields: object) -> None:
+    parts = [f"event={event}"]
+    for key, value in fields.items():
+        if value is None:
+            continue
+        parts.append(f"{key}={_safe_value(value)}")
+    _logger.info(" ".join(parts))
+
+
+def session_start(version: str, python_version: str, platform: str, *, mode: str | None = None) -> None:
+    _emit("session_start", version=version, python=python_version, platform=platform, mode=mode)
+
+
+def session_end(outcome: str, exc: str | None) -> None:
+    _emit("session_end", outcome=outcome, exc=exc)
+
+
+def screen_transition(from_screen: str, to_screen: str, elapsed: float) -> None:
+    _emit("screen_transition", from_screen=from_screen, to_screen=to_screen, elapsed=f"{elapsed:.3f}")
+
+
+def series_selected(series_id: str, title: str) -> None:
+    _emit("series_selected", id=series_id, title=title)
+
+
+def episode_selected(number: float, title: str, path: str | None = None) -> None:
+    """``path`` is the validated episode page path (no host, no query) so replay can reopen this exact episode."""
+    _emit("episode_selected", number=number, title=title, path=path)
+
+
+def shinden_xhr_context(action: str, backend: str, reason: str | None, online_id: str | None = None) -> None:
+    """Backend choice and token refresh; ``reason`` is a fixed code, never page data, a URL or the token."""
+    _emit("shinden_xhr_context", action=action, backend=backend, reason=reason, online_id=online_id)
+
+
+def shinden_parse_partial(page: str, found: int, valid: int, invalid: str, excluded: str) -> None:
+    _emit("shinden_parse_partial", page=page, found=found, valid=valid, invalid=invalid, excluded=excluded or None)
+
+
+def shinden_count_mismatch(page: str, counter: str, expected: int, actual: int) -> None:
+    _emit("shinden_count_mismatch", page=page, counter=counter, expected=expected, actual=actual)
+
+
+def shinden_players_mismatch(dom_only: int, json_only: int, trap_visible: bool, dom_duplicates: int) -> None:
+    _emit(
+        "shinden_players_mismatch",
+        dom_only=dom_only,
+        json_only=json_only,
+        trap_visible=trap_visible,
+        dom_duplicates=dom_duplicates,
+    )
+
+
+def shinden_players_degraded(missing: str, affected: int) -> None:
+    """``missing`` lists contract key names from a fixed set, never page values."""
+    _emit("shinden_players_degraded", missing=missing, affected=affected)
+
+
+def shinden_episodes_incomplete(series_id: str, pages_fetched: int, pages_total: int, reason: str) -> None:
+    _emit("shinden_episodes_incomplete", id=series_id, fetched=pages_fetched, total=pages_total, reason=reason)
+
+
+def player_selected(online_id: str, player: str, host: str | None) -> None:
+    _emit("player_selected", online_id=online_id, player=player, host=host)
+
+
+def resolve_result(
+    host: str | None,
+    ok: bool,
+    exc: str | None,
+    elapsed: float,
+    *,
+    layer: str | None = None,
+    category: str | None = None,
+    http_status: int | None = None,
+    used_fallback: bool | None = None,
+    fallback_layer: str | None = None,
+    fallback_category: str | None = None,
+    fallback_http_status: int | None = None,
+    stage: str | None = None,
+    api_code: str | None = None,
+    retry_after: int | None = None,
+    reason: str | None = None,
+    xhr_outcome: str | None = None,
+    xhr_backend: str | None = None,
+    token_refreshed: bool | None = None,
+    xhr_fallback: str | None = None,
+) -> None:
+    """``layer``/``category`` come from failure.classify_exception; the XHR fields from shinden/api.py."""
+    _emit(
+        "resolve_result",
+        host=host,
+        ok=ok,
+        exc=exc,
+        layer=layer,
+        category=category,
+        http_status=http_status,
+        used_fallback=used_fallback,
+        fallback_layer=fallback_layer,
+        fallback_category=fallback_category,
+        fallback_http_status=fallback_http_status,
+        stage=stage,
+        api_code=api_code,
+        retry_after=retry_after,
+        reason=reason,
+        xhr_outcome=xhr_outcome,
+        xhr_backend=xhr_backend,
+        token_refreshed=token_refreshed,
+        xhr_fallback=xhr_fallback,
+        elapsed=f"{elapsed:.3f}",
+    )
+
+
+def host_health(
+    host: str,
+    from_state: str,
+    to_state: str,
+    signal: str,
+    online_id: str | None,
+    category: str | None,
+    http_status: int | None,
+    resolver: str | None,
+    evidence_expired: bool,
+) -> None:
+    _emit(
+        "host_health",
+        host=host,
+        from_state=from_state,
+        to_state=to_state,
+        signal=signal,
+        online_id=online_id,
+        category=category,
+        http_status=http_status,
+        resolver=resolver,
+        evidence_expired=evidence_expired,
+    )
+
+
+def health_defer(
+    action: str,
+    host: str,
+    online_id: str | None,
+    player: str | None,
+    state: str,
+    category: str | None,
+    http_status: int | None,
+) -> None:
+    _emit(
+        "health_defer",
+        action=action,
+        host=host,
+        online_id=online_id,
+        player=player,
+        state=state,
+        category=category,
+        http_status=http_status,
+    )
+
+
+def health_reorder(number: float, before: str, after: str, states: str) -> None:
+    """``before``/``after`` are comma-joined online_id sequences; ``states`` aligns with ``after``."""
+    _emit("health_reorder", number=number, before=before, after=after, states=states)
+
+
+def playback_result(kind: str, rc: int, elapsed: float, confirmed: bool, mpv_log: str | None) -> None:
+    _emit("playback_result", kind=kind, rc=rc, elapsed=f"{elapsed:.3f}", confirmed=confirmed, mpv_log=mpv_log)
+
+
+def download_result(host: str | None, ok: bool, exc: str | None) -> None:
+    _emit("download_result", host=host, ok=ok, exc=exc)
+
+
+def history_update(series_id: str, last_ep: float) -> None:
+    _emit("history_update", id=series_id, last_ep=last_ep)

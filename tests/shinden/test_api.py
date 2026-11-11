@@ -8,14 +8,17 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import quote
 
 import pytest
-from curl_cffi.requests.exceptions import ConnectionError as CurlConnectionError
-from curl_cffi.requests.exceptions import DNSError, Timeout
+from alt_ani_core.config import GUEST_AUTH, SHINDEN_API_BASE, SHINDEN_XHR_BASE
+from alt_ani_core.errors import OperationCancelled, ShindenXhrError
+from alt_ani_core.events import SourceAttemptFailed
+from alt_ani_core.models import EpisodeRow
+from alt_ani_core.services.episode_session import EpisodeSession
+from alt_ani_core.shinden.api import XhrOutcome, resolve_embed, stop_message, xhr_outcome
+from alt_ani_core.shinden.xhr import BACKEND_API4, BACKEND_NEW, EpisodeXhr, EpisodeXhrContext
+from alt_ani_core.testing import RecordingCancel
+from alt_ani_core.transport.api import NetworkError, TransportError, TransportTimeout
 
-from alt_ani_cli.cli import _record_extraction_failure
-from alt_ani_cli.config import GUEST_AUTH, SHINDEN_API_BASE, SHINDEN_XHR_BASE
-from alt_ani_cli.errors import ShindenXhrError
-from alt_ani_cli.shinden.api import XhrOutcome, resolve_embed, stop_message, xhr_outcome
-from alt_ani_cli.shinden.xhr import BACKEND_API4, BACKEND_NEW, EpisodeXhr, EpisodeXhrContext
+from alt_ani_cli.event_renderer import ConsoleEvents
 
 from .conftest import EPISODE_URL, TRAP_ID
 
@@ -57,12 +60,12 @@ def _api4_xhr() -> EpisodeXhr:
 
 def _resolve(client, **kw):
     kw.setdefault("xhr", _api4_xhr())
-    with patch("alt_ani_cli.shinden.api.time.sleep") as mock_sleep:
-        try:
-            return resolve_embed(client, "42", **kw), mock_sleep
-        except ShindenXhrError as exc:
-            exc.mock_sleep = mock_sleep
-            raise
+    cancel = RecordingCancel()
+    try:
+        return resolve_embed(client, "42", cancel=cancel, **kw), cancel
+    except ShindenXhrError as exc:
+        exc.cancel = cancel
+        raise
 
 
 def _xhr_error(**fields) -> ShindenXhrError:
@@ -74,15 +77,15 @@ def _xhr_error(**fields) -> ShindenXhrError:
 class TestPlayerLoadWait:
     def test_live_fixture_body_is_accepted(self):
         client = _client(_resp(text=_LIVE_LOAD_BODY), _resp(text=_IFRAME_HTML))
-        result, mock_sleep = _resolve(client, min_sleep_seconds=0.0)
-        mock_sleep.assert_called_once_with(int(_LIVE_LOAD_BODY))
+        result, cancel = _resolve(client, min_sleep_seconds=0.0)
+        assert cancel.waits == [int(_LIVE_LOAD_BODY)]
         assert result.url == "https://video.sibnet.ru/shell.php?videoid=9999"
 
     def test_sleep_happens_between_load_and_show(self):
         order: list[str] = []
         client = MagicMock()
         client.get.side_effect = lambda url, **kw: (order.append(url), _resp(text="5" if url == _LOAD_URL else _IFRAME_HTML))[1]
-        with patch("alt_ani_cli.shinden.api.time.sleep", side_effect=lambda s: order.append("sleep")):
+        with patch("alt_ani_core.cancel.CancelToken.wait", side_effect=lambda s: order.append("sleep")):
             resolve_embed(client, "42", xhr=_api4_xhr(), min_sleep_seconds=0.0)
         assert order == [_LOAD_URL, "sleep", _SHOW_URL]
 
@@ -92,18 +95,18 @@ class TestPlayerLoadWait:
     )
     def test_valid_whole_seconds(self, body, expected):
         client = _client(_resp(text=body), _resp(text=_IFRAME_HTML))
-        _, mock_sleep = _resolve(client, min_sleep_seconds=0.0)
-        mock_sleep.assert_called_once_with(expected)
+        _, cancel = _resolve(client, min_sleep_seconds=0.0)
+        assert cancel.waits == [expected]
 
     def test_configured_minimum_lengthens_a_shorter_server_wait(self):
         client = _client(_resp(text="0"), _resp(text=_IFRAME_HTML))
-        _, mock_sleep = _resolve(client, min_sleep_seconds=5.0)
-        mock_sleep.assert_called_once_with(5.0)
+        _, cancel = _resolve(client, min_sleep_seconds=5.0)
+        assert cancel.waits == [5.0]
 
     def test_server_wait_wins_over_a_shorter_minimum(self):
         client = _client(_resp(text="12"), _resp(text=_IFRAME_HTML))
-        _, mock_sleep = _resolve(client, min_sleep_seconds=5.0)
-        mock_sleep.assert_called_once_with(12)
+        _, cancel = _resolve(client, min_sleep_seconds=5.0)
+        assert cancel.waits == [12]
 
     @pytest.mark.parametrize(
         ("body", "reason"),
@@ -133,7 +136,7 @@ class TestPlayerLoadWait:
         err = exc_info.value
         assert (err.stage, err.category, err.reason, err.http_status) == ("player_load", "parser_drift", reason, 200)
         assert client.get.call_count == 1
-        err.mock_sleep.assert_not_called()
+        assert err.cancel.waits == []
         assert xhr_outcome(err) is XhrOutcome.API_PROTOCOL_ERROR
 
     def test_invalid_wait_message_never_echoes_the_body(self):
@@ -142,6 +145,35 @@ class TestPlayerLoadWait:
             _resolve(client)
         assert "secret-body-token" not in str(exc_info.value)
         assert "secret-body-token" not in stop_message(exc_info.value)
+
+
+@pytest.mark.unit
+class TestCancellation:
+    def test_cancel_during_the_antibot_wait_never_requests_player_show(self):
+        client = _client(_resp(text="5"), _resp(text=_IFRAME_HTML))
+        cancel = RecordingCancel(cancel_on_wait=1)
+        with pytest.raises(OperationCancelled):
+            resolve_embed(client, "42", xhr=_api4_xhr(), cancel=cancel)
+        assert [c.args[0] for c in client.get.call_args_list] == [_LOAD_URL]
+        assert cancel.waits == [5.0]
+
+    def test_token_cancelled_before_the_call_stops_at_the_wait(self):
+        client = _client(_resp(text="7"), _resp(text=_IFRAME_HTML))
+        cancel = RecordingCancel()
+        cancel.cancel()
+        with pytest.raises(OperationCancelled):
+            resolve_embed(client, "42", xhr=_api4_xhr(), min_sleep_seconds=0.0, cancel=cancel)
+        assert _SHOW_URL not in [c.args[0] for c in client.get.call_args_list]
+
+    def test_cancel_after_invalid_token_skips_the_page_refresh(self):
+        xhr = _new_xhr()
+        cancel = RecordingCancel()
+        client = MagicMock()
+        client.get.side_effect = lambda url, **kw: (cancel.cancel(), _expired())[1]
+        with pytest.raises(OperationCancelled):
+            resolve_embed(client, _PAGE_ID, xhr=xhr, cancel=cancel)
+        assert client.get.call_count == 1
+        assert xhr.refresh_used is False
 
 
 @pytest.mark.unit
@@ -222,7 +254,7 @@ class TestRetryAfter:
     def _retry_after(self, headers=None, body=""):
         with pytest.raises(ShindenXhrError) as exc_info:
             _resolve(_client(_resp(429, body, headers)))
-        exc_info.value.mock_sleep.assert_not_called()
+        assert exc_info.value.cancel.waits == []
         return exc_info.value.retry_after
 
     def test_header_seconds(self):
@@ -264,9 +296,9 @@ class TestTransportErrors:
     @pytest.mark.parametrize(
         ("exc", "category"),
         [
-            (Timeout("timed out"), "timeout"),
-            (DNSError("could not resolve host"), "network_error"),
-            (CurlConnectionError("connection refused"), "network_error"),
+            (TransportTimeout(url=_LOAD_URL), "timeout"),
+            (NetworkError(url=_LOAD_URL), "network_error"),
+            (TransportError("connection refused", url=_LOAD_URL), "network_error"),
         ],
     )
     @pytest.mark.parametrize("stage", ["player_load", "player_show"])
@@ -276,7 +308,7 @@ class TestTransportErrors:
             _resolve(client)
         err = exc_info.value
         assert (err.stage, err.category, err.reason, err.http_status) == (stage, category, "transport", None)
-        # the curl exception text can carry the auth URL, so nothing of it stays on the error
+        # the transport error keeps the auth URL on .url, so nothing of it stays on the error
         assert err.__cause__ is None
         assert err.__context__ is None
         assert xhr_outcome(err) is XhrOutcome.SERVICE_UNAVAILABLE
@@ -344,14 +376,19 @@ class TestPlayerShowIframe:
             "http://[::1/SECRETPATH?t=SECRETPATH",
         ],
     )
-    def test_malformed_src_never_leaks(self, src, diag_events, capsys):
+    def test_malformed_src_never_leaks(self, src, diag_events, capsys, make_engine, sink):
         with pytest.raises(ShindenXhrError) as exc_info:
             _resolve(_client(_resp(text="5"), _resp(text=f'<iframe src="{src}"></iframe>')))
         err = exc_info.value
         assert err.reason == "unexpected_iframe_src"
         candidate = MagicMock(online_id="42", player="Example")
-        _record_extraction_failure(None, candidate, err, None, 0.0, 1)
+        session = EpisodeSession(make_engine(), 0, EpisodeRow(1, "Example", _EPISODE_URL), [], _api4_xhr())
+        session._record_failure(None, candidate, err, 0.0)
         assert diag_events
+        failed = sink.of(SourceAttemptFailed)
+        assert len(failed) == 1
+        ConsoleEvents().emit(failed[0])
+        assert "SECRETPATH" not in repr(sink.events)
         assert "SECRETPATH" not in str(err)
         assert "SECRETPATH" not in stop_message(err)
         assert "SECRETPATH" not in repr(diag_events)
@@ -453,8 +490,7 @@ def _urls(client) -> list[str]:
 
 
 def _run(client, xhr, online_id=_PAGE_ID):
-    with patch("alt_ani_cli.shinden.api.time.sleep"):
-        return resolve_embed(client, online_id, xhr=xhr)
+    return resolve_embed(client, online_id, xhr=xhr, cancel=RecordingCancel())
 
 
 def _expired() -> MagicMock:
@@ -496,7 +532,7 @@ class TestNewBackend:
             _resp(503, ""),
             _resp(404, ""),
             _resp(text="7.5"),
-            Timeout("timed out"),
+            TransportTimeout(),
         ],
         ids=["turnstile", "konto_robot", "401", "403", "429", "503", "404", "drift", "timeout"],
     )
@@ -627,7 +663,7 @@ class TestTokenRefresh:
             (_resp(410, ""), XhrOutcome.API_PROTOCOL_ERROR, "http_status"),
             (_resp(403, ""), XhrOutcome.ACCESS_BLOCKED, "http_status"),
             (_resp(503, ""), XhrOutcome.SERVICE_UNAVAILABLE, "http_status"),
-            (Timeout("timed out"), XhrOutcome.SERVICE_UNAVAILABLE, "transport"),
+            (TransportTimeout(), XhrOutcome.SERVICE_UNAVAILABLE, "transport"),
             (_resp(200, _CHALLENGE_PAGE), XhrOutcome.API_PROTOCOL_ERROR, "refresh_page_invalid"),
         ],
         ids=["404", "410", "403", "503", "timeout", "challenge"],
@@ -674,7 +710,7 @@ class TestTokenRefresh:
         assert client.get.call_count == 2
 
     def test_refresh_transport_error_keeps_no_exception_chain(self):
-        client = _client(_expired(), CurlConnectionError(f"failed {EPISODE_URL}?auth={_OLD_TOKEN}"))
+        client = _client(_expired(), NetworkError(url=f"{EPISODE_URL}?auth={_OLD_TOKEN}"))
         with pytest.raises(ShindenXhrError) as exc_info:
             _run(client, _new_xhr())
         assert exc_info.value.__cause__ is None
@@ -686,7 +722,7 @@ class TestTokenRefresh:
 class TestNoSecretLeak:
     def test_token_never_reaches_messages_diagnostics_or_errors(self, episode_page, diag_events, capsys):
         leak = f"https://shinden.pl/xhr/{_PAGE_ID}/player_load?auth={_OLD_TOKEN}"
-        client = _client(_expired(), _resp(text=episode_page(token=_NEW_TOKEN)), Timeout(leak))
+        client = _client(_expired(), _resp(text=episode_page(token=_NEW_TOKEN)), TransportTimeout(url=leak))
         xhr = _new_xhr()
         with pytest.raises(ShindenXhrError) as exc_info:
             _run(client, xhr)

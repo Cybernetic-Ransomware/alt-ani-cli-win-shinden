@@ -2,7 +2,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
+from alt_ani_core.transport.api import HttpStatusError
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "shinden"
 
@@ -43,7 +43,7 @@ def episode_page(shinden_html):
 @pytest.fixture
 def diag_events(monkeypatch):
     """Record diagnostics events as (event, fields) instead of writing the log."""
-    from alt_ani_cli import diagnostics
+    from alt_ani_core import diagnostics
 
     events: list[tuple[str, dict]] = []
     monkeypatch.setattr(diagnostics, "_emit", lambda event, **fields: events.append((event, fields)))
@@ -52,12 +52,12 @@ def diag_events(monkeypatch):
 
 @pytest.fixture
 def fake_response():
-    """Build a curl_cffi-like response; status >= 400 makes raise_for_status() raise."""
+    """Build an HttpResponse double; status >= 400 makes raise_for_status() raise."""
 
     def _make(text: str = "", status: int = 200) -> MagicMock:
         resp = MagicMock(status_code=status, text=text)
         if status >= 400:
-            resp.raise_for_status.side_effect = CurlHTTPError(f"HTTP {status}")
+            resp.raise_for_status.side_effect = HttpStatusError(status)
         else:
             resp.raise_for_status.return_value = None
         return resp

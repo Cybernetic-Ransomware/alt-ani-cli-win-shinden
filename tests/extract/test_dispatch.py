@@ -4,18 +4,43 @@ import io
 from unittest.mock import MagicMock, patch
 
 import pytest
-from curl_cffi.requests import exceptions as cffi_exceptions
+from alt_ani_core.cancel import CancelToken
+from alt_ani_core.config import ExtractOptions
+from alt_ani_core.errors import (
+    JavaScriptRequiredError,
+    NoStreamError,
+    OperationCancelled,
+    StaleSessionError,
+    UnsupportedHostError,
+)
+from alt_ani_core.extract import (
+    HOST_RULES,
+    HostRule,
+    _exc_text,
+    _normalize_url,
+    dood,
+    flyf,
+    lycoris,
+    mp4upload,
+    playmate,
+    resolve,
+    resolver_family,
+    uqload,
+    vidara,
+)
+from alt_ani_core.extract.common import CATEGORY_NO_STREAM_URL, CATEGORY_PARSER_DRIFT, ExtractError
+from alt_ani_core.models import ExtractionFailure
+from alt_ani_core.testing import FakeTransport, make_stream
+from alt_ani_core.transport.api import DecodeError, HttpStatusError, NetworkError, TransportTimeout
 from yt_dlp import YoutubeDL
 from yt_dlp.networking import Response
 from yt_dlp.networking.exceptions import HTTPError as YtdlpHTTPError
-from yt_dlp.networking.exceptions import TransportError
-
-from alt_ani_cli.errors import JavaScriptRequiredError, NoStreamError, UnsupportedHostError
-from alt_ani_cli.extract import HOST_RULES, HostRule, _exc_text, _normalize_url, mp4upload, resolve, resolver_family
-from alt_ani_cli.extract.common import CATEGORY_NO_STREAM_URL, CATEGORY_PARSER_DRIFT, ExtractError, Stream
+from yt_dlp.networking.exceptions import TransportError as YtdlpTransportError
 
 _REFERER = "https://shinden.pl/"
-_STREAM = Stream(url="https://example.com/video.mp4")
+_STREAM = make_stream("https://example.com/video.mp4")
+# No routes: any HTTP request made through it fails the test.
+_TRANSPORT = FakeTransport()
 
 
 @pytest.mark.unit
@@ -50,35 +75,39 @@ class TestErrorHierarchy:
 class TestResolveDispatch:
     def test_js_only_host_raises_js_required_error(self):
         with pytest.raises(JavaScriptRequiredError, match="voe.sx"):
-            resolve("https://voe.sx/embed/abc", _REFERER)
+            resolve("https://voe.sx/embed/abc", _REFERER, transport=_TRANSPORT)
 
     def test_unsupported_host_without_reason_raises_unsupported_error(self):
         rule = HostRule("unsupported")
-        with patch.dict("alt_ani_cli.extract.HOST_RULES", {"deadhost.tv": rule}):
-            with pytest.raises(UnsupportedHostError, match="deadhost.tv"):
-                resolve("https://deadhost.tv/embed/abc", _REFERER)
+        with (
+            patch.dict("alt_ani_core.extract.HOST_RULES", {"deadhost.tv": rule}),
+            pytest.raises(UnsupportedHostError, match="deadhost.tv"),
+        ):
+            resolve("https://deadhost.tv/embed/abc", _REFERER, transport=_TRANSPORT)
 
     def test_ytdlp_host_skips_jwplayer_and_reports_no_fallback(self):
         on_fallback = MagicMock()
         with (
-            patch("alt_ani_cli.extract.jwplayer.resolve") as mock_jw,
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", return_value=_STREAM) as mock_ytdlp,
+            patch("alt_ani_core.extract.jwplayer.resolve") as mock_jw,
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", return_value=_STREAM) as mock_ytdlp,
         ):
-            result = resolve("https://pixeldrain.com/u/abc123", _REFERER, on_fallback=on_fallback)
+            result = resolve("https://pixeldrain.com/u/abc123", _REFERER, transport=_TRANSPORT, on_fallback=on_fallback)
         assert result is _STREAM
         mock_jw.assert_not_called()
         mock_ytdlp.assert_called_once()
         on_fallback.assert_not_called()
 
     def test_ytdlp_host_failure_raises_no_stream_error(self):
-        with patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")):
-            with pytest.raises(NoStreamError, match="ytdlp fail"):
-                resolve("https://pixeldrain.com/u/abc123", _REFERER)
+        with (
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            pytest.raises(NoStreamError, match="ytdlp fail"),
+        ):
+            resolve("https://pixeldrain.com/u/abc123", _REFERER, transport=_TRANSPORT)
 
     def test_jwplayer_host_dispatches_to_jwplayer_without_fallback(self):
         on_fallback = MagicMock()
-        with patch("alt_ani_cli.extract.jwplayer.resolve", return_value=_STREAM) as mock_jw:
-            result = resolve("https://streamwish.com/e/abc", _REFERER, on_fallback=on_fallback)
+        with patch("alt_ani_core.extract.jwplayer.resolve", return_value=_STREAM) as mock_jw:
+            result = resolve("https://streamwish.com/e/abc", _REFERER, transport=_TRANSPORT, on_fallback=on_fallback)
         assert result is _STREAM
         mock_jw.assert_called_once()
         on_fallback.assert_not_called()
@@ -87,10 +116,10 @@ class TestResolveDispatch:
         failing_fn = MagicMock(side_effect=ValueError("parse error"))
         on_fallback = MagicMock()
         with (
-            patch.dict("alt_ani_cli.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", failing_fn)}),
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", return_value=_STREAM),
+            patch.dict("alt_ani_core.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", failing_fn)}),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", return_value=_STREAM),
         ):
-            result = resolve("https://mp4upload.com/embed-abc.html", _REFERER, on_fallback=on_fallback)
+            result = resolve("https://mp4upload.com/embed-abc.html", _REFERER, transport=_TRANSPORT, on_fallback=on_fallback)
         assert result is _STREAM
         on_fallback.assert_called_once()
         event, host, exc_text = on_fallback.call_args[0]
@@ -98,30 +127,60 @@ class TestResolveDispatch:
         assert host == "mp4upload.com"
         assert exc_text == "ValueError: parse error"
 
+    def test_custom_extractor_receives_url_referer_and_transport(self):
+        custom_fn = MagicMock(return_value=_STREAM)
+        with (
+            patch.dict("alt_ani_core.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", custom_fn)}),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve") as mock_ytdlp,
+        ):
+            assert resolve("https://mp4upload.com/embed-abc.html", _REFERER, transport=_TRANSPORT) is _STREAM
+        custom_fn.assert_called_once_with("https://mp4upload.com/embed-abc.html", _REFERER, _TRANSPORT)
+        mock_ytdlp.assert_not_called()
+
+    def test_jwplayer_receives_url_referer_and_transport(self):
+        with patch("alt_ani_core.extract.jwplayer.resolve", return_value=_STREAM) as mock_jw:
+            resolve("https://unknownhost.tv/embed/abc", _REFERER, transport=_TRANSPORT)
+        mock_jw.assert_called_once_with("https://unknownhost.tv/embed/abc", _REFERER, _TRANSPORT)
+
+    def test_ytdlp_host_gets_normalized_url_and_cookie_options(self):
+        options = ExtractOptions(cookies_file="/tmp/cookies.txt", cookies_browser="firefox")
+        with patch("alt_ani_core.extract.ytdlp_resolver.resolve", return_value=_STREAM) as mock_ytdlp:
+            resolve("https://ebd.cda.pl/800x450/abc12", _REFERER, transport=_TRANSPORT, options=options)
+        mock_ytdlp.assert_called_once_with("https://www.cda.pl/video/abc12", _REFERER, options)
+
+    def test_fallback_gets_cookie_options(self):
+        options = ExtractOptions(cookies_file="/tmp/cookies.txt")
+        with (
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=ValueError("no url")),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", return_value=_STREAM) as mock_ytdlp,
+        ):
+            resolve("https://unknownhost.tv/embed/abc", _REFERER, transport=_TRANSPORT, options=options)
+        mock_ytdlp.assert_called_once_with("https://unknownhost.tv/embed/abc", _REFERER, options)
+
     def test_custom_extractor_failure_without_callback_still_falls_back(self):
         failing_fn = MagicMock(side_effect=ValueError("parse error"))
         with (
-            patch.dict("alt_ani_cli.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", failing_fn)}),
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", return_value=_STREAM),
+            patch.dict("alt_ani_core.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", failing_fn)}),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", return_value=_STREAM),
         ):
-            assert resolve("https://mp4upload.com/embed-abc.html", _REFERER) is _STREAM
+            assert resolve("https://mp4upload.com/embed-abc.html", _REFERER, transport=_TRANSPORT) is _STREAM
 
     def test_custom_and_ytdlp_both_fail_raises_no_stream_error(self):
         failing_fn = MagicMock(side_effect=ValueError("parse error"))
         with (
-            patch.dict("alt_ani_cli.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", failing_fn)}),
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            patch.dict("alt_ani_core.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", failing_fn)}),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            pytest.raises(NoStreamError),
         ):
-            with pytest.raises(NoStreamError):
-                resolve("https://mp4upload.com/embed-abc.html", _REFERER)
+            resolve("https://mp4upload.com/embed-abc.html", _REFERER, transport=_TRANSPORT)
 
     def test_unknown_host_jwplayer_fails_reports_fallback_then_ytdlp_succeeds(self):
         on_fallback = MagicMock()
         with (
-            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ValueError("no url")),
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", return_value=_STREAM),
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=ValueError("no url")),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", return_value=_STREAM),
         ):
-            result = resolve("https://unknownhost.tv/embed/abc", _REFERER, on_fallback=on_fallback)
+            result = resolve("https://unknownhost.tv/embed/abc", _REFERER, transport=_TRANSPORT, on_fallback=on_fallback)
         assert result is _STREAM
         on_fallback.assert_called_once()
         event, host, exc_text = on_fallback.call_args[0]
@@ -131,71 +190,51 @@ class TestResolveDispatch:
 
     def test_unknown_host_both_fail_raises_no_stream_error(self):
         with (
-            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ValueError("no url")),
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=ValueError("no url")),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            pytest.raises(NoStreamError),
         ):
-            with pytest.raises(NoStreamError):
-                resolve("https://unknownhost.tv/embed/abc", _REFERER)
+            resolve("https://unknownhost.tv/embed/abc", _REFERER, transport=_TRANSPORT)
 
     def test_vidara_hosts_route_to_vidara_extractor(self):
-        from alt_ani_cli.extract import vidara
-
         assert HOST_RULES["vidara.to"] == HostRule("custom", vidara.resolve)
         assert HOST_RULES["www.vidara.to"] == HostRule("custom", vidara.resolve)
 
     def test_viewdara_hosts_route_to_vidara_extractor(self):
-        from alt_ani_cli.extract import vidara
-
         assert HOST_RULES["viewdara.com"] == HostRule("custom", vidara.resolve)
         assert HOST_RULES["www.viewdara.com"] == HostRule("custom", vidara.resolve)
 
     def test_vidara_lookalike_hosts_route_to_vidara_extractor(self):
         """vidawra/vidwara/vidvara mirrors confirmed to speak the same /api/stream protocol."""
-        from alt_ani_cli.extract import vidara
-
         for host in ("vidawra.cc", "vidawra.co", "vidwara.site", "vidvara.biz"):
             assert HOST_RULES[host] == HostRule("custom", vidara.resolve)
 
     def test_morningmarkets_hosts_route_to_vidara_extractor(self):
         """Cosmetic JWPlayer skin, but the real source comes from vidara's /api/stream."""
-        from alt_ani_cli.extract import vidara
-
         assert HOST_RULES["morningmarkets.art"] == HostRule("custom", vidara.resolve)
         assert HOST_RULES["morningmarkets.fit"] == HostRule("custom", vidara.resolve)
 
     def test_iosbgaigo_hosts_route_to_vidara_extractor(self):
         """JWPlayer source comes from a runtime POST /api/stream, so generic JWPlayer sees no URL."""
-        from alt_ani_cli.extract import vidara
-
         assert HOST_RULES["iosbgaigo.com"] == HostRule("custom", vidara.resolve)
         assert HOST_RULES["www.iosbgaigo.com"] == HostRule("custom", vidara.resolve)
 
     def test_dood_yt_routes_to_dood_extractor(self):
-        from alt_ani_cli.extract import dood
-
         assert HOST_RULES["dood.yt"] == HostRule("custom", dood.resolve)
 
     def test_lycoris_hosts_route_to_lycoris_extractor(self):
-        from alt_ani_cli.extract import lycoris
-
         assert HOST_RULES["lycoris.cafe"] == HostRule("custom", lycoris.resolve)
         assert HOST_RULES["www.lycoris.cafe"] == HostRule("custom", lycoris.resolve)
 
     def test_playmate_hosts_route_to_playmate_extractor(self):
-        from alt_ani_cli.extract import playmate
-
         assert HOST_RULES["playmate.to"] == HostRule("custom", playmate.resolve)
         assert HOST_RULES["www.playmate.to"] == HostRule("custom", playmate.resolve)
 
     def test_uqload_hosts_route_to_uqload_extractor(self):
-        from alt_ani_cli.extract import uqload
-
         assert HOST_RULES["uqload.is"] == HostRule("custom", uqload.resolve)
         assert HOST_RULES["www.uqload.is"] == HostRule("custom", uqload.resolve)
 
     def test_flyf_hosts_route_to_flyf_extractor(self):
-        from alt_ani_cli.extract import flyf
-
         assert HOST_RULES["flyf.lat"] == HostRule("custom", flyf.resolve)
         assert HOST_RULES["www.flyf.lat"] == HostRule("custom", flyf.resolve)
 
@@ -214,11 +253,11 @@ class TestResolveDispatch:
     def test_mega_fails_fast_without_extraction_attempts(self):
         on_fallback = MagicMock()
         with (
-            patch("alt_ani_cli.extract.jwplayer.resolve") as mock_jw,
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve") as mock_ytdlp,
+            patch("alt_ani_core.extract.jwplayer.resolve") as mock_jw,
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve") as mock_ytdlp,
+            pytest.raises(UnsupportedHostError, match="mega.nz") as exc_info,
         ):
-            with pytest.raises(UnsupportedHostError, match="mega.nz") as exc_info:
-                resolve("https://mega.nz/embed/#!abc!key", _REFERER, on_fallback=on_fallback)
+            resolve("https://mega.nz/embed/#!abc!key", _REFERER, transport=_TRANSPORT, on_fallback=on_fallback)
         assert not isinstance(exc_info.value, JavaScriptRequiredError)
         mock_jw.assert_not_called()
         mock_ytdlp.assert_not_called()
@@ -228,11 +267,11 @@ class TestResolveDispatch:
         embed_url = "https://unknownhost.tv/embed/abc"
         on_fallback = MagicMock()
         with (
-            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ValueError(f"no video URL in {embed_url!r}")),
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception(f"Unsupported URL: {embed_url}")),
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=ValueError(f"no video URL in {embed_url!r}")),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", side_effect=Exception(f"Unsupported URL: {embed_url}")),
+            pytest.raises(NoStreamError) as exc_info,
         ):
-            with pytest.raises(NoStreamError) as exc_info:
-                resolve(embed_url, _REFERER, on_fallback=on_fallback)
+            resolve(embed_url, _REFERER, transport=_TRANSPORT, on_fallback=on_fallback)
         assert embed_url not in str(exc_info.value)
         assert "unknownhost.tv" in str(exc_info.value)
         exc_text = on_fallback.call_args[0][2]
@@ -253,127 +292,232 @@ class TestResolveDispatch:
         signed = "https://cdn.example/master.m3u8?token=SECRET&expires=999"
         on_fallback = MagicMock()
         with (
-            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ValueError(f"Timeout while fetching {signed}")),
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception(f"HTTP 403 for {signed}")),
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=ValueError(f"Timeout while fetching {signed}")),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", side_effect=Exception(f"HTTP 403 for {signed}")),
             pytest.raises(NoStreamError) as exc_info,
         ):
-            resolve(embed_url, _REFERER, on_fallback=on_fallback)
+            resolve(embed_url, _REFERER, transport=_TRANSPORT, on_fallback=on_fallback)
         for text in (str(exc_info.value), on_fallback.call_args[0][2]):
             assert "SECRET" not in text and "999" not in text
             assert "cdn.example/master.m3u8?token=<redacted>&expires=<redacted>" in text
 
 
-def _http_error(status_code: int) -> cffi_exceptions.HTTPError:
-    resp = MagicMock(status_code=status_code)
-    return cffi_exceptions.HTTPError(f"HTTP {status_code}", response=resp)
+_CUSTOM_URL = "https://mp4upload.com/embed-abc.html"
+_UNKNOWN_URL = "https://unknownhost.tv/embed/abc"
+_YTDLP_URL = "https://pixeldrain.com/u/abc123"
+
+
+@pytest.mark.unit
+class TestEngineInterrupts:
+    @pytest.mark.parametrize("interrupt", [OperationCancelled, StaleSessionError])
+    def test_interrupt_from_custom_resolver_propagates_without_fallback(self, interrupt):
+        on_fallback = MagicMock()
+        with (
+            patch.dict(
+                "alt_ani_core.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", MagicMock(side_effect=interrupt()))}
+            ),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve") as mock_ytdlp,
+            pytest.raises(interrupt),
+        ):
+            resolve(_CUSTOM_URL, _REFERER, transport=_TRANSPORT, on_fallback=on_fallback)
+        mock_ytdlp.assert_not_called()
+        on_fallback.assert_not_called()
+
+    @pytest.mark.parametrize("interrupt", [OperationCancelled, StaleSessionError])
+    @pytest.mark.parametrize("url", ["https://streamwish.com/e/abc", _UNKNOWN_URL])
+    def test_interrupt_from_jwplayer_propagates_without_fallback(self, interrupt, url):
+        on_fallback = MagicMock()
+        with (
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=interrupt()),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve") as mock_ytdlp,
+            pytest.raises(interrupt),
+        ):
+            resolve(url, _REFERER, transport=_TRANSPORT, on_fallback=on_fallback)
+        mock_ytdlp.assert_not_called()
+        on_fallback.assert_not_called()
+
+    @pytest.mark.parametrize("interrupt", [OperationCancelled, StaleSessionError])
+    def test_interrupt_from_ytdlp_is_not_wrapped_as_no_stream(self, interrupt):
+        with patch("alt_ani_core.extract.ytdlp_resolver.resolve", side_effect=interrupt()), pytest.raises(interrupt):
+            resolve(_YTDLP_URL, _REFERER, transport=_TRANSPORT)
+
+    @pytest.mark.parametrize("interrupt", [OperationCancelled, StaleSessionError])
+    def test_interrupt_from_the_fallback_is_not_wrapped_as_no_stream(self, interrupt):
+        with (
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=ValueError("no url")),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", side_effect=interrupt()),
+            pytest.raises(interrupt),
+        ):
+            resolve(_UNKNOWN_URL, _REFERER, transport=_TRANSPORT)
+
+    @pytest.mark.parametrize("url", [_CUSTOM_URL, _UNKNOWN_URL, _YTDLP_URL, "https://mega.nz/embed/abc"])
+    def test_cancelled_token_raises_before_any_resolver_runs(self, url):
+        cancel = CancelToken()
+        cancel.cancel()
+        custom_fn = MagicMock()
+        on_fallback = MagicMock()
+        with (
+            patch.dict("alt_ani_core.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", custom_fn)}),
+            patch("alt_ani_core.extract.jwplayer.resolve") as mock_jw,
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve") as mock_ytdlp,
+            pytest.raises(OperationCancelled),
+        ):
+            resolve(url, _REFERER, transport=_TRANSPORT, on_fallback=on_fallback, cancel=cancel)
+        custom_fn.assert_not_called()
+        mock_jw.assert_not_called()
+        mock_ytdlp.assert_not_called()
+        on_fallback.assert_not_called()
+
+    def test_cancel_during_custom_resolver_stops_before_fallback(self):
+        cancel = CancelToken()
+
+        def _cancel_then_fail(embed_url, referer, transport):
+            cancel.cancel()
+            raise ValueError("parse error")
+
+        on_fallback = MagicMock()
+        with (
+            patch.dict("alt_ani_core.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", _cancel_then_fail)}),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve") as mock_ytdlp,
+            pytest.raises(OperationCancelled),
+        ):
+            resolve(_CUSTOM_URL, _REFERER, transport=_TRANSPORT, on_fallback=on_fallback, cancel=cancel)
+        mock_ytdlp.assert_not_called()
+        on_fallback.assert_not_called()
+
+    @pytest.mark.parametrize("url", ["https://streamwish.com/e/abc", _UNKNOWN_URL])
+    def test_cancel_during_jwplayer_stops_before_fallback(self, url):
+        cancel = CancelToken()
+
+        def _cancel_then_fail(embed_url, referer, transport):
+            cancel.cancel()
+            raise ValueError("no url")
+
+        on_fallback = MagicMock()
+        with (
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=_cancel_then_fail),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve") as mock_ytdlp,
+            pytest.raises(OperationCancelled),
+        ):
+            resolve(url, _REFERER, transport=_TRANSPORT, on_fallback=on_fallback, cancel=cancel)
+        mock_ytdlp.assert_not_called()
+        on_fallback.assert_not_called()
+
+    def test_live_token_does_not_block_the_fallback(self):
+        with (
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=ValueError("no url")),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", return_value=_STREAM),
+        ):
+            assert resolve(_UNKNOWN_URL, _REFERER, transport=_TRANSPORT, cancel=CancelToken()) is _STREAM
 
 
 @pytest.mark.unit
 class TestFailureDiagnosticsAttrs:
+    def test_failure_is_an_extraction_failure_record(self):
+        with pytest.raises(UnsupportedHostError) as exc_info:
+            resolve("https://mega.nz/embed/abc", _REFERER, transport=_TRANSPORT)
+        assert exc_info.value.failure == ExtractionFailure(layer="unsupported", category="unsupported_host")
+
     def test_unsupported_host_tags_layer_and_category(self):
         with pytest.raises(UnsupportedHostError) as exc_info:
-            resolve("https://mega.nz/embed/abc", _REFERER)
-        assert exc_info.value.layer == "unsupported"
-        assert exc_info.value.category == "unsupported_host"
-        assert exc_info.value.http_status is None
-        assert exc_info.value.used_fallback is False
+            resolve("https://mega.nz/embed/abc", _REFERER, transport=_TRANSPORT)
+        assert exc_info.value.failure.layer == "unsupported"
+        assert exc_info.value.failure.category == "unsupported_host"
+        assert exc_info.value.failure.http_status is None
+        assert exc_info.value.failure.used_fallback is False
 
     def test_custom_extractor_tagged_category_propagates_when_ytdlp_also_fails(self):
         failing_fn = MagicMock(side_effect=ExtractError("bad shape", CATEGORY_PARSER_DRIFT))
         with (
-            patch.dict("alt_ani_cli.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", failing_fn)}),
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            patch.dict("alt_ani_core.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", failing_fn)}),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            pytest.raises(NoStreamError) as exc_info,
         ):
-            with pytest.raises(NoStreamError) as exc_info:
-                resolve("https://mp4upload.com/embed-abc.html", _REFERER)
-        assert exc_info.value.layer == "custom"
-        assert exc_info.value.category == CATEGORY_PARSER_DRIFT
-        assert exc_info.value.used_fallback is True
-        assert exc_info.value.fallback_layer == "ytdlp"
-        assert exc_info.value.fallback_category == "unknown"
+            resolve("https://mp4upload.com/embed-abc.html", _REFERER, transport=_TRANSPORT)
+        assert exc_info.value.failure.layer == "custom"
+        assert exc_info.value.failure.category == CATEGORY_PARSER_DRIFT
+        assert exc_info.value.failure.used_fallback is True
+        assert exc_info.value.failure.fallback_layer == "ytdlp"
+        assert exc_info.value.failure.fallback_category == "unknown"
 
     def test_jwplayer_rule_mode_tags_layer_jwplayer(self):
         with (
-            patch.dict("alt_ani_cli.extract.HOST_RULES", {"streamwish.com": HostRule("jwplayer")}),
-            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ExtractError("no url", CATEGORY_NO_STREAM_URL)),
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            patch.dict("alt_ani_core.extract.HOST_RULES", {"streamwish.com": HostRule("jwplayer")}),
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=ExtractError("no url", CATEGORY_NO_STREAM_URL)),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            pytest.raises(NoStreamError) as exc_info,
         ):
-            with pytest.raises(NoStreamError) as exc_info:
-                resolve("https://streamwish.com/e/abc", _REFERER)
-        assert exc_info.value.layer == "jwplayer"
-        assert exc_info.value.category == CATEGORY_NO_STREAM_URL
+            resolve("https://streamwish.com/e/abc", _REFERER, transport=_TRANSPORT)
+        assert exc_info.value.failure.layer == "jwplayer"
+        assert exc_info.value.failure.category == CATEGORY_NO_STREAM_URL
 
     def test_unknown_host_both_fail_tags_layer_jwplayer_from_first_attempt(self):
         with (
-            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=_http_error(403)),
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("Unsupported URL")),
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=HttpStatusError(403)),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", side_effect=Exception("Unsupported URL")),
+            pytest.raises(NoStreamError) as exc_info,
         ):
-            with pytest.raises(NoStreamError) as exc_info:
-                resolve("https://unknownhost.tv/embed/abc", _REFERER)
-        assert exc_info.value.layer == "jwplayer"
-        assert exc_info.value.category == "http_error"
-        assert exc_info.value.http_status == 403
-        assert exc_info.value.used_fallback is True
-        assert exc_info.value.fallback_layer == "ytdlp"
+            resolve("https://unknownhost.tv/embed/abc", _REFERER, transport=_TRANSPORT)
+        assert exc_info.value.failure.layer == "jwplayer"
+        assert exc_info.value.failure.category == "http_error"
+        assert exc_info.value.failure.http_status == 403
+        assert exc_info.value.failure.used_fallback is True
+        assert exc_info.value.failure.fallback_layer == "ytdlp"
 
     def test_unsupported_host_has_no_fallback_fields(self):
         with pytest.raises(UnsupportedHostError) as exc_info:
-            resolve("https://mega.nz/embed/abc", _REFERER)
-        assert exc_info.value.fallback_layer is None
-        assert exc_info.value.fallback_category is None
-        assert exc_info.value.fallback_http_status is None
+            resolve("https://mega.nz/embed/abc", _REFERER, transport=_TRANSPORT)
+        assert exc_info.value.failure.fallback_layer is None
+        assert exc_info.value.failure.fallback_category is None
+        assert exc_info.value.failure.fallback_http_status is None
 
     def test_timeout_classified_as_timeout_category(self):
         with (
             patch.dict(
-                "alt_ani_cli.extract.HOST_RULES",
-                {"mp4upload.com": HostRule("custom", MagicMock(side_effect=cffi_exceptions.ConnectTimeout("timed out")))},
+                "alt_ani_core.extract.HOST_RULES",
+                {"mp4upload.com": HostRule("custom", MagicMock(side_effect=TransportTimeout()))},
             ),
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            pytest.raises(NoStreamError) as exc_info,
         ):
-            with pytest.raises(NoStreamError) as exc_info:
-                resolve("https://mp4upload.com/embed-abc.html", _REFERER)
-        assert exc_info.value.category == "timeout"
+            resolve("https://mp4upload.com/embed-abc.html", _REFERER, transport=_TRANSPORT)
+        assert exc_info.value.failure.category == "timeout"
 
     def test_dns_failure_classified_as_network_error_category(self):
         with (
             patch.dict(
-                "alt_ani_cli.extract.HOST_RULES",
-                {
-                    "mp4upload.com": HostRule(
-                        "custom", MagicMock(side_effect=cffi_exceptions.DNSError("could not resolve host"))
-                    )
-                },
+                "alt_ani_core.extract.HOST_RULES",
+                {"mp4upload.com": HostRule("custom", MagicMock(side_effect=NetworkError()))},
             ),
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            pytest.raises(NoStreamError) as exc_info,
         ):
-            with pytest.raises(NoStreamError) as exc_info:
-                resolve("https://mp4upload.com/embed-abc.html", _REFERER)
-        assert exc_info.value.category == "network_error"
+            resolve("https://mp4upload.com/embed-abc.html", _REFERER, transport=_TRANSPORT)
+        assert exc_info.value.failure.category == "network_error"
 
     def test_json_decode_failure_classified_as_parser_drift(self):
-        json_exc = cffi_exceptions.JSONDecodeError("Expecting value", "<html>...</html>", 0)
+        json_exc = DecodeError()
         with (
             patch.dict(
-                "alt_ani_cli.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", MagicMock(side_effect=json_exc))}
+                "alt_ani_core.extract.HOST_RULES", {"mp4upload.com": HostRule("custom", MagicMock(side_effect=json_exc))}
             ),
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            pytest.raises(NoStreamError) as exc_info,
         ):
-            with pytest.raises(NoStreamError) as exc_info:
-                resolve("https://mp4upload.com/embed-abc.html", _REFERER)
-        assert exc_info.value.category == "parser_drift"
+            resolve("https://mp4upload.com/embed-abc.html", _REFERER, transport=_TRANSPORT)
+        assert exc_info.value.failure.category == "parser_drift"
 
     def test_unclassifiable_exception_falls_back_to_unknown(self):
         with (
             patch.dict(
-                "alt_ani_cli.extract.HOST_RULES",
+                "alt_ani_core.extract.HOST_RULES",
                 {"mp4upload.com": HostRule("custom", MagicMock(side_effect=RuntimeError("boom")))},
             ),
-            patch("alt_ani_cli.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            patch("alt_ani_core.extract.ytdlp_resolver.resolve", side_effect=Exception("ytdlp fail")),
+            pytest.raises(NoStreamError) as exc_info,
         ):
-            with pytest.raises(NoStreamError) as exc_info:
-                resolve("https://mp4upload.com/embed-abc.html", _REFERER)
-        assert exc_info.value.category == "unknown"
+            resolve("https://mp4upload.com/embed-abc.html", _REFERER, transport=_TRANSPORT)
+        assert exc_info.value.failure.category == "unknown"
 
 
 def _ytdlp_transport_raises(exc: Exception):
@@ -392,43 +536,48 @@ def _ytdlp_http_error(status: int) -> YtdlpHTTPError:
 @pytest.mark.unit
 class TestRealYtdlpFailureDiagnostics:
     def test_ytdlp_only_route_keeps_http_status_through_real_wrapping(self):
-        with _ytdlp_transport_raises(_ytdlp_http_error(403)):
-            with pytest.raises(NoStreamError) as exc_info:
-                resolve("https://www.cda.pl/video/abc123", _REFERER)
-        assert exc_info.value.layer == "ytdlp"
-        assert exc_info.value.category == "http_error"
-        assert exc_info.value.http_status == 403
-        assert exc_info.value.used_fallback is False
-        assert exc_info.value.fallback_layer is None
+        with _ytdlp_transport_raises(_ytdlp_http_error(403)), pytest.raises(NoStreamError) as exc_info:
+            resolve("https://www.cda.pl/video/abc123", _REFERER, transport=_TRANSPORT)
+        assert exc_info.value.failure.layer == "ytdlp"
+        assert exc_info.value.failure.category == "http_error"
+        assert exc_info.value.failure.http_status == 403
+        assert exc_info.value.failure.used_fallback is False
+        assert exc_info.value.failure.fallback_layer is None
 
     def test_ytdlp_only_route_timeout_is_not_flattened(self):
-        with _ytdlp_transport_raises(TransportError(cause=TimeoutError("timed out"))):
-            with pytest.raises(NoStreamError) as exc_info:
-                resolve("https://www.cda.pl/video/abc123", _REFERER)
-        assert exc_info.value.category == "timeout"
+        with (
+            _ytdlp_transport_raises(YtdlpTransportError(cause=TimeoutError("timed out"))),
+            pytest.raises(NoStreamError) as exc_info,
+        ):
+            resolve("https://www.cda.pl/video/abc123", _REFERER, transport=_TRANSPORT)
+        assert exc_info.value.failure.category == "timeout"
 
     def test_unknown_host_keeps_primary_and_fallback_causes_separately(self):
         with (
-            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ExtractError("no url", CATEGORY_PARSER_DRIFT)),
-            _ytdlp_transport_raises(TransportError(cause=ConnectionResetError("reset"))),
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=ExtractError("no url", CATEGORY_PARSER_DRIFT)),
+            _ytdlp_transport_raises(YtdlpTransportError(cause=ConnectionResetError("reset"))),
+            pytest.raises(NoStreamError) as exc_info,
         ):
-            with pytest.raises(NoStreamError) as exc_info:
-                resolve("https://unknownhost.tv/embed/abc", _REFERER)
+            resolve("https://unknownhost.tv/embed/abc", _REFERER, transport=_TRANSPORT)
         err = exc_info.value
-        assert (err.layer, err.category, err.http_status) == ("jwplayer", CATEGORY_PARSER_DRIFT, None)
-        assert (err.fallback_layer, err.fallback_category, err.fallback_http_status) == ("ytdlp", "network_error", None)
-        assert err.used_fallback is True
+        assert (err.failure.layer, err.failure.category, err.failure.http_status) == ("jwplayer", CATEGORY_PARSER_DRIFT, None)
+        assert (err.failure.fallback_layer, err.failure.fallback_category, err.failure.fallback_http_status) == (
+            "ytdlp",
+            "network_error",
+            None,
+        )
+        assert err.failure.used_fallback is True
 
     def test_unknown_host_fallback_http_status_is_kept(self):
         with (
-            patch("alt_ani_cli.extract.jwplayer.resolve", side_effect=ExtractError("no url", CATEGORY_PARSER_DRIFT)),
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=ExtractError("no url", CATEGORY_PARSER_DRIFT)),
             _ytdlp_transport_raises(_ytdlp_http_error(503)),
+            pytest.raises(NoStreamError) as exc_info,
         ):
-            with pytest.raises(NoStreamError) as exc_info:
-                resolve("https://unknownhost.tv/embed/abc", _REFERER)
-        assert exc_info.value.category == CATEGORY_PARSER_DRIFT
-        assert exc_info.value.fallback_category == "http_error"
-        assert exc_info.value.fallback_http_status == 503
+            resolve("https://unknownhost.tv/embed/abc", _REFERER, transport=_TRANSPORT)
+        assert exc_info.value.failure.category == CATEGORY_PARSER_DRIFT
+        assert exc_info.value.failure.fallback_category == "http_error"
+        assert exc_info.value.failure.fallback_http_status == 503
 
 
 @pytest.mark.unit
@@ -460,7 +609,7 @@ class TestResolverFamily:
         assert resolver_family(host) == family
 
     def test_falls_back_to_www_variant_when_bare_host_missing(self):
-        with patch.dict("alt_ani_cli.extract.HOST_RULES", {"www.onlywww.example": HostRule("custom", mp4upload.resolve)}):
+        with patch.dict("alt_ani_core.extract.HOST_RULES", {"www.onlywww.example": HostRule("custom", mp4upload.resolve)}):
             assert resolver_family("onlywww.example") == "mp4upload"
 
     def test_bare_host_takes_priority_over_www_variant(self):

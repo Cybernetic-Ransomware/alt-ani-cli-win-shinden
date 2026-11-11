@@ -1,16 +1,21 @@
 import os
 import shutil
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
-from alt_ani_cli.config import CACHE_DIR, USER_AGENT
-from alt_ani_cli.content import EXCEPTIONS_PL
-from alt_ani_cli.errors import PlayerNotFoundError
-from alt_ani_cli.extract.common import Stream
+from alt_ani_core.config import USER_AGENT
+from alt_ani_core.errors import PlayerNotFoundError
+from alt_ani_core.models import StreamVariant
 
-# Written on every run (not just --no-detach), since playback glitches are usually
-# intermittent, and mpv.net's GUI subsystem hides stderr from the console either way.
-LOG_FILE = CACHE_DIR / "mpv-debug.log"
+from alt_ani_cli import paths
+from alt_ani_cli.content import EXCEPTIONS_PL
+
+
+def log_file() -> Path:
+    """Written on every run: playback glitches are intermittent and mpv.net's GUI subsystem hides stderr anyway."""
+    return paths.load_paths().mpv_log
+
 
 _WIN_SEARCH_PATHS: list[Path] = []
 if sys.platform == "win32":
@@ -33,7 +38,7 @@ if sys.platform == "win32":
 _STANDARD_HEADERS = {"user-agent", "referer"}
 
 
-def _get_header(headers: dict[str, str], name: str) -> str | None:
+def _get_header(headers: Mapping[str, str], name: str) -> str | None:
     lname = name.lower()
     return next((v for k, v in headers.items() if k.lower() == lname), None)
 
@@ -43,7 +48,7 @@ def _escape_header_value(value: str) -> str:
     return value.replace(",", "\\,")
 
 
-def build(stream: Stream, *, title: str, no_detach: bool = False) -> list[str]:
+def build(stream: StreamVariant, *, title: str, no_detach: bool = False) -> list[str]:
     path = _find(no_detach=no_detach)
     cmd = [
         path,
@@ -65,8 +70,9 @@ def build(stream: Stream, *, title: str, no_detach: bool = False) -> list[str]:
     # No reconnect_delay_max override — this flag applies to every stream mpv opens, not
     # just flaky ones, so keep ffmpeg's own default (120s) rather than capping it low.
     cmd.append("--stream-lavf-o=reconnect=1,reconnect_streamed=1")
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cmd.append(f"--log-file={LOG_FILE}")
+    log = log_file()
+    log.parent.mkdir(parents=True, exist_ok=True)
+    cmd.append(f"--log-file={log}")
     cmd.append("--msg-level=all=v")
     if not no_detach:
         cmd.append("--no-terminal")

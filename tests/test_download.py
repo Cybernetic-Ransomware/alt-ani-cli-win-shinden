@@ -1,19 +1,30 @@
-import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from alt_ani_core import download
+from alt_ani_core.cancel import CancelToken
+from alt_ani_core.config import USER_AGENT, YTDLP_SOCKET_TIMEOUT_SEC
+from alt_ani_core.errors import DownloadFailedError, DownloadTargetError, OperationCancelled
+from alt_ani_core.events import DownloadLog, DownloadSaved, DownloadStarted, LegacyPartMoved
+from alt_ani_core.models import EpisodeRow, SeriesRef, StreamProtocol, StreamVariant
+from alt_ani_core.testing import RecordingSink
 from yt_dlp.utils import DownloadError
 
-from alt_ani_cli import download
-from alt_ani_cli.config import USER_AGENT
-from alt_ani_cli.errors import DownloadFailedError, DownloadTargetError
-from alt_ani_cli.extract.common import Stream
-from alt_ani_cli.models import EpisodeRow, SeriesRef
+from alt_ani_cli.content import EXCEPTIONS_PL, error_text
 
 _EP = EpisodeRow(number=1, title="Ep", url="https://shinden.pl/episode/1")
 _SERIES = SeriesRef(id="1", slug="show", title="Show", url="https://shinden.pl/series/1-show")
+
+
+def _hls(url: str = "https://h/master.m3u8", headers: dict[str, str] | None = None) -> StreamVariant:
+    return StreamVariant(url=url, protocol=StreamProtocol.HLS, headers=headers or {})
+
+
+def _direct(url: str, container: str) -> StreamVariant:
+    return StreamVariant(url=url, protocol=StreamProtocol.PROGRESSIVE, container=container)
 
 
 class _FakeYDL:
@@ -24,6 +35,7 @@ class _FakeYDL:
     fail_in: str | None = None
     extract_calls = 0
     payload: bytes | None = None
+    before_progress: Callable[[], None] | None = None
 
     def __init__(self, opts: dict) -> None:
         self.opts = opts
@@ -57,6 +69,10 @@ class _FakeYDL:
         self.part_existed_at_download = part.exists()
         if self.payload is not None:
             part.write_bytes(self.payload[:2])
+        if (before_progress := type(self).before_progress) is not None:
+            before_progress()
+        for hook in self.opts["progress_hooks"]:
+            hook({"status": "downloading"})
         if self.fail_in == "process_ie_result":
             raise DownloadError("ERROR: fragment 2 not found, unable to continue (https://h/s2.ts?token=SECRET)")
         if self.payload is not None:
@@ -72,12 +88,13 @@ def fake_ydl():
     _FakeYDL.fail_in = None
     _FakeYDL.extract_calls = 0
     _FakeYDL.payload = None
+    _FakeYDL.before_progress = None
     with patch("yt_dlp.YoutubeDL", _FakeYDL):
         yield _FakeYDL
 
 
-def _run(stream: Stream, dest: Path) -> _FakeYDL:
-    download.run(stream, _EP, _SERIES, dest_dir=dest)
+def _run(variant: StreamVariant, dest: Path, **kwargs) -> _FakeYDL:
+    download.run(variant, _EP, _SERIES, dest, **kwargs)
     return _FakeYDL.instances[-1]
 
 
@@ -85,41 +102,53 @@ def _run(stream: Stream, dest: Path) -> _FakeYDL:
 class TestDownloadOptions:
     def test_no_external_downloader_even_with_ffmpeg_on_path(self, fake_ydl, tmp_path):
         with patch("shutil.which", return_value=r"C:\ffmpeg\bin\ffmpeg.exe"):
-            ydl = _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+            ydl = _run(_hls(), tmp_path)
         assert "external_downloader" not in ydl.opts
         assert "external_downloader_args" not in ydl.opts
 
     def test_stream_headers_passed_through_unchanged(self, fake_ydl, tmp_path):
         headers = {"Referer": "https://embed.example/e/1", "Origin": "https://embed.example", "User-Agent": "UA/1.0"}
-        ydl = _run(Stream(url="https://h/master.m3u8", headers=headers, ext="m3u8"), tmp_path)
+        ydl = _run(_hls(headers=headers), tmp_path)
         assert ydl.opts["http_headers"] == headers
 
     def test_missing_user_agent_falls_back_to_default(self, fake_ydl, tmp_path):
-        ydl = _run(Stream(url="https://h/master.m3u8", headers={"Referer": "https://r/"}, ext="m3u8"), tmp_path)
+        ydl = _run(_hls(headers={"Referer": "https://r/"}), tmp_path)
         assert ydl.opts["http_headers"] == {"Referer": "https://r/", "User-Agent": USER_AGENT}
 
     def test_progress_lines_suppressed(self, fake_ydl, tmp_path):
-        ydl = _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        ydl = _run(_hls(), tmp_path)
         assert ydl.opts["noprogress"] is True
+
+    def test_socket_timeout_bounds_stalled_connections(self, fake_ydl, tmp_path):
+        ydl = _run(_hls(), tmp_path)
+        assert ydl.opts["socket_timeout"] == YTDLP_SOCKET_TIMEOUT_SEC
+        assert YTDLP_SOCKET_TIMEOUT_SEC > 0
+
+    def test_start_is_reported_as_an_event(self, fake_ydl, tmp_path):
+        sink = RecordingSink()
+        download.run(
+            _hls(), EpisodeRow(number=5.5, title="Ep", url="https://shinden.pl/episode/5"), _SERIES, tmp_path, events=sink
+        )
+        assert sink.events[0] == DownloadStarted(title="Show", episode_label="5.5", directory=str(tmp_path))
 
 
 @pytest.mark.unit
 class TestRetryPolicy:
     def test_request_retries_set_explicitly(self, fake_ydl, tmp_path):
-        ydl = _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        ydl = _run(_hls(), tmp_path)
         assert ydl.opts["retries"] == 10
 
     def test_fragment_retries_set_explicitly(self, fake_ydl, tmp_path):
-        ydl = _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        ydl = _run(_hls(), tmp_path)
         assert ydl.opts["fragment_retries"] == 10
 
     def test_failed_fragments_are_not_skipped(self, fake_ydl, tmp_path):
-        ydl = _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        ydl = _run(_hls(), tmp_path)
         assert ydl.opts["skip_unavailable_fragments"] is False
 
     def test_policy_applies_to_direct_downloads(self, fake_ydl, tmp_path):
         fake_ydl.info = {"ext": "mp4", "protocol": "https"}
-        ydl = _run(Stream(url="https://cdn.example/video.mp4", ext="mp4"), tmp_path)
+        ydl = _run(_direct("https://cdn.example/video.mp4", "mp4"), tmp_path)
         assert (ydl.opts["retries"], ydl.opts["fragment_retries"], ydl.opts["skip_unavailable_fragments"]) == (10, 10, False)
 
 
@@ -127,16 +156,16 @@ class TestRetryPolicy:
 class TestOutputExtension:
     def test_direct_mp4_without_url_extension_avoids_unknown_video(self, fake_ydl, tmp_path):
         fake_ydl.info = {"ext": "unknown_video", "protocol": "https"}
-        ydl = _run(Stream(url="https://cdn.example/d/abc123", ext="mp4"), tmp_path)
+        ydl = _run(_direct("https://cdn.example/d/abc123", "mp4"), tmp_path)
         assert ydl.final_path == tmp_path / "Show - ep1.mp4"
 
     def test_direct_mkv_keeps_mkv(self, fake_ydl, tmp_path):
         fake_ydl.info = {"ext": "unknown_video", "protocol": "https"}
-        ydl = _run(Stream(url="https://cdn.example/d/abc123", ext="mkv"), tmp_path)
+        ydl = _run(_direct("https://cdn.example/d/abc123", "mkv"), tmp_path)
         assert ydl.final_path == tmp_path / "Show - ep1.mkv"
 
     def test_hls_uses_ytdlp_ext_not_m3u8(self, fake_ydl, tmp_path):
-        ydl = _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        ydl = _run(_hls(), tmp_path)
         assert ydl.opts["outtmpl"].endswith(".%(ext)s")
         assert ydl.final_path == tmp_path / "Show - ep1.mp4"
 
@@ -144,33 +173,35 @@ class TestOutputExtension:
 @pytest.mark.unit
 class TestLegacyHlsPartGuard:
     def test_hls_without_part_touches_nothing(self, fake_ydl, tmp_path):
-        _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        _run(_hls(), tmp_path)
         assert list(tmp_path.iterdir()) == []
 
     def test_hls_legacy_part_is_moved_aside_before_download(self, fake_ydl, tmp_path):
         part = tmp_path / "Show - ep1.mp4.part"
         part.write_bytes(b"legacy mp4 bytes")
-        with patch.object(download.progress, "warn") as warn:
-            ydl = _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        sink = RecordingSink()
+        ydl = _run(_hls(), tmp_path, events=sink)
         backup = tmp_path / "Show - ep1.mp4.part.legacy-ffmpeg"
         assert ydl.part_existed_at_download is False
         assert backup.read_bytes() == b"legacy mp4 bytes"
-        assert str(backup) in warn.call_args.args[0]
+        assert sink.of(LegacyPartMoved) == [LegacyPartMoved(path=str(backup))]
 
     def test_hls_part_with_ytdl_is_native_resume_state(self, fake_ydl, tmp_path):
         part = tmp_path / "Show - ep1.mp4.part"
         ytdl = tmp_path / "Show - ep1.mp4.ytdl"
         part.write_bytes(b"ts fragments")
         ytdl.write_text("{}")
-        ydl = _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+        sink = RecordingSink()
+        ydl = _run(_hls(), tmp_path, events=sink)
         assert ydl.part_existed_at_download is True
         assert sorted(p.name for p in tmp_path.iterdir()) == [part.name, ytdl.name]
+        assert sink.of(LegacyPartMoved) == []
 
     def test_direct_part_without_ytdl_is_left_for_range_resume(self, fake_ydl, tmp_path):
         fake_ydl.info = {"ext": "mp4", "protocol": "https"}
         part = tmp_path / "Show - ep1.mp4.part"
         part.write_bytes(b"partial mp4")
-        ydl = _run(Stream(url="https://cdn.example/video.mp4", ext="mp4"), tmp_path)
+        ydl = _run(_direct("https://cdn.example/video.mp4", "mp4"), tmp_path)
         assert ydl.part_existed_at_download is True
         assert [p.name for p in tmp_path.iterdir()] == [part.name]
 
@@ -191,7 +222,9 @@ class TestDownloadFailure:
     def test_ytdlp_error_becomes_download_failed_error(self, fake_ydl, tmp_path, stage):
         fake_ydl.fail_in = stage
         with pytest.raises(DownloadFailedError) as info:
-            _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+            _run(_hls(), tmp_path)
+        assert info.value.code == "download.failed"
+        assert info.value.params == {}
         assert "token" not in str(info.value)
         assert "http" not in str(info.value)
 
@@ -199,14 +232,15 @@ class TestDownloadFailure:
     def test_failure_does_not_report_saved(self, fake_ydl, tmp_path, stage):
         fake_ydl.fail_in = stage
         (tmp_path / "Show - ep1.mp4").write_bytes(b"older complete file")
-        with patch.object(download.progress, "success") as success, pytest.raises(DownloadFailedError):
-            _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
-        success.assert_not_called()
+        sink = RecordingSink()
+        with pytest.raises(DownloadFailedError):
+            _run(_hls(), tmp_path, events=sink)
+        assert sink.of(DownloadSaved) == []
 
     def test_original_ytdlp_exception_is_not_chained(self, fake_ydl, tmp_path):
         fake_ydl.fail_in = "process_ie_result"
         with pytest.raises(DownloadFailedError) as info:
-            _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+            _run(_hls(), tmp_path)
         assert info.value.__cause__ is None
         assert info.value.__context__ is None
 
@@ -219,12 +253,12 @@ class TestDownloadFailure:
             return 0
 
         with patch.object(download.gc, "collect", side_effect=collect), pytest.raises(DownloadFailedError):
-            _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+            _run(_hls(), tmp_path)
         assert seen == [(True, None)]
 
     def test_success_does_not_force_gc(self, fake_ydl, tmp_path):
         with patch.object(download.gc, "collect") as collect:
-            _run(Stream(url="https://h/master.m3u8", ext="m3u8"), tmp_path)
+            _run(_hls(), tmp_path)
         collect.assert_not_called()
 
     def test_success_reports_saved_path(self, fake_ydl, tmp_path):
@@ -234,12 +268,12 @@ class TestDownloadFailure:
                 self.final_path.write_bytes(b"mp4")
                 return info
 
-        with patch("yt_dlp.YoutubeDL", _WritingYDL), patch.object(download.progress, "success") as success:
-            download.run(Stream(url="https://h/master.m3u8", ext="m3u8"), _EP, _SERIES, dest_dir=tmp_path)
-        assert str(tmp_path / "Show - ep1.mp4") in success.call_args.args[0]
+        sink = RecordingSink()
+        with patch("yt_dlp.YoutubeDL", _WritingYDL):
+            download.run(_hls(), _EP, _SERIES, tmp_path, events=sink)
+        assert sink.of(DownloadSaved) == [DownloadSaved(path=str(tmp_path / "Show - ep1.mp4"))]
 
 
-_HLS = Stream(url="https://h/master.m3u8", ext="m3u8")
 _OLD = b"OLD complete episode"
 _NEW = b"NEW complete episode"
 
@@ -250,15 +284,15 @@ def _existing_final(dest: Path) -> Path:
     return final
 
 
-def _overwrite(dest: Path) -> bool:
-    return download.run(_HLS, _EP, _SERIES, dest_dir=dest, confirm_overwrite=lambda _: True)
+def _overwrite(dest: Path, **kwargs) -> bool:
+    return download.run(_hls(), _EP, _SERIES, dest, confirm_overwrite=lambda _: True, **kwargs)
 
 
 @pytest.mark.unit
 class TestExistingFinalWithoutOverwrite:
     def test_no_callback_leaves_existing_final_to_ytdlp_no_overwrite(self, fake_ydl, tmp_path):
         final = _existing_final(tmp_path)
-        assert download.run(_HLS, _EP, _SERIES, dest_dir=tmp_path) is True
+        assert download.run(_hls(), _EP, _SERIES, tmp_path) is True
         assert fake_ydl.instances[-1].final_path == final
         assert "overwrites" not in fake_ydl.instances[-1].opts
         assert final.read_bytes() == _OLD
@@ -266,21 +300,23 @@ class TestExistingFinalWithoutOverwrite:
     def test_declined_overwrite_skips_download_and_keeps_file(self, fake_ydl, tmp_path):
         final = _existing_final(tmp_path)
         fake_ydl.payload = _NEW
-        assert download.run(_HLS, _EP, _SERIES, dest_dir=tmp_path, confirm_overwrite=lambda _: False) is False
+        sink = RecordingSink()
+        assert download.run(_hls(), _EP, _SERIES, tmp_path, confirm_overwrite=lambda _: False, events=sink) is False
         assert fake_ydl.instances[-1].final_path is None
         assert final.read_bytes() == _OLD
         assert [p.name for p in tmp_path.iterdir()] == [final.name]
+        assert sink.of(DownloadSaved) == []
 
     def test_callback_receives_exact_final_path(self, fake_ydl, tmp_path):
         final = _existing_final(tmp_path)
         seen: list[Path] = []
-        download.run(_HLS, _EP, _SERIES, dest_dir=tmp_path, confirm_overwrite=lambda p: seen.append(p) or False)
+        download.run(_hls(), _EP, _SERIES, tmp_path, confirm_overwrite=lambda p: seen.append(p) or False)
         assert seen == [final]
 
     def test_callback_not_consulted_when_final_missing(self, fake_ydl, tmp_path):
         fake_ydl.payload = _NEW
         asked: list[Path] = []
-        download.run(_HLS, _EP, _SERIES, dest_dir=tmp_path, confirm_overwrite=lambda p: asked.append(p) or True)
+        download.run(_hls(), _EP, _SERIES, tmp_path, confirm_overwrite=lambda p: asked.append(p) or True)
         assert asked == []
         assert (tmp_path / "Show - ep1.mp4").read_bytes() == _NEW
 
@@ -308,9 +344,9 @@ class TestSafeOverwrite:
     def test_success_reports_final_path(self, fake_ydl, tmp_path):
         final = _existing_final(tmp_path)
         fake_ydl.payload = _NEW
-        with patch.object(download.progress, "success") as success:
-            _overwrite(tmp_path)
-        assert str(final) in success.call_args.args[0]
+        sink = RecordingSink()
+        _overwrite(tmp_path, events=sink)
+        assert sink.of(DownloadSaved) == [DownloadSaved(path=str(final))]
 
     def test_failure_keeps_old_final_bytes(self, fake_ydl, tmp_path):
         final = _existing_final(tmp_path)
@@ -335,6 +371,7 @@ class TestSafeOverwrite:
             _overwrite(tmp_path)
         assert info.value.__cause__ is None
         assert info.value.__context__ is None
+        assert info.value.code == "download.failed"
         assert "token" not in str(info.value)
 
     def test_gc_runs_before_staging_cleanup(self, fake_ydl, tmp_path):
@@ -362,7 +399,7 @@ class TestSafeOverwrite:
             calls_at_decision.append(_FakeYDL.extract_calls)
             return True
 
-        download.run(_HLS, _EP, _SERIES, dest_dir=tmp_path, confirm_overwrite=confirm)
+        download.run(_hls(), _EP, _SERIES, tmp_path, confirm_overwrite=confirm)
         assert calls_at_decision == [1]
         assert _FakeYDL.extract_calls == 1
         assert len(_FakeYDL.instances) == 1
@@ -377,6 +414,8 @@ class TestSafeOverwrite:
             _overwrite(tmp_path)
         assert final.read_bytes() == _OLD
         assert [p.name for p in tmp_path.iterdir()] == [final.name]
+        assert info.value.code == "download.replace_failed"
+        assert info.value.params == {"path": str(final)}
         assert str(final) in str(info.value)
         assert info.value.__cause__ is None
 
@@ -390,13 +429,18 @@ class TestSafeOverwrite:
             _overwrite(tmp_path)
         assert fake_ydl.instances[-1].final_path is None
         assert final.read_bytes() == _OLD
+        assert info.value.code == "download.staging_mismatch"
+        assert info.value.params == {"path": str(final)}
         assert str(final) in str(info.value)
 
     def test_missing_staged_file_after_success_is_a_failure(self, fake_ydl, tmp_path):
         final = _existing_final(tmp_path)
-        with pytest.raises(DownloadFailedError):
-            _overwrite(tmp_path)
+        sink = RecordingSink()
+        with pytest.raises(DownloadFailedError) as info:
+            _overwrite(tmp_path, events=sink)
+        assert info.value.code == "download.failed"
         assert final.read_bytes() == _OLD
+        assert sink.of(DownloadSaved) == []
 
     def test_staging_template_escapes_percent(self, fake_ydl, tmp_path):
         dest = tmp_path / "100%"
@@ -479,6 +523,8 @@ class TestStrictStagingPreflight:
         assert fake_ydl.instances[-1].final_path is None
         assert final.read_bytes() == _OLD
         assert (tmp_path / locked).read_bytes() == b"stale staging"
+        assert info.value.code == "download.staging_locked"
+        assert info.value.params == {"path": str(tmp_path / locked)}
         assert locked in str(info.value)
 
     def test_cleanup_after_failed_attempt_stays_best_effort(self, fake_ydl, tmp_path):
@@ -490,59 +536,58 @@ class TestStrictStagingPreflight:
         assert final.read_bytes() == _OLD
 
 
-def _terminal(columns: int):
-    return patch("alt_ani_cli.download.shutil.get_terminal_size", return_value=os.terminal_size((columns, 24)))
+def _logged(method: str, message: str) -> list[str]:
+    sink = RecordingSink()
+    getattr(download._EventLogger(sink), method)(message)
+    return [event.redacted_line for event in sink.of(DownloadLog)]
 
 
 @pytest.mark.unit
-class TestTruncLoggerRedaction:
-    def test_secret_query_value_never_printed(self, capsys):
-        with _terminal(200):
-            download._TruncLogger().info("[hlsnative] Downloading m3u8 manifest https://cdn.example/hls/master.m3u8?token=SECRET")
-        out = capsys.readouterr().out
-        assert "SECRET" not in out
-        assert "<redacted>" in out
-        assert "cdn.example/hls/master.m3u8?token=" in out
+class TestEventLoggerRedaction:
+    def test_secret_query_value_never_emitted(self):
+        (line,) = _logged("info", "[hlsnative] Downloading m3u8 manifest https://cdn.example/hls/master.m3u8?token=SECRET")
+        assert "SECRET" not in line
+        assert "<redacted>" in line
+        assert "cdn.example/hls/master.m3u8?token=" in line
 
-    def test_redaction_happens_before_truncation(self, capsys):
+    def test_long_line_is_redacted_whole_and_left_untruncated(self):
         head = "x" * 40 + " https://h.example/m.m3u8?token="
-        # Truncating first would keep "token=SECRET_…" — and a cut value no longer looks like a full query.
-        with _terminal(len(head) + 8):
-            download._TruncLogger().info(head + "SECRET_TAIL_VALUE_THAT_IS_LONG")
-        out = capsys.readouterr().out
-        assert "SECRET" not in out
-        assert out.rstrip("\n") == head + "<redact…"
+        assert _logged("info", head + "SECRET_TAIL_VALUE_THAT_IS_LONG") == [head + "<redacted>"]
 
     @pytest.mark.parametrize(("method", "prefix"), [("warning", "[warn] "), ("error", "[error] ")])
-    def test_warning_and_error_redacted(self, capsys, method, prefix):
-        with _terminal(200):
-            getattr(download._TruncLogger(), method)("fragment failed: master.m3u8?token=SECRET&expires=123")
-        out = capsys.readouterr().out
-        assert out.startswith(prefix)
-        assert "SECRET" not in out and "123" not in out
-        assert "master.m3u8?token=<redacted>&expires=<redacted>" in out
+    def test_warning_and_error_redacted(self, method, prefix):
+        (line,) = _logged(method, "fragment failed: master.m3u8?token=SECRET&expires=123")
+        assert line.startswith(prefix)
+        assert "SECRET" not in line and "123" not in line
+        assert "master.m3u8?token=<redacted>&expires=<redacted>" in line
 
-    def test_suppressed_prefixes_still_suppressed(self, capsys):
-        download._TruncLogger().info("[generic] Extracting URL: https://h/m?token=SECRET")
-        assert capsys.readouterr().out == ""
+    def test_suppressed_prefixes_still_suppressed(self):
+        assert _logged("info", "[generic] Extracting URL: https://h/m?token=SECRET") == []
 
-    def test_real_ytdlp_timeout_message_does_not_leak(self, capsys):
+    def test_debug_chatter_is_dropped_but_plain_debug_lines_pass(self):
+        assert _logged("debug", "[debug] Command-line config: []") == []
+        assert _logged("debug", "[download] 100% of 5.00MiB") == ["[download] 100% of 5.00MiB"]
+
+    def test_real_ytdlp_timeout_message_does_not_leak(self):
         msg = (
             "ERROR: [generic] master: Unable to download webpage: "
             "https://host.example/hls/master.m3u8?token=THIS_MUST_NOT_LEAK&expires=999 (caused by TransportError('timed out'))"
         )
-        with _terminal(400):
-            download._TruncLogger().error(msg)
-        out = capsys.readouterr().out
-        assert "THIS_MUST_NOT_LEAK" not in out
-        assert "999" not in out
-        assert "host.example/hls/master.m3u8?token=<redacted>&expires=<redacted>" in out
-        assert "timed out" in out
+        (line,) = _logged("error", msg)
+        assert "THIS_MUST_NOT_LEAK" not in line
+        assert "999" not in line
+        assert "host.example/hls/master.m3u8?token=<redacted>&expires=<redacted>" in line
+        assert "timed out" in line
 
-    def test_local_paths_untouched(self, capsys):
-        with _terminal(200):
-            download._TruncLogger().info(r"[download] Destination: C:\Users\Test\Videos\Show - ep4.mp4")
-        assert r"C:\Users\Test\Videos\Show - ep4.mp4" in capsys.readouterr().out
+    def test_local_paths_untouched(self):
+        (line,) = _logged("info", r"[download] Destination: C:\Users\Test\Videos\Show - ep4.mp4")
+        assert r"C:\Users\Test\Videos\Show - ep4.mp4" in line
+
+    def test_run_wires_the_logger_to_the_event_sink(self, fake_ydl, tmp_path):
+        sink = RecordingSink()
+        ydl = _run(_hls(), tmp_path, events=sink)
+        ydl.opts["logger"].warning("retrying https://h/s1.ts?token=SECRET")
+        assert sink.of(DownloadLog) == [DownloadLog(redacted_line="[warn] retrying https://h/s1.ts?token=<redacted>")]
 
 
 @pytest.mark.unit
@@ -558,6 +603,130 @@ class TestRedactionDoesNotTouchTransport:
             return original(self, u, download)
 
         with patch.object(_FakeYDL, "extract_info", spy):
-            ydl = _run(Stream(url=url, headers=dict(headers), ext="m3u8"), tmp_path)
+            ydl = _run(_hls(url, dict(headers)), tmp_path)
         assert seen == [url]
         assert ydl.opts["http_headers"] == headers
+
+
+@pytest.mark.unit
+class TestCancellation:
+    def test_already_cancelled_token_raises_before_any_download(self, fake_ydl, tmp_path):
+        token = CancelToken()
+        token.cancel()
+        sink = RecordingSink()
+        with pytest.raises(OperationCancelled):
+            _run(_hls(), tmp_path, cancel=token, events=sink)
+        assert fake_ydl.extract_calls == 0
+        assert fake_ydl.instances[-1].final_path is None
+        assert list(tmp_path.iterdir()) == []
+        assert sink.of(DownloadSaved) == []
+
+    def test_cancel_between_probe_and_download_starts_nothing(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        token = CancelToken()
+
+        def confirm(_: Path) -> bool:
+            token.cancel()
+            return True
+
+        with pytest.raises(OperationCancelled):
+            download.run(_hls(), _EP, _SERIES, tmp_path, confirm_overwrite=confirm, cancel=token)
+        assert fake_ydl.instances[-1].final_path is None
+        assert final.read_bytes() == _OLD
+        assert [p.name for p in tmp_path.iterdir()] == [final.name]
+
+    def test_cancel_from_progress_hook_discards_redownload_and_keeps_final(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        token = CancelToken()
+        fake_ydl.payload = _NEW
+        staging_part = tmp_path / "Show - ep1.redownload.mp4.part"
+        existed_at_cancel: list[bool] = []
+        fake_ydl.before_progress = lambda: (existed_at_cancel.append(staging_part.exists()), token.cancel())
+        sink = RecordingSink()
+        with pytest.raises(OperationCancelled):
+            _overwrite(tmp_path, cancel=token, events=sink)
+        assert existed_at_cancel == [True]
+        assert final.read_bytes() == _OLD
+        assert [p.name for p in tmp_path.iterdir()] == [final.name]
+        assert sink.of(DownloadSaved) == []
+
+    def test_cancelled_redownload_is_not_reported_as_download_failure(self, fake_ydl, tmp_path):
+        _existing_final(tmp_path)
+        token = CancelToken()
+        fake_ydl.payload = _NEW
+        fake_ydl.before_progress = token.cancel
+        with pytest.raises(OperationCancelled) as info:
+            _overwrite(tmp_path, cancel=token)
+        assert not isinstance(info.value, Exception)
+
+    def test_gc_runs_after_context_exit_before_cancelled_staging_cleanup(self, fake_ydl, tmp_path):
+        _existing_final(tmp_path)
+        token = CancelToken()
+        fake_ydl.payload = _NEW
+        fake_ydl.before_progress = token.cancel
+        staging_part = tmp_path / "Show - ep1.redownload.mp4.part"
+        seen: list[tuple[bool, bool]] = []
+
+        def collect() -> int:
+            seen.append((_FakeYDL.instances[-1].exited, staging_part.exists()))
+            return 0
+
+        with patch.object(download.gc, "collect", side_effect=collect), pytest.raises(OperationCancelled):
+            _overwrite(tmp_path, cancel=token)
+        assert seen == [(True, True)]
+        assert not staging_part.exists()
+
+    def test_cancelled_fresh_download_keeps_its_partial_for_resume(self, fake_ydl, tmp_path):
+        token = CancelToken()
+        fake_ydl.payload = _NEW
+        fake_ydl.before_progress = token.cancel
+        with pytest.raises(OperationCancelled):
+            _run(_hls(), tmp_path, cancel=token)
+        assert [p.name for p in tmp_path.iterdir()] == ["Show - ep1.mp4.part"]
+
+    def test_uncancelled_token_lets_the_download_finish(self, fake_ydl, tmp_path):
+        fake_ydl.payload = _NEW
+        _run(_hls(), tmp_path, cancel=CancelToken())
+        assert (tmp_path / "Show - ep1.mp4").read_bytes() == _NEW
+
+
+@pytest.mark.unit
+class TestCliRendersDownloadErrorsInPolish:
+    def test_download_failed(self, fake_ydl, tmp_path):
+        fake_ydl.fail_in = "process_ie_result"
+        with pytest.raises(DownloadFailedError) as info:
+            _run(_hls(), tmp_path)
+        assert str(info.value) == "Download failed."
+        assert error_text(info.value) == EXCEPTIONS_PL["download"]["failed"]
+
+    def test_replace_failed(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        fake_ydl.payload = _NEW
+        with (
+            patch.object(download.os, "replace", side_effect=PermissionError(13, "in use")),
+            pytest.raises(DownloadTargetError) as info,
+        ):
+            _overwrite(tmp_path)
+        assert error_text(info.value) == EXCEPTIONS_PL["download"]["replace_failed"].format(path=final)
+
+    def test_staging_locked(self, fake_ydl, tmp_path):
+        _existing_final(tmp_path)
+        locked = tmp_path / "Show - ep1.redownload.mp4.part"
+        locked.write_bytes(b"stale staging")
+        with _unlink_fails_for(locked.name), pytest.raises(DownloadTargetError) as info:
+            _overwrite(tmp_path)
+        assert error_text(info.value) == EXCEPTIONS_PL["download"]["staging_locked"].format(path=locked)
+
+    def test_staging_mismatch(self, fake_ydl, tmp_path):
+        class _StagingIgnoredYDL(_FakeYDL):
+            def prepare_filename(self, info: dict) -> str:
+                return self.opts["outtmpl"].replace("%(ext)s", info["ext"])
+
+        final = _existing_final(tmp_path)
+        with patch("yt_dlp.YoutubeDL", _StagingIgnoredYDL), pytest.raises(DownloadTargetError) as info:
+            _overwrite(tmp_path)
+        assert error_text(info.value) == EXCEPTIONS_PL["download"]["staging_mismatch"].format(path=final)
+
+    @pytest.mark.parametrize("key", ["failed", "replace_failed", "staging_locked", "staging_mismatch"])
+    def test_polish_text_differs_from_the_engine_text(self, key):
+        assert EXCEPTIONS_PL["download"][key] != download.text(f"download.{key}", path="{path}")

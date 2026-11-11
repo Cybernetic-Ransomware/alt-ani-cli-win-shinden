@@ -3,8 +3,9 @@
 from unittest.mock import patch
 
 import pytest
+from alt_ani_core.models import StreamProtocol, StreamVariant
 
-from alt_ani_cli.extract.common import Stream
+from alt_ani_cli.player import build_command, mpv
 from alt_ani_cli.player.mpv import build as build_mpv
 from alt_ani_cli.player.vlc import build as build_vlc
 
@@ -12,11 +13,12 @@ from alt_ani_cli.player.vlc import build as build_vlc
 def _stream(**kw):
     defaults = dict(
         url="https://cdn.example.com/ep1.mp4",
+        protocol=StreamProtocol.PROGRESSIVE,
         headers={"Referer": "https://shinden.pl/", "User-Agent": "TestUA"},
-        ext="mp4",
+        container="mp4",
     )
     defaults.update(kw)
-    return Stream(**defaults)
+    return StreamVariant(**defaults)
 
 
 @pytest.fixture(autouse=True)
@@ -30,12 +32,6 @@ def mock_find_player():
 
 @pytest.mark.unit
 class TestBuildMpv:
-    # build() writes to CACHE_DIR unconditionally now — isolate it from the real user cache.
-    @pytest.fixture(autouse=True)
-    def _isolated_cache_dir(self, tmp_path):
-        with patch("alt_ani_cli.player.mpv.CACHE_DIR", tmp_path):
-            yield tmp_path
-
     def test_includes_referrer(self):
         cmd = build_mpv(_stream(), title="TestAnime ep1")
         assert any("--referrer=https://shinden.pl/" in arg for arg in cmd)
@@ -45,7 +41,7 @@ class TestBuildMpv:
         assert any("TestAnime ep1" in arg for arg in cmd)
 
     def test_no_referrer_when_absent(self):
-        cmd = build_mpv(Stream(url="https://cdn.example.com/ep.mp4", headers={}), title="X")
+        cmd = build_mpv(_stream(url="https://cdn.example.com/ep.mp4", headers={}), title="X")
         assert not any("--referrer" in arg for arg in cmd)
 
     def test_passes_through_extra_headers(self):
@@ -73,20 +69,26 @@ class TestBuildMpv:
         cmd = build_mpv(_stream(), title="X")
         assert "--stream-lavf-o=reconnect=1,reconnect_streamed=1" in cmd
 
-    def test_no_detach_writes_verbose_log_file(self, tmp_path):
-        log_file = tmp_path / "mpv-debug.log"
-        with patch("alt_ani_cli.player.mpv.LOG_FILE", log_file):
-            cmd = build_mpv(_stream(), title="X", no_detach=True)
-        assert f"--log-file={log_file}" in cmd
-        assert "--msg-level=all=v" in cmd
-        assert tmp_path.is_dir()
+    def test_stream_url_is_passed_verbatim(self):
+        cmd = build_mpv(_stream(url="https://cdn.example.com/master.m3u8?token=T", protocol=StreamProtocol.HLS), title="X")
+        assert cmd[:2] == ["mpv.exe", "https://cdn.example.com/master.m3u8?token=T"]
 
-    def test_detached_mode_also_writes_log_file(self, tmp_path):
-        log_file = tmp_path / "mpv-debug.log"
-        with patch("alt_ani_cli.player.mpv.LOG_FILE", log_file):
-            cmd = build_mpv(_stream(), title="X", no_detach=False)
-        assert f"--log-file={log_file}" in cmd
+    def test_log_file_lives_in_the_cli_cache_dir(self, cli_paths):
+        assert mpv.log_file() == cli_paths.mpv_log
+        assert cli_paths.mpv_log == cli_paths.cache_dir / "mpv-debug.log"
+
+    def test_no_detach_writes_verbose_log_file(self, cli_paths):
+        assert not cli_paths.cache_dir.exists()
+        cmd = build_mpv(_stream(), title="X", no_detach=True)
+        assert f"--log-file={cli_paths.mpv_log}" in cmd
         assert "--msg-level=all=v" in cmd
+        assert cli_paths.cache_dir.is_dir()
+
+    def test_detached_mode_also_writes_log_file(self, cli_paths):
+        cmd = build_mpv(_stream(), title="X", no_detach=False)
+        assert f"--log-file={cli_paths.mpv_log}" in cmd
+        assert "--msg-level=all=v" in cmd
+        assert cli_paths.cache_dir.is_dir()
 
     def test_no_detach_omits_no_terminal_flag(self):
         cmd = build_mpv(_stream(), title="X", no_detach=True)
@@ -148,3 +150,21 @@ class TestBuildVlc:
 
     def test_play_and_exit(self):
         assert "--play-and-exit" in build_vlc(_stream(), title="X")
+
+    def test_stream_url_is_passed_verbatim(self):
+        cmd = build_vlc(_stream(url="https://cdn.example.com/master.m3u8?token=T", protocol=StreamProtocol.HLS), title="X")
+        assert cmd[:2] == ["vlc.exe", "https://cdn.example.com/master.m3u8?token=T"]
+
+    def test_uses_variant_user_agent(self):
+        assert "--http-user-agent=TestUA" in build_vlc(_stream(), title="X")
+
+
+@pytest.mark.unit
+class TestBuildCommand:
+    def test_mpv_kind_builds_mpv_command_for_the_variant(self):
+        variant = _stream()
+        assert build_command("mpv", variant, title="X", no_detach=True) == build_mpv(variant, title="X", no_detach=True)
+
+    def test_vlc_kind_builds_vlc_command_for_the_variant(self):
+        variant = _stream()
+        assert build_command("vlc", variant, title="X") == build_vlc(variant, title="X")

@@ -1,4 +1,4 @@
-"""FSM handlers — one function per Screen, called by the main loop in cli.py.
+"""FSM handlers — one function per Screen, driven by run_interactive.
 
 Each handler receives FlowState, mutates it as needed, and returns the next
 Screen, BACK (go one step back in history), or None (exit the application).
@@ -10,27 +10,42 @@ contain no UI, with one exception: EPISODE_DISPATCH shows a confirm prompt when
 player filters match nothing.
 """
 
+import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from urllib.parse import urlparse
 
-from curl_cffi import requests as cffi_requests
-from curl_cffi.requests.exceptions import RequestException as CurlRequestException
+from alt_ani_core import diagnostics, download
+from alt_ani_core.errors import (
+    DownloadFailedError,
+    DownloadTargetError,
+    FreshResolveLimitError,
+    ShindenError,
+    ShindenXhrError,
+    SourcesExhaustedError,
+)
+from alt_ani_core.models import (
+    EpisodeRow,
+    FallbackPolicy,
+    PlayerEntry,
+    Purpose,
+    ResolvedStream,
+    SeriesHit,
+    SeriesMetadata,
+    SeriesRef,
+)
+from alt_ani_core.rules.episode_range import parse_range
+from alt_ani_core.rules.pin import find_pinned, player_fingerprint
+from alt_ani_core.services.engine import Engine
+from alt_ani_core.services.episode_session import EpisodeSession
+from alt_ani_core.shinden import api as shinden_api
+from alt_ani_core.shinden import episode as shinden_episode
 
-from alt_ani_cli import __version__, diagnostics, download, history
-from alt_ani_cli.content import CONTENT
-from alt_ani_cli.errors import DownloadFailedError, DownloadTargetError, ShindenError, ShindenXhrError
-from alt_ani_cli.flow.pin import find_pinned, player_fingerprint
-from alt_ani_cli.flow.state import BACK, FlowState, Screen, ScreenResult
-from alt_ani_cli.models import EmbedURL, EpisodeRow, PlayerSource, SeriesHit, SeriesMetadata, SeriesRef
-from alt_ani_cli.shinden import api as shinden_api
-from alt_ani_cli.shinden import episode as shinden_episode
-from alt_ani_cli.shinden import search as shinden_search
-from alt_ani_cli.shinden import series as shinden_series
-from alt_ani_cli.shinden.metadata import fetch_series_metadata
-from alt_ani_cli.shinden.series import parse_series_url
-from alt_ani_cli.shinden.xhr import EpisodeXhr
+from alt_ani_cli import __version__, playback
+from alt_ani_cli.args import CliOptions
+from alt_ani_cli.content import CONTENT, error_text
+from alt_ani_cli.flow.state import _VIRTUAL_SCREENS, BACK, FlowState, Screen, ScreenResult, _BackSentinel
+from alt_ani_cli.paths import CliPaths
+from alt_ani_cli.player import runner as player_runner
 from alt_ani_cli.ui import menus, progress
 
 _PROG = CONTENT["progress"]
@@ -38,72 +53,53 @@ _M = CONTENT["menu"]
 _EMPTY_META = SeriesMetadata(None, None, "", (), ())
 
 
-def _prefetch_series_metadata(client: cffi_requests.Session, hits: list[SeriesHit]) -> dict[str, SeriesMetadata]:
+def _prefetch_series_metadata(engine: Engine, hits: list[SeriesHit]) -> dict[str, SeriesMetadata]:
     if not hits:
         return {}
-    out: dict[str, SeriesMetadata] = {}
-    failed_titles: list[str] = []
-    with progress.spinner(_M["series"]["loading_metadata"]), ThreadPoolExecutor(max_workers=min(8, len(hits))) as ex:
-        futures = {ex.submit(_safe_fetch_one, client, h): h for h in hits}
-        for fut in as_completed(futures):
-            h = futures[fut]
-            try:
-                out[h.id] = fut.result()
-            except CurlRequestException, ShindenError:
-                out[h.id] = _EMPTY_META
-                failed_titles.append(h.title)
+    refs: dict[str, SeriesRef] = {}
+    for hit in hits:
+        try:
+            refs[hit.id] = engine.series_from_url(hit.url)
+        except ShindenError:
+            continue
+    with progress.spinner(_M["series"]["loading_metadata"]):
+        fetched = dict(zip(refs, engine.metadata_many(list(refs.values())), strict=True))
+    failed_titles = [hit.title for hit in hits if fetched.get(hit.id) is None]
     if failed_titles:
         progress.warn(_M["series"]["metadata_fetch_failed"].format(titles=", ".join(failed_titles)))
-    return out
+    return {hit.id: fetched.get(hit.id) or _EMPTY_META for hit in hits}
 
 
-def _safe_fetch_one(client: cffi_requests.Session, hit: SeriesHit) -> SeriesMetadata:
-    ref = parse_series_url(hit.url)
-    return fetch_series_metadata(client, ref)
+def _session(state: FlowState, ep: EpisodeRow | None) -> EpisodeSession:
+    session = state.session
+    if ep is None or session is None or session.episode.url != ep.url:
+        raise AssertionError("the episode session does not belong to the current episode")
+    return session
 
 
-def _record_player_source(state: FlowState, online_id: str, embed: EmbedURL) -> None:
-    host = (urlparse(embed.url).hostname or "").removeprefix("www.")
-    state.player_embeds[online_id] = embed
-    state.player_sources[online_id] = PlayerSource(online_id=online_id, host=host, embed_url=embed.url)
-
-
-def _episode_xhr(state: FlowState, ep: EpisodeRow | None) -> EpisodeXhr:
-    xhr = state.episode_xhr
-    if ep is None or xhr is None or xhr.episode_url != ep.url:
-        raise AssertionError("XHR state does not belong to the current episode")
-    return xhr
+def _chosen(state: FlowState) -> PlayerEntry:
+    if state.chosen_player is None:
+        raise AssertionError("no player is chosen")
+    return state.chosen_player
 
 
 def _reload_players(state: FlowState, ep: EpisodeRow) -> ScreenResult:
-    if state.players_reloaded_ep == ep.url:
+    if _session(state, ep).reload_used:
         progress.warn(_PROG["players_reload_limit"].format(number=ep.number))
         return Screen.PLAYER_PICK
-    state.players_reloaded_ep = ep.url
+    state.reload_pending = True
     progress.info(_PROG["players_reload"].format(number=ep.number))
     return Screen.EPISODE_DISPATCH
 
 
 def _prefetch_player_sources(state: FlowState) -> shinden_api.XhrOutcome | None:
-    """Sequential on purpose: a block or outage must stop before the next XHR, which concurrent workers can't guarantee."""
-    players = [p for p in state.players if p.online_id not in state.player_sources]
+    session = _session(state, state.current_ep)
+    known = session.known_sources
+    players = [p for p in state.players if p.online_id not in known]
     if not players:
         return None
-    xhr = _episode_xhr(state, state.current_ep)
-    xhr.begin_operation()
-    stop: ShindenXhrError | None = None
     with progress.spinner(_PROG["prefetch_sources"].format(count=len(players))):
-        for p in players:
-            try:
-                embed = shinden_api.resolve_embed(state.client, p.online_id, xhr=xhr)
-            except ShindenXhrError as exc:
-                if shinden_api.xhr_outcome(exc) is shinden_api.XhrOutcome.NEXT_PLAYER:
-                    continue
-                stop = exc
-                break
-            except ShindenError:
-                continue
-            _record_player_source(state, p.online_id, embed)
+        stop = session.probe_hosts(players)
     if stop is None:
         return None
     progress.warn(_PROG["prefetch_stopped"].format(reason=shinden_api.stop_message(stop)))
@@ -138,12 +134,12 @@ def _first_missing_index(episodes: list[EpisodeRow], downloaded: set[float]) -> 
 
 
 def handle_start_mode(state: FlowState) -> ScreenResult:
-    args = state.args
+    args = state.options
     # When launched with flags, skip the interactive menu
     if args.resume:
         return Screen.DOWNLOAD_RESUME_PICK if args.download else Screen.RESUME_PICK
     if args.url:
-        ref = shinden_series.parse_series_url(args.url)
+        ref = state.engine.series_from_url(args.url)
         state.ref = ref
         state.last_ep = 0.0
         return Screen.FETCH_EPISODES
@@ -151,8 +147,8 @@ def handle_start_mode(state: FlowState) -> ScreenResult:
         state.query = " ".join(args.query)
         return Screen.SERIES_PICK
 
-    watch_count = len(history.list_all())
-    download_count = len(history.list_downloads())
+    watch_count = len(state.engine.history.watch_entries())
+    download_count = len(state.engine.history.download_entries())
     while True:
         choice = menus.select_start_mode(watch_count=watch_count, download_count=download_count)
         if choice != "version":
@@ -188,7 +184,7 @@ def handle_url_input(state: FlowState) -> ScreenResult:
     url = menus.prompt_url()
     if url is None:
         return BACK
-    ref = shinden_series.parse_series_url(url)
+    ref = state.engine.series_from_url(url)
     _reset_download_resume(state)
     state.ref = ref
     state.last_ep = 0.0
@@ -196,7 +192,7 @@ def handle_url_input(state: FlowState) -> ScreenResult:
 
 
 def handle_resume_pick(state: FlowState) -> ScreenResult:
-    all_entries = history.list_all()
+    all_entries = [(e.series, e.last_ep) for e in state.engine.history.watch_entries()]
     if not all_entries:
         progress.error(_PROG["history_empty"])
         return BACK
@@ -210,7 +206,7 @@ def handle_resume_pick(state: FlowState) -> ScreenResult:
 
 
 def handle_download_resume_pick(state: FlowState) -> ScreenResult:
-    entries = history.list_downloads()
+    entries = [(e.series, e.episodes) for e in state.engine.history.download_entries()]
     if not entries:
         progress.error(_PROG["download_history_empty"])
         return BACK
@@ -231,13 +227,13 @@ def handle_series_pick(state: FlowState) -> ScreenResult:
         return Screen.SEARCH_QUERY
 
     progress.info(_PROG["searching"].format(query=repr(state.query)))
-    hits = shinden_search.search_series(state.client, state.query)
+    hits = state.engine.search(state.query)
     if not hits:
         progress.error(_PROG["no_results"].format(query=repr(state.query)))
         return BACK
 
     state.hits = hits
-    metadata = _prefetch_series_metadata(state.client, hits)
+    metadata = _prefetch_series_metadata(state.engine, hits)
 
     original_hits = list(hits)
     current_hits = list(hits)
@@ -253,7 +249,7 @@ def handle_series_pick(state: FlowState) -> ScreenResult:
 
         if action == "pick":
             hit = payload
-            ref = shinden_series.parse_series_url(hit.url)
+            ref = state.engine.series_from_url(hit.url)
             _reset_download_resume(state)
             state.ref = SeriesRef(id=ref.id, slug=ref.slug, title=hit.title, url=ref.url)
             state.last_ep = 0.0
@@ -310,7 +306,7 @@ def handle_fetch_episodes(state: FlowState) -> ScreenResult:
     if state.ref is None:
         raise AssertionError
     progress.info(_PROG["fetching_episodes"].format(title=state.ref.title))
-    listing = shinden_series.list_episodes(state.client, state.ref)
+    listing = state.engine.episodes(state.ref)
     ref, episodes = listing.ref, listing.episodes
     state.ref = ref
     diagnostics.series_selected(ref.id, ref.title)
@@ -333,7 +329,7 @@ def handle_fetch_episodes(state: FlowState) -> ScreenResult:
 def handle_episodes_pick(state: FlowState) -> ScreenResult:
     if state.ref is None:
         raise AssertionError
-    args = state.args
+    args = state.options
 
     # A partial list cannot resolve a range or a resume position; the user picks from what is visible.
     if args.episode and not state.episode_arg_consumed and not state.episodes_complete:
@@ -342,15 +338,14 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
 
     # --episode picks the first batch of a series only; later returns here must show the picker
     if args.episode and not state.episode_arg_consumed:
-        from alt_ani_cli.cli import _parse_range
-
-        targets = _parse_range(args.episode, state.episodes)
+        targets = parse_range(args.episode, state.episodes)
+        if targets is None:
+            progress.warn(_PROG["range_unrecognized"].format(range=repr(args.episode)))
         if not targets:
             progress.error(_PROG["range_not_found"].format(range=repr(args.episode)))
             return BACK
         state.targets = targets
         state.ep_idx = 0
-        state.players_reloaded_ep = None
         state.overwrite_existing_batch = False
         state.pinned_player = None
         state.episode_arg_consumed = True
@@ -385,7 +380,6 @@ def handle_episodes_pick(state: FlowState) -> ScreenResult:
         return BACK
     state.targets = result
     state.ep_idx = 0
-    state.players_reloaded_ep = None
     state.overwrite_existing_batch = False
     state.pinned_player = None
     return Screen.EPISODE_DISPATCH
@@ -399,30 +393,26 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
     progress.info(_PROG["episode"].format(number=ep.number, title=ep.title))
     diagnostics.episode_selected(ep.number, ep.title, shinden_episode.episode_path(ep.url))
 
-    from alt_ani_cli.cli import _filter_players, _load_episode
+    reload_pending, state.reload_pending = state.reload_pending, False
+    session, state.session = state.session, None
+    if reload_pending and session is not None and session.episode.url == ep.url:
+        session.reload()
+    else:
+        # a deliberately re-picked episode is a new session with fresh limits, as before
+        session = state.engine.open_episode(ep)
 
-    if state.players_reloaded_ep != ep.url:
-        state.players_reloaded_ep = None
-    state.episode_xhr = None
-    raw_players, xhr = _load_episode(state.client, ep)
-
-    args = state.args
+    args = state.options
     download_mode = args.download or state.episode_action == "download"
-    players = shinden_episode.sort_players(raw_players, download=download_mode)
+    selection = session.select(args.source_filter, purpose=Purpose.DOWNLOAD if download_mode else Purpose.WATCH)
+    players = list(selection.all_sources)
 
     if not players:
         progress.warn(_PROG["no_players"].format(number=ep.number))
         state.ep_idx += 1
         return Screen.EPISODE_DISPATCH
 
-    filtered, unmatched = _filter_players(
-        players,
-        lang=args.lang,
-        subs=args.subs,
-        player_name=args.player_name,
-    )
-    if unmatched:
-        filters = ", ".join(unmatched)
+    if selection.unmatched:
+        filters = ", ".join(selection.unmatched)
         if args.allow_fallback:
             progress.warn(_PROG["filter_fallback"].format(filters=filters))
         else:
@@ -431,17 +421,15 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
                 state.pinned_player = None
                 return Screen.EPISODES_PICK
     else:
-        players = filtered
+        players = list(selection.candidates)
 
     state.players = players
     state.chosen_player = None
     state.player_picked_manually = False
     state.failed_ids = set()
-    state.stream = None
-    state.embed = None
-    state.player_sources = {}
-    state.player_embeds = {}
-    state.episode_xhr = xhr
+    state.expired_ids = set()
+    state.resolved = None
+    state.session = session
 
     if args.select_nth:
         return _auto_pick_player(state, players[0])
@@ -462,7 +450,7 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
     return Screen.PLAYER_PICK
 
 
-def _auto_pick_player(state: FlowState, player) -> ScreenResult:
+def _auto_pick_player(state: FlowState, player: PlayerEntry) -> ScreenResult:
     state.chosen_player = player
     diagnostics.player_selected(player.online_id, player.player, None)
     return Screen.RESOLVE_STREAM
@@ -476,11 +464,12 @@ def handle_player_pick(state: FlowState) -> ScreenResult:
         progress.warn(_PROG["player_failed_short"].format(player=repr(state.chosen_player.player)))
 
     while True:
+        sources = state.session.known_sources if state.session is not None else {}
         action, payload = menus.select_player_once(
             state.players,
             prompt=CONTENT["menu"]["player"]["prompt_with_episode"].format(label=ep_label),
             failed=state.failed_ids,
-            sources=state.player_sources,
+            sources=sources,
         )
         if action == "back":
             state.pinned_player = None  # leaving the batch
@@ -488,35 +477,34 @@ def handle_player_pick(state: FlowState) -> ScreenResult:
         if action == "pick":
             state.chosen_player = payload
             state.player_picked_manually = True
-            source = state.player_sources.get(payload.online_id)
+            source = sources.get(payload.online_id)
             diagnostics.player_selected(payload.online_id, payload.player, source.host if source else None)
             return Screen.RESOLVE_STREAM
         # "source" — show the modal, then re-render the picker
         p = state.players[payload]
-        title, body = menus.format_player_source(p, state.player_sources.get(p.online_id))
+        title, body = menus.format_player_source(p, sources.get(p.online_id))
         menus.show_modal_text(title, body)
+
+
+def _resolve_chosen(state: FlowState, session: EpisodeSession, chosen: PlayerEntry) -> ResolvedStream:
+    """A person picked this source, so only it is tried; one that already failed downstream gets a fresh embed."""
+    options = state.options.extract_options
+    if chosen.online_id in state.expired_ids:
+        try:
+            return session.resolve(chosen, policy=FallbackPolicy.SINGLE, options=options, force_fresh=True)
+        except FreshResolveLimitError:
+            pass
+    return session.resolve(chosen, policy=FallbackPolicy.SINGLE, options=options)
 
 
 def handle_resolve_stream(state: FlowState) -> ScreenResult:
     ep = state.current_ep
-    if ep is None:
+    chosen = state.chosen_player
+    if ep is None or chosen is None:
         raise AssertionError
 
-    from alt_ani_cli.cli import _resolve_with_fallback
-
     try:
-        stream, embed = _resolve_with_fallback(
-            state.client,
-            state.players,
-            state.chosen_player,
-            auto=False,  # user already picked — try only chosen player
-            ep_number=ep.number,
-            xhr=_episode_xhr(state, ep),
-            cookies_file=state.args.cookies_file,
-            cookies_browser=state.args.cookies_browser,
-            embed_cache=state.player_embeds,
-            health=state.health,
-        )
+        resolved = _resolve_chosen(state, _session(state, ep), chosen)
     except ShindenXhrError as exc:
         # shared-API failure, not this player's: keep it pickable and leave any retry to the user
         progress.error(shinden_api.stop_message(exc))
@@ -524,25 +512,18 @@ def handle_resolve_stream(state: FlowState) -> ScreenResult:
             # the shown list is stale: reload this episode's page instead of offering ids that are gone
             return _reload_players(state, ep)
         return Screen.PLAYER_PICK
+    except SourcesExhaustedError:
+        return _fail_chosen_player(state, ep)
 
-    if stream is not None:
-        state.stream = stream
-        state.embed = embed
-        # opportunistic: a re-rendered player list can now show this player's real host
-        _record_player_source(state, state.chosen_player.online_id, embed)
-        if state.quality is None and stream.qualities:
-            return Screen.QUALITY_PICK
-        return Screen.ACTION_PICK
-
-    online_id = state.chosen_player.online_id
-    failed_embed = state.player_embeds.get(online_id)
-    if failed_embed is not None:
-        # the embed resolved fine, only extraction failed downstream — the host is already known
-        _record_player_source(state, online_id, failed_embed)
-    return _fail_chosen_player(state, ep)
+    state.resolved = resolved
+    if state.quality is None and resolved.stream.labels:
+        return Screen.QUALITY_PICK
+    return Screen.ACTION_PICK
 
 
 def _fail_chosen_player(state: FlowState, ep: EpisodeRow) -> ScreenResult:
+    if state.chosen_player is None:
+        raise AssertionError
     state.failed_ids.add(state.chosen_player.online_id)
     remaining = [p for p in state.players if p.online_id not in state.failed_ids]
     if remaining:
@@ -554,9 +535,9 @@ def _fail_chosen_player(state: FlowState, ep: EpisodeRow) -> ScreenResult:
 
 
 def handle_quality_pick(state: FlowState) -> ScreenResult:
-    if state.stream is None:
+    if state.resolved is None:
         raise AssertionError
-    quality = menus.select_quality(state.stream.qualities)
+    quality = menus.select_quality(state.resolved.stream.labels)
     if quality is None:
         state.quality = None  # reset cache so we ask again next time
         return Screen.PLAYER_PICK  # ESC → back to player selection
@@ -565,7 +546,7 @@ def handle_quality_pick(state: FlowState) -> ScreenResult:
 
 
 def handle_action_pick(state: FlowState) -> ScreenResult:
-    args = state.args
+    args = state.options
     if args.download:
         state.episode_action = "download"
         return Screen.RUN_ACTION
@@ -578,14 +559,14 @@ def handle_action_pick(state: FlowState) -> ScreenResult:
             if choice is None:
                 return _back_from_action(state)
             if choice == "repin":
-                state.pinned_player = player_fingerprint(state.chosen_player)
+                state.pinned_player = player_fingerprint(_chosen(state))
         return Screen.RUN_ACTION
     action = menus.select_action(offer_pin=_has_remaining_targets(state))
     if action is None:
         state.episode_action = None  # reset cache
         return _back_from_action(state)
     if action == "download_pin":
-        state.pinned_player = player_fingerprint(state.chosen_player)
+        state.pinned_player = player_fingerprint(_chosen(state))
         action = "download"
     state.episode_action = action
     return Screen.RUN_ACTION
@@ -597,37 +578,29 @@ def _offers_repin(state: FlowState) -> bool:
         state.pinned_player is not None
         and state.player_picked_manually
         and _has_remaining_targets(state)
-        and player_fingerprint(state.chosen_player) != state.pinned_player
+        and player_fingerprint(_chosen(state)) != state.pinned_player
     )
 
 
 def _back_from_action(state: FlowState) -> ScreenResult:
-    if state.stream and state.stream.qualities:
+    if state.resolved is not None and state.resolved.stream.labels:
         return Screen.QUALITY_PICK
     return Screen.PLAYER_PICK
 
 
 def handle_run_action(state: FlowState) -> ScreenResult:
-    if state.stream is None:
-        raise AssertionError
-    if state.ref is None:
-        raise AssertionError
-    ep = state.current_ep
-    if ep is None:
+    resolved, ep, chosen = state.resolved, state.current_ep, state.chosen_player
+    if resolved is None or state.ref is None or ep is None or chosen is None:
         raise AssertionError
 
-    from alt_ani_cli.cli import _pick_quality, _playback_confirmed, _print_debug, _report_playback
-
-    args = state.args
-    player_kind = "vlc" if args.vlc else "mpv"
-    quality = state.quality or "best"
-    stream = _pick_quality(state.stream, quality)
-    title = f"{state.ref.title} — Odcinek {ep.number:g}"
+    args = state.options
+    history = state.engine.history
+    variant = resolved.stream.select(state.quality or "best")
+    title = playback.episode_title(state.ref.title, ep.number)
 
     completed = False
     if args.download or state.episode_action == "download":
-        source = state.player_sources.get(state.chosen_player.online_id)
-        host = source.host if source else None
+        host = diagnostics.host_of_url(resolved.embed.url).removeprefix("www.")
         existing: dict = {}
 
         def confirm_overwrite(path: Path) -> bool:
@@ -640,24 +613,29 @@ def handle_run_action(state: FlowState) -> ScreenResult:
             return choice in ("overwrite", "overwrite_remaining")
 
         try:
-            downloaded = download.run(stream, ep, state.ref, confirm_overwrite=confirm_overwrite)
+            downloaded = download.run(
+                variant,
+                ep,
+                state.ref,
+                state.paths.downloads_dir,
+                confirm_overwrite=confirm_overwrite,
+                events=state.engine.events,
+            )
         except DownloadFailedError as exc:
             diagnostics.download_result(host, ok=False, exc=type(exc).__name__)
-            progress.error(_PROG["download_failed"].format(player=repr(state.chosen_player.player)))
-            state.stream = None
-            state.embed = None
+            progress.error(_PROG["download_failed"].format(player=repr(chosen.player)))
+            state.resolved = None
+            state.expired_ids.add(chosen.online_id)
             return _fail_chosen_player(state, ep)
         except DownloadTargetError as exc:
             # A local file problem (e.g. the old file is open in a player): another source would hit it too.
-            progress.error(str(exc))
-            state.stream = None
-            state.embed = None
+            progress.error(error_text(exc))
+            state.resolved = None
             return Screen.PLAYER_PICK
         if not downloaded and existing["choice"] == "cancel":
             state.overwrite_existing_batch = False
             state.pinned_player = None
-            state.stream = None
-            state.embed = None
+            state.resolved = None
             progress.warn(CONTENT["download"]["batch_cancelled"])
             return Screen.EPISODES_PICK
         if downloaded:
@@ -667,21 +645,18 @@ def handle_run_action(state: FlowState) -> ScreenResult:
         history.record_download(state.ref, ep.number)
         state.downloaded_eps.add(ep.number)
     elif args.debug or state.episode_action == "debug":
-        _print_debug(stream, state.embed)
+        playback.print_debug(resolved.stream, variant, resolved.embed)
     else:
-        from alt_ani_cli.player import runner as player_runner
-
-        result = player_runner.play(stream, kind=player_kind, title=title, no_detach=args.no_detach)
-        _report_playback(result, args, player_kind, title)
-        completed = _playback_confirmed(result, args.no_detach)
+        result = player_runner.play(variant, kind=args.player_kind, title=title, no_detach=args.no_detach)
+        playback.report_playback(result, args, title)
+        completed = playback.playback_confirmed(result, args.no_detach)
 
     if completed:
-        history.upsert(state.ref, last_ep=ep.number)
+        history.record_watch(state.ref, ep.number)
         state.completed_eps.add(ep.number)
         diagnostics.history_update(state.ref.id, ep.number)
     state.ep_idx += 1
-    state.stream = None
-    state.embed = None
+    state.resolved = None
     return Screen.EPISODE_DISPATCH
 
 
@@ -701,3 +676,27 @@ HANDLERS: dict[Screen, Callable[[FlowState], ScreenResult]] = {
     Screen.ACTION_PICK: handle_action_pick,
     Screen.RUN_ACTION: handle_run_action,
 }
+
+
+def run_interactive(options: CliOptions, engine: Engine, cli_paths: CliPaths) -> None:
+    state = FlowState(options=options, engine=engine, paths=cli_paths, quality=options.quality)
+
+    history_stack: list[Screen] = []
+    screen: Screen | None = Screen.START_MODE
+
+    while screen is not None:
+        current = screen
+        start = time.monotonic()
+        result = HANDLERS[screen](state)
+        elapsed = time.monotonic() - start
+        if isinstance(result, _BackSentinel):
+            screen = None if not history_stack else history_stack.pop()
+            diagnostics.screen_transition(current.name, screen.name if screen else "EXIT", elapsed)
+        elif result is None:
+            screen = None
+            diagnostics.screen_transition(current.name, "EXIT", elapsed)
+        else:
+            if screen not in _VIRTUAL_SCREENS:
+                history_stack.append(screen)
+            screen = result
+            diagnostics.screen_transition(current.name, screen.name, elapsed)

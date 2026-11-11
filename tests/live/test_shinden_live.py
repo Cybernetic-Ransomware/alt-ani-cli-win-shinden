@@ -4,11 +4,16 @@ import json
 import re
 
 import pytest
-from selectolax.parser import HTMLParser
+from alt_ani_core.config import GUEST_AUTH, SHINDEN_API_BASE, SHINDEN_XHR_BASE, AccessConfig
+from alt_ani_core.dom import parse as parse_html
+from alt_ani_core.redaction import redact_text
+from alt_ani_core.shinden import api, episode, metadata, search, series, xhr
+from alt_ani_core.transport import clearance
+from alt_ani_core.transport.curl import CurlTransport
 
-from alt_ani_cli.config import FLARESOLVERR_URL, GUEST_AUTH, SHINDEN_API_BASE, SHINDEN_XHR_BASE
-from alt_ani_cli.redaction import redact_text
-from alt_ani_cli.shinden import api, episode, http, metadata, search, series, xhr
+from alt_ani_cli.paths import flaresolverr_url
+
+FLARESOLVERR_URL = flaresolverr_url()
 
 pytestmark = [
     pytest.mark.integration,
@@ -17,10 +22,12 @@ pytestmark = [
 
 
 @pytest.fixture(scope="module")
-def client():
+def client(tmp_path_factory):
+    cache_dir = tmp_path_factory.mktemp("clearance-cache")
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(http, "_save_cached", lambda *a, **k: None)
-        session = http.make_client()
+        mp.setattr(clearance, "save_cached", lambda *a, **k: None)
+        found = clearance.get_clearance(AccessConfig(flaresolverr_url=FLARESOLVERR_URL), cache_dir)
+    session = CurlTransport().open(clearance.shinden_profile(found))
     yield session
     session.close()
 
@@ -70,7 +77,7 @@ def test_honeypot_contract_holds_across_series(client, query):
     assert found.episodes
     resp = client.get(found.episodes[-1].url)
     resp.raise_for_status()
-    tree = HTMLParser(resp.text)
+    tree = parse_html(resp.text)
     data = json.loads(tree.css_first("script#episode-players-data").text())
     assert "pulapka" in data
     page = episode.read_players(tree)
@@ -87,7 +94,7 @@ def test_honeypot_contract_holds_across_series(client, query):
 def test_players_parse_and_exclude_honeypot(client, listing):
     resp = client.get(listing.episodes[-1].url)
     resp.raise_for_status()
-    page = episode.read_players(HTMLParser(resp.text))
+    page = episode.read_players(parse_html(resp.text))
     assert page.players
     assert page.trap_id not in {p.online_id for p in page.players}
 

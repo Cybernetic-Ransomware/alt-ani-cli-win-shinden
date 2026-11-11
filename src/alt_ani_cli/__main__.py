@@ -13,6 +13,6 @@ if sys.platform == "win32":
 
     colorama.just_fix_windows_console()
 
-from alt_ani_cli.cli import main
+from alt_ani_cli.main import main
 
 main()

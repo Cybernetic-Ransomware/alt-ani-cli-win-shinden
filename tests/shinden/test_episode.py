@@ -4,12 +4,12 @@ import json
 import re
 
 import pytest
-from selectolax.parser import HTMLParser
-
-from alt_ani_cli.errors import ParseError
-from alt_ani_cli.flow.pin import find_pinned, player_fingerprint
-from alt_ani_cli.shinden.episode import _online_id, parse_players, read_players, sort_players
-from alt_ani_cli.shinden.models import PlayerEntry
+from alt_ani_core.dom import parse as parse_html
+from alt_ani_core.errors import ParseError
+from alt_ani_core.models import PlayerEntry
+from alt_ani_core.rules.pin import find_pinned, player_fingerprint
+from alt_ani_core.rules.ranking import sort_players
+from alt_ani_core.shinden.episode import _online_id, parse_players, read_players
 
 from .conftest import TEST_TOKEN
 
@@ -264,14 +264,14 @@ class TestPlayersDomConsistency:
 @pytest.mark.unit
 class TestReadPlayers:
     def test_page_contract_is_read_once(self, fixture_html):
-        page = read_players(HTMLParser(fixture_html))
+        page = read_players(parse_html(fixture_html))
         assert len(page.players) == 9
         assert page.player_ids == frozenset(p.online_id for p in page.players)
         assert (page.trap_id, page.xhr_endpoint) == (_TRAP_ID, "//shinden.pl/xhr")
         assert parse_players(fixture_html) == list(page.players)
 
     def test_auth_token_never_reaches_the_result(self, episode_page):
-        assert TEST_TOKEN not in repr(read_players(HTMLParser(episode_page())))
+        assert TEST_TOKEN not in repr(read_players(parse_html(episode_page())))
 
 
 @pytest.mark.unit
@@ -289,7 +289,7 @@ class TestHoneypotPolicy:
 
     def test_null_without_hidden_row_means_no_honeypot(self, fixture_html):
         html = _edit_json(fixture_html.replace(_HIDDEN_ROW, 'class="gone"'), lambda d: d.update(pulapka=None))
-        page = read_players(HTMLParser(html))
+        page = read_players(parse_html(html))
         assert (page.trap_id, len(page.players)) == (None, 9)
 
     @pytest.mark.parametrize("value", [None, 1234], ids=["null", "other_id"])
@@ -323,7 +323,7 @@ class TestHoneypotPolicy:
         def _add_trap(d):
             d["players"].insert(0, dict(d["players"][0], online_id=d["pulapka"]))
 
-        page = read_players(HTMLParser(_edit_json(fixture_html, _add_trap)))
+        page = read_players(parse_html(_edit_json(fixture_html, _add_trap)))
         assert _TRAP_ID not in page.player_ids | {p.online_id for p in page.players}
 
 

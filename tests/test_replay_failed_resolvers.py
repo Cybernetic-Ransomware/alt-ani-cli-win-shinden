@@ -5,9 +5,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from alt_ani_cli.errors import AntiBotError, NoStreamError, ShindenXhrError
-from alt_ani_cli.shinden.xhr import BACKEND_API4, EpisodeXhr
+from alt_ani_core.errors import AntiBotError, NoStreamError, ShindenXhrError
+from alt_ani_core.models import ExtractionFailure
+from alt_ani_core.shinden.xhr import BACKEND_API4, EpisodeXhr
+from alt_ani_core.transport.api import HttpStatusError, TransportTimeout
 
 # tests/ has no top-level __init__.py, so pytest puts tests/ (not the repo root) on sys.path.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -26,6 +27,7 @@ from tools.replay_failed_resolvers import (  # noqa: E402
 )
 
 _PREFIX = "2026-09-25 21:03:11,482"
+_TRANSPORT = MagicMock(name="transport")
 _EP_PATH = "/episode/1-fate/view/11"
 
 
@@ -71,6 +73,12 @@ def _case(**overrides: object) -> ReplayCase:
     )
     base.update(overrides)
     return ReplayCase(**base)
+
+
+def _no_stream(**failure: object) -> NoStreamError:
+    exc = NoStreamError("still failing")
+    exc.failure = ExtractionFailure(**failure)
+    return exc
 
 
 def _now(**overrides: object) -> _NowSnapshot:
@@ -506,10 +514,11 @@ class TestReplayCase:
         embed = MagicMock(url="https://cda.pl/video/abc", referer="https://shinden.pl/")
         with (
             patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", return_value=embed),
-            patch("tools.replay_failed_resolvers.extract.resolve", return_value=MagicMock()),
+            patch("tools.replay_failed_resolvers.extract.resolve", return_value=MagicMock()) as mock_extract,
         ):
-            outcome = replay_case(client, case)
+            outcome = replay_case(client, case, transport=_TRANSPORT)
 
+        mock_extract.assert_called_once_with(embed.url, embed.referer, transport=_TRANSPORT)
         assert outcome.verdict is Verdict.FIXED
         assert outcome.now_ok is True
         assert outcome.now_host == "cda.pl"
@@ -518,7 +527,7 @@ class TestReplayCase:
         case = _case(host_before="cda.pl", layer_before="ytdlp", category_before="http_error", http_status_before=403)
         client = MagicMock()
         with patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", side_effect=AntiBotError("blocked")):
-            outcome = replay_case(client, case)
+            outcome = replay_case(client, case, transport=_TRANSPORT)
 
         assert outcome.now_layer == "shinden_api"
         assert outcome.now_category == "anti_bot"
@@ -538,19 +547,20 @@ class TestReplayCase:
         )
         client = MagicMock()
         embed = MagicMock(url="https://vidara.to/e/abc", referer="https://shinden.pl/")
-        exc = NoStreamError("still failing")
-        exc.layer = "custom"
-        exc.category = "http_error"
-        exc.http_status = 403
-        exc.used_fallback = True
-        exc.fallback_layer = "ytdlp"
-        exc.fallback_category = "network_error"
-        exc.fallback_http_status = None
+        exc = _no_stream(
+            layer="custom",
+            category="http_error",
+            http_status=403,
+            used_fallback=True,
+            fallback_layer="ytdlp",
+            fallback_category="network_error",
+            fallback_http_status=None,
+        )
         with (
             patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", return_value=embed),
             patch("tools.replay_failed_resolvers.extract.resolve", side_effect=exc),
         ):
-            outcome = replay_case(client, case)
+            outcome = replay_case(client, case, transport=_TRANSPORT)
 
         assert outcome.now_layer == "custom"
         assert outcome.now_fallback_category == "network_error"
@@ -569,27 +579,44 @@ class TestReplayCase:
         )
         client = MagicMock()
         embed = MagicMock(url="https://vidara.to/e/abc", referer="https://shinden.pl/")
-        exc = NoStreamError("still failing")
-        exc.layer = "custom"
-        exc.category = "http_error"
-        exc.http_status = 403
-        exc.used_fallback = True
-        exc.fallback_layer = "ytdlp"
-        exc.fallback_category = "http_error"
-        exc.fallback_http_status = 403
+        exc = _no_stream(
+            layer="custom",
+            category="http_error",
+            http_status=403,
+            used_fallback=True,
+            fallback_layer="ytdlp",
+            fallback_category="http_error",
+            fallback_http_status=403,
+        )
         with (
             patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", return_value=embed),
             patch("tools.replay_failed_resolvers.extract.resolve", side_effect=exc),
         ):
-            outcome = replay_case(client, case)
+            outcome = replay_case(client, case, transport=_TRANSPORT)
 
         assert outcome.verdict is Verdict.DIAGNOSTICS_IMPROVED
+
+    @pytest.mark.parametrize(
+        ("exc", "category", "status"),
+        [
+            (TransportTimeout(), "timeout", None),
+            (HttpStatusError(503, url="https://shinden.pl/x?auth=SECRET"), "http_error", 503),
+        ],
+        ids=["timeout", "http-503"],
+    )
+    def test_transport_error_during_embed_is_classified_not_a_replay_error(self, exc, category, status):
+        with patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", side_effect=exc):
+            outcome = replay_case(MagicMock(), _case(), transport=_TRANSPORT)
+
+        assert outcome.verdict is not Verdict.REPLAY_ERROR
+        assert (outcome.now_layer, outcome.now_category, outcome.now_http_status) == ("shinden_api", category, status)
+        assert outcome.now_exc == type(exc).__name__
 
     def test_unexpected_error_during_embed_is_replay_error(self):
         case = _case()
         client = MagicMock()
         with patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", side_effect=RuntimeError("boom")):
-            outcome = replay_case(client, case)
+            outcome = replay_case(client, case, transport=_TRANSPORT)
 
         assert outcome.verdict is Verdict.REPLAY_ERROR
 
@@ -601,7 +628,7 @@ class TestReplayCase:
             patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", return_value=embed),
             patch("tools.replay_failed_resolvers.extract.resolve", side_effect=RuntimeError("boom")),
         ):
-            outcome = replay_case(client, case)
+            outcome = replay_case(client, case, transport=_TRANSPORT)
 
         assert outcome.verdict is Verdict.REPLAY_ERROR
 
@@ -609,7 +636,7 @@ class TestReplayCase:
         case = _case(online_id=None)
         client = MagicMock()
         with patch("tools.replay_failed_resolvers.shinden_api.resolve_embed") as mock_resolve_embed:
-            outcome = replay_case(client, case)
+            outcome = replay_case(client, case, transport=_TRANSPORT)
 
         mock_resolve_embed.assert_not_called()
         assert outcome.verdict is Verdict.REPLAY_ERROR
@@ -652,14 +679,14 @@ class TestReplayXhrErrors:
 
     def test_xhr_failure_takes_layer_and_category_from_the_error(self):
         with patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", side_effect=_xhr(http_status=404)):
-            outcome = replay_case(MagicMock(), _case())
+            outcome = replay_case(MagicMock(), _case(), transport=_TRANSPORT)
         assert (outcome.now_layer, outcome.now_category, outcome.now_http_status) == ("shinden_api", "http_error", 404)
         assert outcome.xhr_stop is None
 
     @pytest.mark.parametrize("err", [_xhr(http_status=429), _xhr(http_status=503)], ids=["429", "503"])
     def test_shared_api_failure_marks_outcome_as_stop(self, err):
         with patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", side_effect=err):
-            outcome = replay_case(MagicMock(), _case())
+            outcome = replay_case(MagicMock(), _case(), transport=_TRANSPORT)
         assert outcome.xhr_stop is not None
 
     def test_main_stops_replaying_after_a_block(self, tmp_path):
@@ -675,7 +702,7 @@ class TestReplayXhrErrors:
         log = tmp_path / "session.log"
         log.write_text("\n".join(lines) + "\n", encoding="utf-8")
         with (
-            patch("tools.replay_failed_resolvers.shinden_http.make_client"),
+            patch("tools.replay_failed_resolvers.CurlTransport"),
             patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", side_effect=_xhr(http_status=429)) as mock_resolve,
             patch("tools.replay_failed_resolvers.progress"),
         ):
@@ -709,7 +736,7 @@ class TestReplayEpisodeContext:
         log.write_text("\n".join(lines) + "\n", encoding="utf-8")
         (case,), _ = parse_diagnostics_log(log)
         with patch("tools.replay_failed_resolvers.shinden_api.resolve_embed") as mock_resolve:
-            outcome = replay_case(MagicMock(), case)
+            outcome = replay_case(MagicMock(), case, transport=_TRANSPORT)
         assert outcome.verdict is Verdict.REPLAY_ERROR
         assert outcome.note == "missing episode context in log"
         _episode_page.assert_not_called()
@@ -717,7 +744,7 @@ class TestReplayEpisodeContext:
 
     @pytest.mark.parametrize("path", ["//evil.example/episode/1-x/view/2", "/xhr/42/player_load", "/episode/1-x/view/2?auth=x"])
     def test_untrusted_logged_path_is_never_fetched(self, _episode_page, path):
-        outcome = replay_case(MagicMock(), _case(episode_path=path))
+        outcome = replay_case(MagicMock(), _case(episode_path=path), transport=_TRANSPORT)
         assert outcome.note == "missing episode context in log"
         _episode_page.assert_not_called()
 
@@ -725,23 +752,23 @@ class TestReplayEpisodeContext:
         client = MagicMock()
         with (
             patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", side_effect=AntiBotError("x")),
-            patch("alt_ani_cli.shinden.series.list_episodes") as mock_list,
+            patch("alt_ani_core.shinden.series.list_episodes") as mock_list,
         ):
-            replay_case(client, _case(), backend="new_xhr")
+            replay_case(client, _case(), backend="new_xhr", transport=_TRANSPORT)
         _episode_page.assert_called_once_with(client, "https://shinden.pl" + _EP_PATH, backend="new_xhr")
         mock_list.assert_not_called()
 
     def test_player_now_the_honeypot_gets_no_request(self, _episode_page):
         _episode_page.return_value[1].trap_id = "42"
         with patch("tools.replay_failed_resolvers.shinden_api.resolve_embed") as mock_resolve:
-            outcome = replay_case(MagicMock(), _case())
+            outcome = replay_case(MagicMock(), _case(), transport=_TRANSPORT)
         assert outcome.verdict is Verdict.REPLAY_ERROR
         assert "honeypot" in (outcome.note or "")
         mock_resolve.assert_not_called()
 
     def test_player_no_longer_listed_gets_no_request(self, _episode_page):
         with patch("tools.replay_failed_resolvers.shinden_api.resolve_embed") as mock_resolve:
-            outcome = replay_case(MagicMock(), _case(online_id="999"))
+            outcome = replay_case(MagicMock(), _case(online_id="999"), transport=_TRANSPORT)
         assert outcome.verdict is Verdict.REPLAY_ERROR
         assert "no longer listed" in (outcome.note or "")
         mock_resolve.assert_not_called()
@@ -753,7 +780,7 @@ class TestReplayEpisodeContext:
             patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", return_value=embed),
             patch("tools.replay_failed_resolvers.extract.resolve", return_value=MagicMock()),
         ):
-            outcome = replay_case(MagicMock(), _case(host_before="cda.pl"))
+            outcome = replay_case(MagicMock(), _case(host_before="cda.pl"), transport=_TRANSPORT)
         assert outcome.now_backend == BACKEND_API4
         assert outcome.note == "api4 fallback: auth_missing"
 
@@ -770,7 +797,7 @@ class TestReplayBackendChoice:
         log = tmp_path / "session.log"
         log.write_text("\n".join(lines) + "\n", encoding="utf-8")
         with (
-            patch("tools.replay_failed_resolvers.shinden_http.make_client"),
+            patch("tools.replay_failed_resolvers.CurlTransport"),
             patch("tools.replay_failed_resolvers.shinden_api.resolve_embed", side_effect=AntiBotError("x")),
             patch("tools.replay_failed_resolvers.progress"),
         ):
@@ -786,11 +813,11 @@ class TestReplayBackendChoice:
         ],
     )
     def test_flag_wins_over_env(self, monkeypatch, tmp_path, _episode_page, env, flag, expected):
-        monkeypatch.setattr("alt_ani_cli.config.XHR_BACKEND", env)
+        monkeypatch.setenv("ALT_ANI_CLI_XHR_BACKEND", env)
         assert self._main(tmp_path, ("--xhr-backend", flag) if flag else ()) == 0
         assert _episode_page.call_args.kwargs["backend"] == expected
 
     def test_invalid_env_value_fails_before_any_request(self, monkeypatch, tmp_path, _episode_page):
-        monkeypatch.setattr("alt_ani_cli.config.XHR_BACKEND", "legacy")
+        monkeypatch.setenv("ALT_ANI_CLI_XHR_BACKEND", "legacy")
         assert self._main(tmp_path) == 1
         _episode_page.assert_not_called()
