@@ -49,9 +49,9 @@ def _curl_transport() -> str:
 
 
 def _ytdlp() -> str:
-    import yt_dlp
+    from yt_dlp.version import __version__
 
-    return f"yt-dlp {yt_dlp.version.__version__}"
+    return f"yt-dlp {__version__}"
 
 
 def run(files_dir: str, cache_dir: str) -> str:

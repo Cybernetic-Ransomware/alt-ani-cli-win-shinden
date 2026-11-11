@@ -1,13 +1,8 @@
 import json
-import sys
 from pathlib import Path
 
 import pytest
 from alt_ani_core.testing import FakeTransport, InMemoryHistory
-
-BRIDGE_SRC = Path(__file__).parents[2] / "apps" / "android" / "app" / "src" / "main" / "python"
-if str(BRIDGE_SRC) not in sys.path:
-    sys.path.insert(0, str(BRIDGE_SRC))
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "shinden"
 EPISODE_URL = "https://shinden.pl/episode/61064-sousou-no-frieren/view/227851"

@@ -9,7 +9,7 @@ import pytest
 
 ROOT = Path(__file__).parents[2]
 CORE = ROOT / "packages" / "core" / "src" / "alt_ani_core"
-CLI = next(p for p in (ROOT / "apps" / "cli" / "src" / "alt_ani_cli", ROOT / "src" / "alt_ani_cli") if p.is_dir())
+CLI = ROOT / "apps" / "cli" / "src" / "alt_ani_cli"
 BRIDGE = ROOT / "apps" / "android" / "app" / "src" / "main" / "python" / "alt_ani_bridge"
 
 TERMINAL_AND_DESKTOP = {
