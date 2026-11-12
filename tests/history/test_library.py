@@ -1,9 +1,9 @@
-import sqlite3
+from dataclasses import replace
 
 import pytest
 
-from alt_ani_core.errors import InvalidTransitionError, UnknownRecordError
-from alt_ani_core.state import ItemStatus, JobState, NetworkKind, OpenedVia, StorageLocator
+from alt_ani_core.errors import InvalidTransitionError, StateConflictError, UnknownRecordError
+from alt_ani_core.state import ItemStatus, JobError, JobState, NetworkKind, OpenedVia, StorageLocator
 
 from .state_support import download, enqueue, key, open_state, ref, row, spec
 
@@ -36,9 +36,44 @@ class TestOfflineItems:
         enqueue(state, 2)
         claim = state.queue.claim_next(NetworkKind.WIFI)
         state.queue.begin_finalize(claim.attempt_id)
-        with pytest.raises(sqlite3.IntegrityError):
+        with pytest.raises(StateConflictError) as info:
             state.queue.complete(claim.attempt_id, spec("same.mp4"))
+        assert info.value.code == "state.locator_in_use"
         assert state.queue.get(claim.job.id).state is JobState.FINALIZING
+        # the executor can still end the attempt, so the slot is not held forever
+        assert state.queue.fail(claim.attempt_id, JobError("download.target_taken"))
+        assert state.queue.claim_next(NetworkKind.WIFI) is None
+        assert state.queue.get(claim.job.id).state is JobState.FAILED
+
+    def test_redownload_to_the_locator_of_a_missing_copy_reuses_its_row(self, state):
+        _, item = download(state, 1)
+        state.library.mark_missing(item.id)
+        (job,) = enqueue(state, 1).added
+        claim = state.queue.claim_next(NetworkKind.WIFI)
+        state.queue.begin_finalize(claim.attempt_id)
+        restored = state.queue.complete(claim.attempt_id, replace(spec("fate - ep1.mp4"), size_bytes=2000))
+        assert (restored.id, restored.status, restored.spec.size_bytes) == (item.id, ItemStatus.AVAILABLE, 2000)
+        assert state.queue.get(job.id).offline_item_id == item.id
+        assert state.library.items() == [restored]
+
+    def test_locator_of_a_copy_being_deleted_is_a_conflict(self, state):
+        _, item = download(state, 1)
+        state.library.mark_deleting([item.id])
+        enqueue(state, 1)
+        claim = state.queue.claim_next(NetworkKind.WIFI)
+        state.queue.begin_finalize(claim.attempt_id)
+        with pytest.raises(StateConflictError):
+            state.queue.complete(claim.attempt_id, spec("fate - ep1.mp4"))
+        assert state.library.get(item.id).status is ItemStatus.DELETING
+
+    def test_missing_copy_of_another_episode_is_not_taken_over(self, state):
+        _, item = download(state, 1, name="shared.mp4")
+        state.library.mark_missing(item.id)
+        enqueue(state, 2)
+        claim = state.queue.claim_next(NetworkKind.WIFI)
+        state.queue.begin_finalize(claim.attempt_id)
+        with pytest.raises(StateConflictError):
+            state.queue.complete(claim.attempt_id, spec("shared.mp4"))
 
     def test_missing_and_back(self, state):
         _, item = download(state)

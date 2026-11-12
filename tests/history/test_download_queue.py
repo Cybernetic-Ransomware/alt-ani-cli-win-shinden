@@ -89,6 +89,13 @@ class TestEnqueue:
         state.preferences.update(audio="pl", subs="none", quality=QualityCriterion(480))
         assert state.queue.get(job.id).criteria == DownloadCriteria()
 
+    def test_jobs_can_be_filtered_by_state(self, state):
+        a, b = enqueue(state, 1, 2).added
+        state.queue.pause(b.id)
+        assert [j.id for j in state.queue.jobs([JobState.PAUSED])] == [b.id]
+        assert [j.id for j in state.queue.jobs([JobState.QUEUED, JobState.PAUSED])] == [a.id, b.id]
+        assert state.queue.jobs([]) == []
+
     def test_order_follows_the_request(self, state):
         enqueue(state, 3, 1, 2)
         assert [j.key.number for j in state.queue.jobs()] == [3.0, 1.0, 2.0]
@@ -376,6 +383,56 @@ class TestAttemptFencing:
         assert state.queue.wait(claim.attempt_id, WaitReason.STORAGE, JobError("storage.full"))
         job = state.queue.get(claim.job.id)
         assert (job.state, job.last_error) == (JobState.PAUSED, JobError("storage.full"))
+
+    def test_executor_reason_wins_over_a_released_network_stop(self, state):
+        claim = _running(state)
+        state.queue.hold(claim.job.id, WaitReason.NETWORK)
+        state.queue.release(claim.job.id, WaitReason.NETWORK)
+        assert state.queue.wait(claim.attempt_id, WaitReason.INTERACTION)
+        job = state.queue.get(claim.job.id)
+        assert (job.state, job.wait_reason, job.stop_target) == (JobState.WAITING, WaitReason.INTERACTION, None)
+        assert state.queue.claim_next(WIFI) is None
+
+    def test_executor_reason_wins_over_a_pending_network_stop(self, state):
+        claim = _running(state)
+        state.queue.hold(claim.job.id, WaitReason.NETWORK)
+        assert state.queue.wait(claim.attempt_id, WaitReason.SOURCE_DECISION)
+        assert state.queue.get(claim.job.id).wait_reason is WaitReason.SOURCE_DECISION
+
+    @pytest.mark.parametrize("hold", [False, True], ids=["released", "network-held"])
+    def test_failure_is_not_turned_into_a_retry_by_a_scheduler_stop(self, state, hold):
+        claim = _running(state)
+        state.queue.hold(claim.job.id, WaitReason.NETWORK)
+        if not hold:
+            state.queue.release(claim.job.id, WaitReason.NETWORK)
+        assert state.queue.fail(claim.attempt_id, JobError("download.failed"))
+        assert state.queue.get(claim.job.id).state is JobState.FAILED
+
+    def test_cancel_still_wins_over_a_failure(self, state):
+        claim = _running(state)
+        state.queue.cancel(claim.job.id)
+        state.queue.fail(claim.attempt_id, JobError("download.failed"))
+        job = state.queue.get(claim.job.id)
+        assert (job.state, job.last_error) == (JobState.CANCELLED, JobError("download.failed"))
+
+    def test_finalizing_attempt_can_wait_for_storage(self, state):
+        claim = _running(state)
+        state.queue.set_target(claim.attempt_id, StorageLocator("fs", "/v/f.mp4"))
+        state.queue.begin_finalize(claim.attempt_id)
+        assert state.queue.wait(claim.attempt_id, WaitReason.STORAGE, JobError("storage.full"))
+        job = state.queue.get(claim.job.id)
+        assert (job.state, job.wait_reason, job.attempt_id, job.target) == (
+            JobState.WAITING,
+            WaitReason.STORAGE,
+            None,
+            StorageLocator("fs", "/v/f.mp4"),
+        )
+
+    def test_executor_calls_never_raise_for_a_lost_attempt(self, state):
+        claim = _running(state)
+        state.queue.recover_interrupted()
+        assert not state.queue.wait(claim.attempt_id, WaitReason.STORAGE)
+        assert not state.queue.fail(claim.attempt_id, JobError("x"))
 
     def test_fail_and_retry(self, state):
         claim = _running(state)

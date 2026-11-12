@@ -59,6 +59,13 @@ def _publish(temp: Path, final: Path) -> None:
     if final.exists():
         raise FileExistsError(final)
     os.replace(temp, final)
+    if os.name == "posix":
+        # the rename itself must survive a power loss, not only the file's content; Windows has no directory fsync
+        fd = os.open(final.parent, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
 
 class Database:
@@ -93,7 +100,9 @@ class Database:
                 self._migrate(conn)
                 yield conn
             except BaseException:
-                conn.execute("ROLLBACK")
+                # SQLite rolls back by itself on some errors (a full disk); a second ROLLBACK would hide the real one
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
                 raise
             conn.execute("COMMIT")
             # only a committed transaction proves the schema exists

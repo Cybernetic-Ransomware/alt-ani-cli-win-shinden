@@ -30,6 +30,9 @@ class TestTransitions:
             check_transition("j", JobState.FINALIZING, JobState.PAUSED)
         assert info.value.code == "state.finalizing"
 
+    def test_publishing_may_wait_for_storage(self):
+        assert JobState.WAITING in TRANSITIONS[JobState.FINALIZING]
+
     def test_a_paused_job_is_never_moved_to_waiting(self):
         assert JobState.WAITING not in TRANSITIONS[JobState.PAUSED]
 

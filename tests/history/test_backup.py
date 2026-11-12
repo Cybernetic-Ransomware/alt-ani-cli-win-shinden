@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import subprocess
 import sys
@@ -192,3 +193,37 @@ class TestConcurrentStart:
         assert seen == [3, 3]
         assert scalar(v1_db, "PRAGMA user_version") == 2
         assert len(_published(v1_db)) == 1
+
+
+@pytest.mark.unit
+class TestDurability:
+    @pytest.mark.skipif(os.name != "posix", reason="Windows has no directory fsync")
+    def test_backup_directory_is_synced_after_the_rename(self, v1_db, monkeypatch):
+        synced: list[str] = []
+        real_open, real_fsync = os.open, os.fsync
+        opened: dict[int, str] = {}
+
+        def tracking_open(path, flags, *args):
+            fd = real_open(path, flags, *args)
+            opened[fd] = str(path)
+            return fd
+
+        def tracking_fsync(fd):
+            synced.append(opened.get(fd, "file"))
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "open", tracking_open)
+        monkeypatch.setattr(os, "fsync", tracking_fsync)
+        SqliteHistory(v1_db).watch_entries()
+        assert str(v1_db.parent) in synced
+
+
+@pytest.mark.unit
+class TestRollback:
+    def test_error_after_sqlite_rolled_back_itself_is_not_hidden(self, tmp_path):
+        db = database.Database(tmp_path / "history.db")
+        with pytest.raises(RuntimeError, match="disk full"), db.write() as conn:
+            conn.execute("ROLLBACK")
+            raise RuntimeError("disk full")
+        with db.write():
+            pass

@@ -48,7 +48,7 @@ position (`position_ms`, `duration_ms`; NULL means unknown, not zero) and the wa
 
 Position writes are fenced by playback session: `begin_playback` creates a session and supersedes any earlier one
 of that episode; `record_position(session, seq, …)` is applied only for the current session and a `seq` greater than
-the last one kept. The value itself is never compared, so rewinding and starting over are kept, while a late write
+the last one kept (the first write of a session is `seq` 1). The value itself is never compared, so rewinding and starting over are kept, while a late write
 from a superseded player is refused. `record_playback_ended` is the only automatic way to mark an episode watched.
 A superseded session that really reached the end does not mark it either — a predictable rule; the manual change is
 always available.
@@ -74,8 +74,12 @@ Pausing, cancelling or holding a running job only moves it to `stopping` with a 
 (the active limit counts `running`, `stopping` and `finalizing`) and the job cannot be claimed again until the
 executor calls `ack_stopped` after its I/O has ended. `report_progress` answers `CONTINUE`, `STOP` or `LOST` (the
 attempt no longer owns the job). Publishing the file needs `begin_finalize`, refused once a stop was requested or the
-attempt was lost; only a `finalizing` attempt can `complete`. Cancelling is final; a user pause outranks a wait;
-resume undoes only the user's own pause. The engine guarantees no second attempt and no finalisation after a stop;
+attempt was lost; only a `finalizing` attempt can `complete`, or end in `failed` or `waiting` (e.g. a full disk while
+publishing; the target stays recorded). Cancelling is final; a user pause outranks a wait; resume undoes only the
+user's own pause. When an attempt ends on its own (`wait`, `fail`) while a stop is pending, a user's pause or cancel
+still wins, but over a scheduler's request (a network hold, or a hold already released) the executor's own outcome
+wins — an interaction it needs or a failure it hit is never turned into a plain retry. Executor calls never raise for
+a lost attempt or a state they cannot apply to; they return `False`/`None`/`LOST`. The engine guarantees no second attempt and no finalisation after a stop;
 it cannot guarantee that no byte moves after the request — the executor bounds that window by checking at every
 progress callback.
 
@@ -92,7 +96,10 @@ always drops the partial.
 
 ### Offline items and the file system
 
-An offline item is created only by `complete`, in the same transaction that completes the job. It records what was
+An offline item is created only by `complete`, in the same transaction that completes the job. If a `missing` item of
+the same episode holds the same locator (a re-download to the same path), its row is reused and becomes available
+again; any other holder of the locator — an available item, an item being deleted, another episode — is a
+`state.locator_in_use` conflict, and the executor picks another target or ends the attempt. It records what was
 actually saved and stays independent of the job (`ON DELETE SET NULL`) and of watch state. Deleting is two-step
 (`mark_deleting`, file removal, `forget`). Exports are not tracked: an export is an independent copy by definition.
 
@@ -122,7 +129,8 @@ Before upgrading from schema 1 the engine writes a verified copy:
    (the backup API stalls when run on the connection that holds the write lock — confirmed by a spike on
    Linux, SQLite 3.53.1; a reader may coexist with a reserved lock, so the copy is exactly the pre-upgrade state);
 4. the copy is checked (`integrity_check`, `user_version`, the same tables and row counts as the locked source);
-5. it is fsynced and renamed to `history.db.schema-1.<UTC>.bak`;
+5. it is fsynced and renamed to `history.db.schema-1.<UTC>.bak`, and on POSIX the directory is fsynced so the name
+   survives a power loss;
 6. the schema steps run and the transaction commits.
 
 A failure in steps 3–5 rolls back and raises `history.backup_failed`: the upgrade is fail-closed. Existing backups are
@@ -144,6 +152,10 @@ Easier:
 
 Harder / costs:
 
+- the backup runs under the write lock; on a large history and slow storage another writer waiting longer than the
+  5 s busy timeout gets `database is locked` once, during the one-time upgrade;
+- every `report_progress` is a committed write; the stage 2 executor has to throttle it (e.g. once per second or per
+  few percent), or it competes with UI writes for the lock and wears flash storage;
 - the queue's correctness depends on the executor honouring `STOP`/`LOST` and `begin_finalize`;
 - backups accumulate with each upgrade of a schema 1 file and are not removed automatically;
 - a full disk blocks the upgrade (and therefore the start) until space is freed.

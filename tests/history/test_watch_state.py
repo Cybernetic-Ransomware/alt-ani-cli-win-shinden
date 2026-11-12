@@ -116,7 +116,7 @@ class TestPlaybackSessions:
         with pytest.raises(UnknownRecordError):
             state.watch.begin_playback(key(9))
 
-    @pytest.mark.parametrize("seq,position,duration", [(-1, 0, None), (1, -5, None), (1, 0, 0), (True, 0, None)])
+    @pytest.mark.parametrize("seq,position,duration", [(0, 0, None), (-1, 0, None), (1, -5, None), (1, 0, 0), (True, 0, None)])
     def test_invalid_values_are_rejected(self, opened, seq, position, duration):
         session = opened.watch.begin_playback(key(3))
         with pytest.raises(ValueError):

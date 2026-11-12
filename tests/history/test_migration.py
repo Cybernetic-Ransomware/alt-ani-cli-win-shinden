@@ -151,3 +151,19 @@ class TestNewerSchema:
             open_state(path).queue.jobs()
         assert path.read_bytes() == before
         assert list(tmp_path.glob("*.bak")) == []
+
+
+@pytest.mark.unit
+class TestSchemaMatchesTheModel:
+    def test_open_job_index_uses_the_terminal_states(self):
+        from alt_ani_core.history.queue import OPEN_JOB
+
+        assert migrations._OPEN_JOB == OPEN_JOB
+
+    def test_job_state_check_lists_every_state(self, tmp_path):
+        from alt_ani_core.state import JobState
+
+        path = tmp_path / "history.db"
+        open_state(path).queue.jobs()
+        ddl = scalar(path, "SELECT sql FROM sqlite_master WHERE name = 'download_job'")
+        assert all(f"'{state.value}'" in ddl for state in JobState)

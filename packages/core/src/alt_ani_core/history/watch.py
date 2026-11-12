@@ -35,6 +35,12 @@ def _non_negative(name: str, value: int) -> None:
         raise ValueError(f"{name} must be a non-negative integer")
 
 
+def _seq(value: int) -> None:
+    # a session starts at 0, so the first write of a session is 1
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("seq must be a positive integer")
+
+
 def _duration(value: int | None) -> None:
     if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
         raise ValueError("duration_ms must be a positive integer")
@@ -99,7 +105,7 @@ class SqliteWatchStore:
 
     def record_position(self, session: PlaybackSession, seq: int, position_ms: int, duration_ms: int | None = None) -> bool:
         """False for a superseded session or a write older than one already kept; the value itself is never compared."""
-        _non_negative("seq", seq)
+        _seq(seq)
         _non_negative("position_ms", position_ms)
         _duration(duration_ms)
         with self._db.write() as conn:
@@ -113,7 +119,7 @@ class SqliteWatchStore:
 
     def record_playback_ended(self, session: PlaybackSession, seq: int, position_ms: int, duration_ms: int) -> bool:
         """The only automatic way to mark an episode watched: playback reached its end, no percentage threshold."""
-        _non_negative("seq", seq)
+        _seq(seq)
         _non_negative("position_ms", position_ms)
         _duration(duration_ms)
         with self._db.write() as conn:

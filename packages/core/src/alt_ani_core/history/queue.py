@@ -2,17 +2,18 @@
 
 import sqlite3
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
 from alt_ani_core.errors import StateConflictError, UnknownRecordError
 from alt_ani_core.history import codec
 from alt_ani_core.history.codec import Row
 from alt_ani_core.history.database import Database, upsert_episode
 from alt_ani_core.models import EpisodeRow, SeriesRef
-from alt_ani_core.rules.job_state import check_transition, invalid, merge_stop
+from alt_ani_core.rules.job_state import TRANSITIONS, check_transition, invalid, merge_stop
 from alt_ani_core.rules.network import download_allowed
 from alt_ani_core.state import (
     ACTIVE_STATES,
+    TERMINAL_STATES,
     AlternativesPolicy,
     AttemptStatus,
     Claim,
@@ -40,8 +41,14 @@ from alt_ani_core.state import (
 )
 
 _QUEUE_REVISION = "queue_revision"
-_OPEN = "state NOT IN ('completed','cancelled')"
-_ACTIVE = "('running','stopping','finalizing')"
+
+
+def sql_states(states: Iterable[JobState]) -> str:
+    return "(" + ",".join(f"'{state.value}'" for state in sorted(states)) + ")"
+
+
+OPEN_JOB = f"state NOT IN {sql_states(TERMINAL_STATES)}"
+_ACTIVE = sql_states(ACTIVE_STATES)
 INTERRUPTED = "job.interrupted"
 
 
@@ -120,7 +127,7 @@ class SqliteDownloadQueue:
     def _skip_reason(conn: sqlite3.Connection, key: EpisodeKey) -> SkipReason | None:
         """A legacy download record is not proof of a file, and a missing item is not one either."""
         args = (key.series_id, key.number)
-        open_job = "SELECT 1 FROM download_job WHERE series_id = ? AND number = ? AND state NOT IN ('completed','cancelled')"
+        open_job = "SELECT 1 FROM download_job WHERE series_id = ? AND number = ? AND " + OPEN_JOB  # nosec B608
         if conn.execute(open_job, args).fetchone():
             return SkipReason.ALREADY_QUEUED
         available = "SELECT 1 FROM offline_item WHERE series_id = ? AND number = ? AND status = 'available'"
@@ -202,11 +209,11 @@ class SqliteDownloadQueue:
         with self._db.read() as conn:
             return self._row(conn, job_id)
 
-    def jobs(self, states: Sequence[JobState] | None = None) -> list[DownloadJob]:
+    def jobs(self, states: Iterable[JobState] | None = None) -> list[DownloadJob]:
+        where = "" if states is None else f"WHERE state IN {sql_states(JobState(st) for st in states)} "
         with self._db.read() as conn:
-            rows = conn.execute("SELECT * FROM download_job ORDER BY queue_pos, seq").fetchall()
-        jobs = [_job(r) for r in rows]
-        return jobs if states is None else [j for j in jobs if j.state in states]
+            rows = conn.execute(f"SELECT * FROM download_job {where}ORDER BY queue_pos, seq").fetchall()  # nosec B608
+        return [_job(r) for r in rows]
 
     def queue_revision(self) -> int:
         with self._db.read() as conn:
@@ -216,7 +223,7 @@ class SqliteDownloadQueue:
         """``job_ids`` must be exactly the open jobs the caller saw, in the new order; returns the new revision."""
         with self._db.write() as conn:
             revision = self._queue_revision(conn)
-            open_ids = {r[0] for r in conn.execute(f"SELECT id FROM download_job WHERE {_OPEN}")}  # nosec B608
+            open_ids = {r[0] for r in conn.execute(f"SELECT id FROM download_job WHERE {OPEN_JOB}")}  # nosec B608
             if revision != expected_revision or len(job_ids) != len(open_ids) or set(job_ids) != open_ids:
                 raise StateConflictError("the queue changed since it was read").coded(
                     "state.conflict", expected=expected_revision, found=revision
@@ -436,37 +443,57 @@ class SqliteDownloadQueue:
             self._set(conn, job.id, state=JobState.FINALIZING.value)
             return True
 
+    @staticmethod
+    def _item_for(conn: sqlite3.Connection, job: DownloadJob, spec: OfflineItemSpec) -> str | None:
+        """The row a missing copy of this episode left at the same locator is reused; any other holder is a conflict."""
+        row = conn.execute(
+            "SELECT id, series_id, number, status FROM offline_item WHERE storage_backend = ? AND storage_key = ?",
+            (spec.locator.backend, spec.locator.key),
+        ).fetchone()
+        if row is None:
+            return None
+        same_episode = (row["series_id"], row["number"]) == (job.key.series_id, job.key.number)
+        if same_episode and row["status"] == ItemStatus.MISSING.value:
+            return row["id"]
+        # a deleting row means a delete may still remove the file at this locator; available means it is someone's file
+        raise StateConflictError(f"locator of job {job.id} is held by offline item {row['id']}").coded(
+            "state.locator_in_use", job_id=job.id, item_id=row["id"], status=row["status"]
+        )
+
     def complete(self, attempt_id: str, spec: OfflineItemSpec) -> OfflineItem | None:
-        """One transaction creates the offline item and completes the job; the file must already be in place."""
+        """One transaction makes the item available and completes the job; the file must already be in place."""
         with self._db.write() as conn:
             job = self._by_attempt(conn, attempt_id)
             if job is None or job.state is not JobState.FINALIZING:
                 return None
             now = self._db.now()
-            item_id = uuid.uuid4().hex
-            conn.execute(
-                """INSERT INTO offline_item (id, series_id, number, storage_backend, storage_key, status, size_bytes,
-                     audio, subs, height, variant_label, protocol, container, source_player, created_at, verified_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    item_id,
-                    job.key.series_id,
-                    job.key.number,
-                    spec.locator.backend,
-                    spec.locator.key,
-                    ItemStatus.AVAILABLE.value,
-                    spec.size_bytes,
-                    spec.audio,
-                    spec.subs,
-                    spec.height,
-                    spec.variant_label,
-                    spec.protocol,
-                    spec.container,
-                    spec.source_player,
-                    now,
-                    now,
-                ),
+            item_id = self._item_for(conn, job, spec)
+            details = (
+                spec.size_bytes,
+                spec.audio,
+                spec.subs,
+                spec.height,
+                spec.variant_label,
+                spec.protocol,
+                spec.container,
+                spec.source_player,
             )
+            if item_id is None:
+                item_id = uuid.uuid4().hex
+                conn.execute(
+                    """INSERT INTO offline_item (id, series_id, number, storage_backend, storage_key, status, size_bytes,
+                         audio, subs, height, variant_label, protocol, container, source_player, created_at, verified_at)
+                       VALUES (?, ?, ?, ?, ?, 'available', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (item_id, job.key.series_id, job.key.number, spec.locator.backend, spec.locator.key, *details, now, now),
+                )
+            else:
+                conn.execute(
+                    """UPDATE offline_item SET status = 'available', size_bytes = ?, audio = ?, subs = ?, height = ?,
+                         variant_label = ?, protocol = ?, container = ?, source_player = ?, verified_at = ?,
+                         revision = revision + 1
+                       WHERE id = ?""",
+                    (*details, now, item_id),
+                )
             self._set(
                 conn,
                 job.id,
@@ -483,11 +510,12 @@ class SqliteDownloadQueue:
             job = self._by_attempt(conn, attempt_id)
             if job is None:
                 return False
-            if job.state is JobState.STOPPING:
-                # the attempt ended on its own, but what the user or scheduler asked for still wins
+            if job.stop_target in (StopTarget.PAUSED, StopTarget.CANCELLED):
+                # the attempt ended on its own, but the user's pause or cancel still wins
                 self._settle(conn, job, error)
                 return True
-            check_transition(job.id, job.state, state)
+            if state not in TRANSITIONS[job.state] and job.state is not JobState.STOPPING:
+                return False
             code, params = codec.error_columns(error)
             self._set(
                 conn,
@@ -498,14 +526,17 @@ class SqliteDownloadQueue:
                 last_error_code=code,
                 last_error_params=params,
                 last_error_at=self._db.now() if error else None,
+                stop_target=None,
+                stop_wait_reason=None,
             )
             return True
 
     def wait(self, attempt_id: str, reason: WaitReason, error: JobError | None = None) -> bool:
-        """The executor stopped by itself and needs a condition: network, interaction, storage or a source decision."""
+        """The executor ended its attempt needing a condition; over a scheduler's stop request its own reason wins."""
         return self._end_attempt(attempt_id, JobState.WAITING, error, reason)
 
     def fail(self, attempt_id: str, error: JobError) -> bool:
+        """Like ``wait``: only a user's pause or cancel requested meanwhile overrides the failure."""
         return self._end_attempt(attempt_id, JobState.FAILED, error, None)
 
     def recover_interrupted(self) -> Recovery:

@@ -7,7 +7,8 @@ TRANSITIONS: dict[JobState, frozenset[JobState]] = {
     JobState.QUEUED: frozenset({JobState.RUNNING, JobState.PAUSED, JobState.WAITING, JobState.CANCELLED}),
     JobState.RUNNING: frozenset({JobState.STOPPING, JobState.FINALIZING, JobState.WAITING, JobState.FAILED, JobState.QUEUED}),
     JobState.STOPPING: frozenset({JobState.PAUSED, JobState.CANCELLED, JobState.WAITING, JobState.QUEUED}),
-    JobState.FINALIZING: frozenset({JobState.COMPLETED, JobState.FAILED}),
+    # waiting: publishing the file hit a condition such as a full disk; the target stays recorded
+    JobState.FINALIZING: frozenset({JobState.COMPLETED, JobState.FAILED, JobState.WAITING}),
     JobState.PAUSED: frozenset({JobState.QUEUED, JobState.CANCELLED}),
     JobState.WAITING: frozenset({JobState.QUEUED, JobState.PAUSED, JobState.CANCELLED}),
     JobState.FAILED: frozenset({JobState.QUEUED, JobState.CANCELLED}),

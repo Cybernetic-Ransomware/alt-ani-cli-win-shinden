@@ -3,7 +3,6 @@
 import sqlite3
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
 from pathlib import Path
 
 from alt_ani_core.history.database import Database, upsert_series
@@ -12,10 +11,6 @@ from alt_ani_core.history.store import DownloadEntry, LegacySeries, WatchEntry
 from alt_ani_core.models import SeriesRef
 
 __all__ = ["SCHEMA_VERSION", "SqliteHistory"]
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 class SqliteHistory:
@@ -43,11 +38,11 @@ class SqliteHistory:
         with self._write() as conn:
             upsert_series(conn, series)
             conn.execute(
-                "UPDATE series SET last_ep = ?, watch_updated_at = ? WHERE id = ?", (float(episode), _now(), series.id)
+                "UPDATE series SET last_ep = ?, watch_updated_at = ? WHERE id = ?", (float(episode), self._db.now(), series.id)
             )
 
     def record_download(self, series: SeriesRef, episode: float) -> None:
-        now = _now()
+        now = self._db.now()
         with self._write() as conn:
             upsert_series(conn, series)
             conn.execute(

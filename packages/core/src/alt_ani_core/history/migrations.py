@@ -2,7 +2,7 @@
 
 SCHEMA_VERSION = 2
 
-_OPEN_JOB = "state NOT IN ('completed','cancelled')"
+_OPEN_JOB = "state NOT IN ('cancelled','completed')"
 _WAIT_REASONS = "('network','interaction','storage','source_decision')"
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
