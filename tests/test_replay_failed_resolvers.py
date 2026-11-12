@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from alt_ani_core.errors import AntiBotError, NoStreamError, ShindenXhrError
 from alt_ani_core.models import ExtractionFailure
 from alt_ani_core.shinden.xhr import BACKEND_API4, EpisodeXhr

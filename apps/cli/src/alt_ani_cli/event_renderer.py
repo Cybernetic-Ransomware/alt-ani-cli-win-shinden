@@ -3,11 +3,10 @@
 import shutil
 from contextlib import AbstractContextManager
 
-from alt_ani_core import events as ev
-from alt_ani_core.services.episode_session import PHASE_ANTIBOT
-
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.ui import progress
+from alt_ani_core import events as ev
+from alt_ani_core.services.episode_session import PHASE_ANTIBOT
 
 _PROG = CONTENT["progress"]
 _DL = CONTENT["download"]

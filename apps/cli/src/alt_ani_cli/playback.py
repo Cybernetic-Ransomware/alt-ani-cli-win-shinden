@@ -1,14 +1,13 @@
 """Desktop playback reporting: what counts as started, failed or confirmed is a property of mpv/VLC, not of the engine."""
 
-from alt_ani_core import diagnostics
-from alt_ani_core.models import EmbedURL, Stream, StreamVariant
-from alt_ani_core.redaction import redact_headers, redact_text
-
 from alt_ani_cli.args import CliOptions
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.player import mpv
 from alt_ani_cli.player.runner import PlayResult
 from alt_ani_cli.ui import progress
+from alt_ani_core import diagnostics
+from alt_ani_core.models import EmbedURL, Stream, StreamVariant
+from alt_ani_core.redaction import redact_headers, redact_text
 
 _PROG = CONTENT["progress"]
 

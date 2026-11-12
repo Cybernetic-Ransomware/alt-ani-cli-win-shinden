@@ -50,16 +50,23 @@ class GuardedSession:
     def get(
         self, url: str, *, headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None
     ) -> HttpResponse:
-        self._check()
-        response = self._inner.get(url, headers=headers, params=params)
-        self._check()
-        return response
+        return self._send(lambda: self._inner.get(url, headers=headers, params=params))
 
     def post(self, url: str, *, headers: Mapping[str, str] | None = None, json: Any = None, data: Any = None) -> HttpResponse:
+        return self._send(lambda: self._inner.post(url, headers=headers, json=json, data=data))
+
+    def _send(self, request: Callable[[], HttpResponse]) -> HttpResponse:
         self._check()
-        response = self._inner.post(url, headers=headers, json=json, data=data)
+        try:
+            response = request()
+        except Exception as exc:
+            failure = exc
+        else:
+            self._check()
+            return response
+        # checked outside the except block, so the interrupt carries no transport error (and its URL) as context
         self._check()
-        return response
+        raise failure
 
     def close(self) -> None:
         if self._owns_inner:

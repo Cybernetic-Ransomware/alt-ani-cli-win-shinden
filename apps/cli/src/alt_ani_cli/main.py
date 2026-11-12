@@ -5,6 +5,14 @@ import sys
 from collections.abc import Sequence
 from io import TextIOWrapper
 
+from alt_ani_cli import __version__, legacy_history, noninteractive, paths
+from alt_ani_cli.args import parse_args
+from alt_ani_cli.content import CONTENT, error_text
+from alt_ani_cli.event_renderer import ConsoleEvents
+from alt_ani_cli.flow import handlers as flow
+from alt_ani_cli.legacy_history import ImportStatus
+from alt_ani_cli.paths import CliPaths
+from alt_ani_cli.ui import progress
 from alt_ani_core import diagnostics
 from alt_ani_core.config import SHINDEN_BASE
 from alt_ani_core.errors import (
@@ -25,15 +33,6 @@ from alt_ani_core.services.engine import Engine
 from alt_ani_core.shinden import api as shinden_api
 from alt_ani_core.transport.api import HttpStatusError, TransportError
 from alt_ani_core.transport.curl import CurlTransport
-
-from alt_ani_cli import __version__, legacy_history, noninteractive, paths
-from alt_ani_cli.args import parse_args
-from alt_ani_cli.content import CONTENT, error_text
-from alt_ani_cli.event_renderer import ConsoleEvents
-from alt_ani_cli.flow import handlers as flow
-from alt_ani_cli.legacy_history import ImportStatus
-from alt_ani_cli.paths import CliPaths
-from alt_ani_cli.ui import progress
 
 _PROG = CONTENT["progress"]
 

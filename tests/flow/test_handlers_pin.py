@@ -1,16 +1,16 @@
 from unittest.mock import patch
 
 import pytest
-from alt_ani_core.errors import DownloadTargetError, SourcesExhaustedError
-from alt_ani_core.history.sqlite import SqliteHistory
-from alt_ani_core.models import EpisodeListing, PlayerEntry
-from alt_ani_core.rules.pin import player_fingerprint
-from alt_ani_core.testing import make_stream
 
 from alt_ani_cli.args import CliOptions
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.flow.handlers import HANDLERS, handle_run_action
 from alt_ani_cli.flow.state import FlowState, Screen
+from alt_ani_core.errors import DownloadTargetError, SourcesExhaustedError
+from alt_ani_core.history.sqlite import SqliteHistory
+from alt_ani_core.models import EpisodeListing, PlayerEntry
+from alt_ani_core.rules.pin import player_fingerprint
+from alt_ani_core.testing import make_stream
 
 from .support import (
     EP1,

@@ -19,6 +19,8 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
+from alt_ani_cli import paths
+from alt_ani_cli.ui import progress
 from alt_ani_core import extract
 from alt_ani_core.diagnostics import host_of_url
 from alt_ani_core.errors import AntiBotError, NoStreamError, ShindenError, ShindenXhrError
@@ -29,9 +31,6 @@ from alt_ani_core.shinden import xhr as shinden_xhr
 from alt_ani_core.transport import clearance
 from alt_ani_core.transport.api import HttpSession, Transport, TransportError
 from alt_ani_core.transport.curl import CurlTransport
-
-from alt_ani_cli import paths
-from alt_ani_cli.ui import progress
 
 _RESOLVE_DIAG_FIELDS = (
     "layer",

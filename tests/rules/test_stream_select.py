@@ -1,6 +1,7 @@
 """Quality selection on Stream.select: the chosen variant carries its own URL, headers, protocol and container."""
 
 import pytest
+
 from alt_ani_core.models import Stream, StreamProtocol, StreamVariant
 from alt_ani_core.testing import make_stream
 

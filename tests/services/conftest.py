@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+
 from alt_ani_core import diagnostics
 from alt_ani_core.services import episode_session
 from alt_ani_core.testing import FakeTransport, make_stream

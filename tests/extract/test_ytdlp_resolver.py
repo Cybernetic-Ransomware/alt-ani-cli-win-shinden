@@ -4,13 +4,14 @@ import io
 from unittest.mock import MagicMock, patch
 
 import pytest
+from yt_dlp.networking import Response
+from yt_dlp.networking.exceptions import HTTPError, TransportError
+from yt_dlp.utils import DownloadError, ExtractorError, RegexNotFoundError, UnsupportedError
+
 from alt_ani_core.config import USER_AGENT, ExtractOptions
 from alt_ani_core.errors import OperationCancelled, StaleSessionError
 from alt_ani_core.extract.ytdlp_resolver import _classify_ytdlp_error, resolve
 from alt_ani_core.models import StreamProtocol
-from yt_dlp.networking import Response
-from yt_dlp.networking.exceptions import HTTPError, TransportError
-from yt_dlp.utils import DownloadError, ExtractorError, RegexNotFoundError, UnsupportedError
 
 _EMBED = "https://example.com/embed/abc"
 _REFERER = "https://shinden.pl/"

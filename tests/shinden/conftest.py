@@ -2,6 +2,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
 from alt_ani_core.transport.api import HttpStatusError
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "shinden"

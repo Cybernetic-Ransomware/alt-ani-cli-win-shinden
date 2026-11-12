@@ -1,13 +1,13 @@
 from unittest.mock import patch
 
 import pytest
-from alt_ani_core.models import EpisodeListing
 
 from alt_ani_cli.args import CliOptions
 from alt_ani_cli.flow import handlers
 from alt_ani_cli.flow.handlers import HANDLERS, run_interactive
 from alt_ani_cli.flow.state import FlowState, Screen
 from alt_ani_cli.player.runner import PlayResult
+from alt_ani_core.models import EpisodeListing
 
 from .support import (
     EMBED,
@@ -70,6 +70,35 @@ class TestInteractiveFlow:
         assert mock_start.call_count == 2
         assert mock_series.call_args.args[0]
         assert [request.params for request in transport.requests] == [{"search": "fate"}]
+
+    @pytest.mark.parametrize(
+        ("options", "message"),
+        [
+            (CliOptions(resume=True, download=True), "download_history_empty"),
+            (CliOptions(resume=True), "history_empty"),
+        ],
+    )
+    def test_resume_flag_with_empty_history_falls_back_to_the_menu_once(self, make_engine, cli_paths, options, message):
+        """-c/-c -d with nothing to resume: one error, then the start menu (ESC exits) instead of an endless loop."""
+        with (
+            patch("alt_ani_cli.ui.menus.select_start_mode", return_value=None) as mock_start,
+            patch("alt_ani_cli.ui.progress.error") as mock_err,
+        ):
+            run_interactive(options, make_engine(), cli_paths)
+        mock_err.assert_called_once_with(handlers._PROG[message])
+        mock_start.assert_called_once()
+
+    def test_esc_from_series_pick_of_a_query_flag_shows_the_menu(self, make_engine, cli_paths, transport, shinden_html):
+        transport.route(lambda request: request.url == _SEARCH_URL, shinden_html("search_frieren.html"))
+        with (
+            patch("alt_ani_cli.ui.menus.select_start_mode", return_value=None) as mock_start,
+            patch("alt_ani_cli.flow.handlers._prefetch_series_metadata", return_value={}),
+            patch("alt_ani_cli.ui.menus.select_series_once", return_value=("back", None)) as mock_series,
+        ):
+            run_interactive(CliOptions(query=["frieren"]), make_engine(), cli_paths)
+        mock_series.assert_called_once()
+        mock_start.assert_called_once()
+        assert len(transport.requests) == 1
 
     def test_quality_option_seeds_the_cached_quality(self, make_engine, cli_paths):
         captured = {}

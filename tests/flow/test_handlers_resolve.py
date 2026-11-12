@@ -1,6 +1,11 @@
 from unittest.mock import patch
 
 import pytest
+
+from alt_ani_cli.args import CliOptions
+from alt_ani_cli.content import CONTENT
+from alt_ani_cli.flow.handlers import HANDLERS
+from alt_ani_cli.flow.state import Screen
 from alt_ani_core.config import ExtractOptions
 from alt_ani_core.errors import (
     AntiBotError,
@@ -12,11 +17,6 @@ from alt_ani_core.errors import (
 from alt_ani_core.events import SourceAttemptFailed
 from alt_ani_core.models import FallbackPolicy
 from alt_ani_core.testing import make_stream
-
-from alt_ani_cli.args import CliOptions
-from alt_ani_cli.content import CONTENT
-from alt_ani_cli.flow.handlers import HANDLERS
-from alt_ani_cli.flow.state import Screen
 
 from .support import (
     EMBED,

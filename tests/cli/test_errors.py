@@ -4,6 +4,9 @@ import json
 import sqlite3
 
 import pytest
+
+from alt_ani_cli import legacy_history, paths
+from alt_ani_cli.content import error_text
 from alt_ani_core.errors import (
     AccessBlockedError,
     DownloadFailedError,
@@ -16,9 +19,6 @@ from alt_ani_core.history.sqlite import SCHEMA_VERSION, SqliteHistory
 from alt_ani_core.messages import MESSAGES
 from alt_ani_core.testing import FakeResponse
 from alt_ani_core.transport.api import HttpStatusError, NetworkError
-
-from alt_ani_cli import legacy_history, paths
-from alt_ani_cli.content import error_text
 
 from .support import REF, SERIES_URL, episode, player
 

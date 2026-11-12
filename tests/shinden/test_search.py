@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+
 from alt_ani_core.config import SHINDEN_BASE
 from alt_ani_core.errors import ParseError
 from alt_ani_core.shinden.search import _parse_results, search_series

@@ -131,7 +131,7 @@ def run(
     events: EventSink = NULL_SINK,
     cancel: CancelToken = NEVER,
 ) -> bool:
-    """Returns False when an existing final was kept; without confirm_overwrite an existing final is never replaced."""
+    """Returns False when the final was kept; the post-yt-dlp cancel check is the commit point for replacing it."""
     from yt_dlp import YoutubeDL
     from yt_dlp.utils import DownloadError
 
@@ -178,6 +178,7 @@ def run(
                 events.emit(LegacyPartMoved(path=str(backup)))
             cancel.raise_if_cancelled()
             ydl.process_ie_result(info, download=True)
+            cancel.raise_if_cancelled()
     except DownloadError:
         failed = True
     except EngineInterrupt, KeyboardInterrupt:
@@ -194,6 +195,7 @@ def run(
         gc.collect()
         if staging is not None and final_path is not None:
             _discard_staging(final_path)
+        cancel.raise_if_cancelled()
         raise _failed()
 
     if staging is not None:

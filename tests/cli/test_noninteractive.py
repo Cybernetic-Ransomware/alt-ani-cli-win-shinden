@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import quote
 
 import pytest
+
+from alt_ani_cli.noninteractive import run
 from alt_ani_core import diagnostics
 from alt_ani_core.config import GUEST_AUTH, SHINDEN_API_BASE, SHINDEN_XHR_BASE, ExtractOptions
 from alt_ani_core.errors import DownloadFailedError, FilterMismatchError, IncompleteEpisodeListError, NoStreamError
@@ -14,8 +16,6 @@ from alt_ani_core.models import ExtractionFailure, SeriesHit
 from alt_ani_core.services.engine import Engine
 from alt_ani_core.testing import FakeResponse, InMemoryHistory, make_stream
 from alt_ani_core.transport.api import NetworkError, TransportTimeout
-
-from alt_ani_cli.noninteractive import run
 
 from .support import REF, SERIES_URL, TEST_TOKEN, episode, episodes_html, extracted_urls, options, player
 

@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import quote
 
 import pytest
+
+from alt_ani_cli.event_renderer import ConsoleEvents
 from alt_ani_core.config import GUEST_AUTH, SHINDEN_API_BASE, SHINDEN_XHR_BASE
 from alt_ani_core.errors import OperationCancelled, ShindenXhrError
 from alt_ani_core.events import SourceAttemptFailed
@@ -17,8 +19,6 @@ from alt_ani_core.shinden.api import XhrOutcome, resolve_embed, stop_message, xh
 from alt_ani_core.shinden.xhr import BACKEND_API4, BACKEND_NEW, EpisodeXhr, EpisodeXhrContext
 from alt_ani_core.testing import RecordingCancel
 from alt_ani_core.transport.api import NetworkError, TransportError, TransportTimeout
-
-from alt_ani_cli.event_renderer import ConsoleEvents
 
 from .conftest import EPISODE_URL, TRAP_ID
 

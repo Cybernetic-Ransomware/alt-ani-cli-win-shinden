@@ -3,6 +3,7 @@ import threading
 from contextlib import closing
 
 import pytest
+
 from alt_ani_core.errors import HistoryVersionError
 from alt_ani_core.history.sqlite import SCHEMA_VERSION, SqliteHistory
 from alt_ani_core.history.store import LegacySeries

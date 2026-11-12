@@ -3,6 +3,8 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from curl_cffi.requests import exceptions as cffi_exceptions
+
 from alt_ani_core.transport.api import (
     EXTRACTOR_PROFILE,
     DecodeError,
@@ -13,7 +15,6 @@ from alt_ani_core.transport.api import (
     TransportTimeout,
 )
 from alt_ani_core.transport.curl import CurlResponse, CurlSession, CurlTransport
-from curl_cffi.requests import exceptions as cffi_exceptions
 
 _SECRET = "SECRETTOKEN123"
 _URL = f"https://shinden.pl/xhr/42/player_load?auth={_SECRET}"

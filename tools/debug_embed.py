@@ -3,8 +3,9 @@
 import re
 import sys
 
-from alt_ani_core.config import USER_AGENT
 from curl_cffi import requests as cffi_requests
+
+from alt_ani_core.config import USER_AGENT
 
 embed_url = sys.argv[1]
 base = embed_url.split("/e/")[0]

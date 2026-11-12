@@ -4,9 +4,8 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
-from alt_ani_core.models import StreamVariant
-
 from alt_ani_cli.player import build_command
+from alt_ani_core.models import StreamVariant
 
 
 @dataclass

@@ -4,11 +4,11 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from alt_ani_core.history.sqlite import SqliteHistory
-from alt_ani_core.models import SeriesRef
 
 from alt_ani_cli import legacy_history
 from alt_ani_cli.legacy_history import ImportReport, ImportStatus, import_legacy
+from alt_ani_core.history.sqlite import SqliteHistory
+from alt_ani_core.models import SeriesRef
 
 _WATCHED = {
     "title": "Watched Show",

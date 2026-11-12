@@ -3,11 +3,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from alt_ani_core.config import ExtractOptions
-from alt_ani_core.models import SourceFilter
-
 from alt_ani_cli import __version__
 from alt_ani_cli.content import CONTENT
+from alt_ani_core.config import ExtractOptions
+from alt_ani_core.models import SourceFilter
 
 _CLI = CONTENT["cli"]
 

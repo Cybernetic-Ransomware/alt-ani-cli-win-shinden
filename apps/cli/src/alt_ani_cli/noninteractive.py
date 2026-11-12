@@ -2,19 +2,18 @@
 
 import sys
 
-from alt_ani_core import diagnostics, download
-from alt_ani_core.errors import FilterMismatchError, IncompleteEpisodeListError, SourcesExhaustedError
-from alt_ani_core.models import FallbackPolicy, Purpose, SeriesRef
-from alt_ani_core.rules.episode_range import parse_range
-from alt_ani_core.services.engine import Engine
-from alt_ani_core.shinden import episode as shinden_episode
-
 from alt_ani_cli import playback
 from alt_ani_cli.args import CliOptions, missing_input_error
 from alt_ani_cli.content import CONTENT, EXCEPTIONS
 from alt_ani_cli.paths import CliPaths
 from alt_ani_cli.player import runner as player_runner
 from alt_ani_cli.ui import progress
+from alt_ani_core import diagnostics, download
+from alt_ani_core.errors import FilterMismatchError, IncompleteEpisodeListError, SourcesExhaustedError
+from alt_ani_core.models import FallbackPolicy, Purpose, SeriesRef
+from alt_ani_core.rules.episode_range import parse_range
+from alt_ani_core.services.engine import Engine
+from alt_ani_core.shinden import episode as shinden_episode
 
 _PROG = CONTENT["progress"]
 

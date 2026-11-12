@@ -3,11 +3,11 @@
 import dataclasses
 
 import pytest
-from alt_ani_core.config import DEFAULT_ANTIBOT_DELAY_SEC, AccessConfig, EngineConfig, ExtractOptions
-from alt_ani_core.models import SourceFilter
 
 from alt_ani_cli import paths
 from alt_ani_cli.args import CliOptions, build_parser, parse_args
+from alt_ani_core.config import DEFAULT_ANTIBOT_DELAY_SEC, AccessConfig, EngineConfig, ExtractOptions
+from alt_ani_core.models import SourceFilter
 
 
 @pytest.mark.unit

@@ -5,15 +5,15 @@ import json
 from unittest.mock import patch
 
 import pytest
+
+from alt_ani_cli.args import CliOptions
+from alt_ani_cli.flow.handlers import handle_episode_dispatch, handle_resolve_stream
+from alt_ani_cli.flow.state import BACK, FlowState, Screen
 from alt_ani_core.errors import NoStreamError
 from alt_ani_core.models import EpisodeRow, ExtractionFailure, PlayerEntry, SeriesRef
 from alt_ani_core.rules.health import HostState, ResolverHealth, Signal
 from alt_ani_core.services.episode_session import EpisodeSession
 from alt_ani_core.testing import make_stream
-
-from alt_ani_cli.args import CliOptions
-from alt_ani_cli.flow.handlers import handle_episode_dispatch, handle_resolve_stream
-from alt_ani_cli.flow.state import BACK, FlowState, Screen
 
 _SERIES_REF = SeriesRef(id="1", slug="fate", title="Fate", url="https://shinden.pl/series/1-fate")
 _EP1 = EpisodeRow(number=1.0, title="Ep 1", url="https://shinden.pl/episode/1-fate/view/101")

@@ -191,13 +191,20 @@ def resolve(
     options: ExtractOptions | None = None,
     on_fallback: Callable[[str, str, str], None] | None = None,
     cancel: CancelToken = NEVER,
+    check: Callable[[], None] | None = None,
 ) -> Stream:
     """Dispatch to the right extractor based on the embed URL hostname.
 
     ``on_fallback(event, host, exc_text)`` is invoked before each fallback attempt.
-    EngineInterrupt (cancellation, stale session) is never followed by a fallback attempt.
+    ``check`` (raises EngineInterrupt once stale) runs with ``cancel`` before every attempt, so no stale fallback starts.
     """
-    cancel.raise_if_cancelled()
+
+    def ensure_live() -> None:
+        cancel.raise_if_cancelled()
+        if check is not None:
+            check()
+
+    ensure_live()
     embed_url = _normalize_url(embed_url)
     host = urlparse(embed_url).netloc.lower()
 
@@ -222,7 +229,7 @@ def resolve(
         try:
             return resolver(embed_url, referer, transport)
         except Exception as exc:
-            cancel.raise_if_cancelled()
+            ensure_live()
             if on_fallback:
                 on_fallback("extractor_fallback", host, _exc_text(exc, embed_url, host))
             try:
@@ -238,7 +245,7 @@ def resolve(
         return jwplayer.resolve(embed_url, referer, transport)
     except Exception as exc:
         jwplayer_exc = exc
-        cancel.raise_if_cancelled()
+        ensure_live()
         if on_fallback:
             on_fallback("jwplayer_fallback", host, _exc_text(exc, embed_url, host))
 

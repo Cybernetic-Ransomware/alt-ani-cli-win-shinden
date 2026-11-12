@@ -2,11 +2,10 @@ import os
 import shutil
 import sys
 
+from alt_ani_cli.content import EXCEPTIONS
 from alt_ani_core.config import USER_AGENT
 from alt_ani_core.errors import PlayerNotFoundError
 from alt_ani_core.models import StreamVariant
-
-from alt_ani_cli.content import EXCEPTIONS
 
 
 def build(stream: StreamVariant, *, title: str) -> list[str]:

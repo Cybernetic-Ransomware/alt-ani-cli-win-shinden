@@ -3,8 +3,6 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from alt_ani_core.models import EpisodeRow, PlayerEntry, PlayerSource, RelatedSeries, SeriesHit, SeriesRef
-from alt_ani_core.testing import make_stream
 
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.ui.menus import (
@@ -27,6 +25,8 @@ from alt_ani_cli.ui.menus import (
     select_series_once,
     select_start_mode,
 )
+from alt_ani_core.models import EpisodeRow, PlayerEntry, PlayerSource, RelatedSeries, SeriesHit, SeriesRef
+from alt_ani_core.testing import make_stream
 
 
 @pytest.mark.unit

@@ -5,12 +5,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 
+from alt_ani_cli.args import CliOptions
 from alt_ani_core.config import SHINDEN_API_BASE, SHINDEN_XHR_BASE
 from alt_ani_core.models import EpisodeRow, PlayerEntry, SeriesRef
 from alt_ani_core.services.engine import Engine
 from alt_ani_core.testing import FakeRequest, FakeTransport, Reply, make_stream
-
-from alt_ani_cli.args import CliOptions
 
 SERIES_URL = "https://shinden.pl/series/1-fate"
 REF = SeriesRef(id="1", slug="fate", title="Fate", url=SERIES_URL)

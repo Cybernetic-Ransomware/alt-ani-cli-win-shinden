@@ -5,9 +5,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from platformdirs import user_cache_dir, user_data_dir, user_videos_dir
+
 from alt_ani_core.config import DEFAULT_ANTIBOT_DELAY_SEC, AccessConfig, EngineConfig
 from alt_ani_core.shinden import xhr as shinden_xhr
-from platformdirs import user_cache_dir, user_data_dir, user_videos_dir
 
 APP = "alt-ani-cli"
 

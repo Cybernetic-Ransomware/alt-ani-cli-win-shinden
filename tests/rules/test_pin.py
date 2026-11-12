@@ -3,6 +3,7 @@
 import dataclasses
 
 import pytest
+
 from alt_ani_core.models import PlayerEntry
 from alt_ani_core.rules.pin import PlayerFingerprint, find_pinned, player_fingerprint, source_identity
 

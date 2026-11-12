@@ -3,6 +3,7 @@
 import base64
 
 import pytest
+
 from alt_ani_core.extract.mp4upload import resolve
 from alt_ani_core.models import StreamProtocol
 from alt_ani_core.transport.api import EXTRACTOR_PROFILE

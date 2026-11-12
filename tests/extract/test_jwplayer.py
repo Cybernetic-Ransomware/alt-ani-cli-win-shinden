@@ -1,6 +1,7 @@
 """Tests for Dean Edwards p,a,c,k,e,d packer decoder in jwplayer extractor."""
 
 import pytest
+
 from alt_ani_core.extract.jwplayer import _best_hls_url, _decode_base_n, _normalize_stream_url, resolve, unpack_packer
 from alt_ani_core.models import StreamProtocol
 from alt_ani_core.transport.api import EXTRACTOR_PROFILE

@@ -1,15 +1,15 @@
 from unittest.mock import patch
 
 import pytest
-from alt_ani_core.errors import DownloadFailedError, DownloadTargetError
-from alt_ani_core.models import EpisodeListing
-from alt_ani_core.testing import make_stream
 
 from alt_ani_cli.args import CliOptions
 from alt_ani_cli.content import CONTENT, EXCEPTIONS_PL
 from alt_ani_cli.flow.handlers import HANDLERS, handle_run_action
 from alt_ani_cli.flow.state import Screen
 from alt_ani_cli.player.runner import PlayResult
+from alt_ani_core.errors import DownloadFailedError, DownloadTargetError
+from alt_ani_core.models import EpisodeListing
+from alt_ani_core.testing import make_stream
 
 from .support import (
     EMBED,

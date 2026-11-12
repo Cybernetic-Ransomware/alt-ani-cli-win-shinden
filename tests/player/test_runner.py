@@ -3,9 +3,9 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from alt_ani_core.models import StreamProtocol, StreamVariant
 
 from alt_ani_cli.player.runner import play
+from alt_ani_core.models import StreamProtocol, StreamVariant
 
 
 def _stream():

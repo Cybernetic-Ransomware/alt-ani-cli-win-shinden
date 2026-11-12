@@ -2,14 +2,14 @@ import logging
 import socket
 
 import pytest
-from alt_ani_core import diagnostics
-from alt_ani_core.config import EngineConfig
-from alt_ani_core.services.engine import Engine
-from alt_ani_core.testing import FakeTransport, InMemoryHistory, RecordingSink
 from curl_cffi.curl import Curl
 
 from alt_ani_cli import paths
 from alt_ani_cli.paths import CliPaths
+from alt_ani_core import diagnostics
+from alt_ani_core.config import EngineConfig
+from alt_ani_core.services.engine import Engine
+from alt_ani_core.testing import FakeTransport, InMemoryHistory, RecordingSink
 
 
 @pytest.fixture(autouse=True)

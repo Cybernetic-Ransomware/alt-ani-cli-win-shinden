@@ -1,4 +1,5 @@
 import pytest
+
 from alt_ani_core.config import SHINDEN_API_BASE, SHINDEN_XHR_BASE
 from alt_ani_core.errors import ParseError, ShindenXhrError, SourcesExhaustedError
 from alt_ani_core.events import SourceAttemptFailed, XhrFallback

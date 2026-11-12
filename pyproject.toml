@@ -55,6 +55,10 @@ docstring-code-line-length = 128
 [tool.ruff.lint]
 select = ["E", "F", "UP", "B", "SIM", "I"]
 
+# Explicit, because auto-detection depends on which package directories exist locally and made CI sort differently.
+[tool.ruff.lint.isort]
+known-first-party = ["alt_ani_core", "alt_ani_cli", "alt_ani_bridge"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["F401", "F841", "E501"]
 "test_*.py" = ["F401", "F841"]

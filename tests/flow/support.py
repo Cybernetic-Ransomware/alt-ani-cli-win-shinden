@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from alt_ani_cli import paths
+from alt_ani_cli.args import CliOptions
+from alt_ani_cli.flow.handlers import handle_run_action
+from alt_ani_cli.flow.state import FlowState
 from alt_ani_core.config import ExtractOptions
 from alt_ani_core.errors import DownloadFailedError, ReloadLimitError, ShindenXhrError
 from alt_ani_core.models import (
@@ -24,11 +28,6 @@ from alt_ani_core.models import (
 from alt_ani_core.services.engine import Engine
 from alt_ani_core.services.episode_session import EpisodeSession
 from alt_ani_core.testing import FakeRequest, FakeResponse, FakeTransport, InMemoryHistory, RecordingSink, make_stream
-
-from alt_ani_cli import paths
-from alt_ani_cli.args import CliOptions
-from alt_ani_cli.flow.handlers import handle_run_action
-from alt_ani_cli.flow.state import FlowState
 
 SERIES_REF = SeriesRef(id="1", slug="fate", title="Fate", url="http://shinden.pl/series/1-fate")
 SERIES_HIT = SeriesHit(id="1", slug="fate", title="Fate", url="http://shinden.pl/series/1-fate")

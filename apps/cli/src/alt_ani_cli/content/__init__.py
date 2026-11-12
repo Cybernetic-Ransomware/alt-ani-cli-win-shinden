@@ -1,6 +1,7 @@
 from importlib import resources
 
 import yaml
+
 from alt_ani_core.errors import ShindenError
 from alt_ani_core.messages import MESSAGES
 from alt_ani_core.redaction import redact_text

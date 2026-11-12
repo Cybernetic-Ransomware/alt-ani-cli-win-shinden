@@ -3,6 +3,7 @@ import threading
 from unittest.mock import patch
 
 import pytest
+
 from alt_ani_core.errors import NoStreamError, ShindenXhrError
 from alt_ani_core.services import episode_session
 from alt_ani_core.testing import FakeResponse, make_stream
@@ -177,8 +178,8 @@ class TestEpisodeSessions:
 
     def test_close_session_forgets_it(self, client):
         session_id, _sources = _open(client)
-        assert client.data("close_session", session_id=session_id) == {"closed": True}
-        assert client.data("close_session", session_id=session_id) == {"closed": False}
+        assert client.data("close_session", session_id=session_id) == {"closed": True, "cancelled_operations": 0}
+        assert client.data("close_session", session_id=session_id) == {"closed": False, "cancelled_operations": 0}
         assert client.error("select", session_id=session_id)["code"] == "unknown_session"
 
     def test_set_access_drops_sessions(self, client):
@@ -256,11 +257,156 @@ class TestOperations:
         thread.join(5)
 
         assert closed == {"ok": True, "data": {"cancelled_operations": 1, "closed_sessions": 1}}
-        assert replies[0]["error"]["code"] in {"cancelled", "stale_session"}
+        assert replies[0]["error"]["code"] == "session_closed"
+        assert replies[0]["error"]["params"]["closed_by"] == "close_engine"
         extract_ok.assert_not_called()
         assert client.error("select", session_id=session_id)["code"] == "unknown_engine"
         assert client.close()["error"]["code"] == "unknown_engine"
         assert all(session.closed for session in client.transport.sessions)
+
+
+class _ExtractGate:
+    """The extractor of every resolve parks here until released, as a slow embed host would."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Semaphore(0)
+        self.release = threading.Event()
+
+    def __call__(self, *_args, **_kwargs):
+        self.entered.release()
+        assert self.release.wait(5), "the extractor was never released"
+        return STREAM
+
+    def wait_entered(self, count: int = 1) -> None:
+        for _ in range(count):
+            assert self.entered.acquire(timeout=5), "the extractor was never reached"
+
+
+def _in_thread(call) -> tuple[threading.Thread, list]:
+    replies: list = []
+    thread = threading.Thread(target=lambda: replies.append(call()), daemon=True)
+    thread.start()
+    return thread, replies
+
+
+class TestCloseSessionDuringOperation:
+    @pytest.mark.parametrize("op_id", [None, "op-1"])
+    def test_resolve_finishing_after_close_is_not_a_success(self, client, op_id):
+        session_id, sources = _open(client)
+        gate = _ExtractGate()
+        payload = {"session_id": session_id, "online_id": sources[0]["online_id"]}
+        if op_id is not None:
+            payload["op_id"] = op_id
+        with patch.object(episode_session.extract, "resolve", side_effect=gate):
+            thread, replies = _in_thread(lambda: client.call("resolve", **payload))
+            gate.wait_entered()
+            closed = client.data("close_session", session_id=session_id)
+            gate.release.set()
+            thread.join(5)
+
+        assert closed == {"closed": True, "cancelled_operations": 1}
+        assert replies[0]["ok"] is False
+        assert replies[0]["error"]["code"] == "session_closed"
+        assert replies[0]["error"]["params"] == {"session_id": session_id, "closed_by": "close_session"}
+        assert "STREAMSIG" not in json.dumps(replies[0])
+        assert client.data("engine_status")["running_operations"] == 0
+
+    def test_result_computed_before_close_but_handed_back_after_is_not_a_success(self, client, extract_ok):
+        from alt_ani_bridge import bridge as bridge_module
+
+        session_id, sources = _open(client)
+        real = bridge_module.dto.resolved_stream
+
+        def close_then_convert(*args):
+            # session.resolve already returned ok; the session closes before the bridge hands the result back
+            assert client.data("close_session", session_id=session_id)["closed"] is True
+            return real(*args)
+
+        with patch.object(bridge_module.dto, "resolved_stream", side_effect=close_then_convert):
+            error = client.error("resolve", session_id=session_id, online_id=sources[0]["online_id"])
+        assert error["code"] == "session_closed"
+
+    def test_close_from_the_operations_own_event_callback_does_not_deadlock(self, tmp_path, client, extract_ok):
+        closed: list[dict] = []
+        session_ids: list[str] = []
+
+        def listener(message: str) -> None:
+            if json.loads(message)["type"] == "EmbedResolved" and not closed:
+                closed.append(client.data("close_session", session_id=session_ids[0]))
+
+        client.close()
+        client.create(listener=listener)
+        session_id, sources = _open(client)
+        session_ids.append(session_id)
+        thread, replies = _in_thread(lambda: client.call("resolve", session_id=session_id, online_id=sources[0]["online_id"]))
+        thread.join(5)
+
+        assert not thread.is_alive()
+        assert closed == [{"closed": True, "cancelled_operations": 1}]
+        assert replies[0]["error"]["code"] == "session_closed"
+
+    def test_closing_one_session_leaves_another_sessions_operation_alone(self, client):
+        first, sources = _open(client)
+        second, _ = _open(client)
+        gate = _ExtractGate()
+        online_id = sources[0]["online_id"]
+        with patch.object(episode_session.extract, "resolve", side_effect=gate):
+            t1, r1 = _in_thread(lambda: client.call("resolve", session_id=first, online_id=online_id))
+            t2, r2 = _in_thread(lambda: client.call("resolve", session_id=second, online_id=online_id))
+            gate.wait_entered(2)
+            closed = client.data("close_session", session_id=first)
+            gate.release.set()
+            t1.join(5)
+            t2.join(5)
+
+        assert closed == {"closed": True, "cancelled_operations": 1}
+        assert r1[0]["error"]["code"] == "session_closed"
+        assert r2[0]["ok"] is True
+        assert "STREAMSIG" in json.dumps(r2[0]["data"])
+        assert client.data("select", session_id=second)["candidates"]
+
+    def test_operation_finished_before_close_keeps_its_success(self, client, extract_ok):
+        session_id, sources = _open(client)
+        reply = client.call("resolve", session_id=session_id, online_id=sources[0]["online_id"])
+        assert reply["ok"] is True
+        assert client.data("close_session", session_id=session_id) == {"closed": True, "cancelled_operations": 0}
+
+    def test_operation_started_after_close_sees_an_unknown_session(self, client, extract_ok):
+        session_id, sources = _open(client)
+        client.data("close_session", session_id=session_id)
+        assert client.error("resolve", session_id=session_id, online_id=sources[0]["online_id"])["code"] == "unknown_session"
+        extract_ok.assert_not_called()
+
+    def test_operation_without_op_id_is_counted_and_cancelled_by_close_engine(self, client):
+        session_id, sources = _open(client)
+        gate = _ExtractGate()
+        with patch.object(episode_session.extract, "resolve", side_effect=gate):
+            thread, replies = _in_thread(
+                lambda: client.call("resolve", session_id=session_id, online_id=sources[0]["online_id"])
+            )
+            gate.wait_entered()
+            assert client.data("engine_status")["running_operations"] == 1
+            closed = client.close()
+            gate.release.set()
+            thread.join(5)
+
+        assert closed["data"]["cancelled_operations"] == 1
+        assert replies[0]["error"]["code"] == "session_closed"
+
+    def test_set_access_invalidates_running_session_operations(self, client):
+        session_id, sources = _open(client)
+        gate = _ExtractGate()
+        with patch.object(episode_session.extract, "resolve", side_effect=gate):
+            thread, replies = _in_thread(
+                lambda: client.call("resolve", session_id=session_id, online_id=sources[0]["online_id"])
+            )
+            gate.wait_entered()
+            assert client.data("set_access", access={"use_flaresolverr": False}) == {"dropped_sessions": 1}
+            gate.release.set()
+            thread.join(5)
+
+        assert replies[0]["error"]["code"] == "session_closed"
+        assert replies[0]["error"]["params"]["closed_by"] == "set_access"
 
 
 class TestEvents:

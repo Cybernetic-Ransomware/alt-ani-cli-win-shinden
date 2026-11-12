@@ -4,12 +4,11 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from alt_ani_cli import paths
+from alt_ani_cli.content import EXCEPTIONS_PL
 from alt_ani_core.config import USER_AGENT
 from alt_ani_core.errors import PlayerNotFoundError
 from alt_ani_core.models import StreamVariant
-
-from alt_ani_cli import paths
-from alt_ani_cli.content import EXCEPTIONS_PL
 
 
 def log_file() -> Path:

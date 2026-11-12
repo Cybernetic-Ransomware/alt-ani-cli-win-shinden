@@ -4,6 +4,11 @@ import io
 from unittest.mock import MagicMock, patch
 
 import pytest
+from yt_dlp import YoutubeDL
+from yt_dlp.networking import Response
+from yt_dlp.networking.exceptions import HTTPError as YtdlpHTTPError
+from yt_dlp.networking.exceptions import TransportError as YtdlpTransportError
+
 from alt_ani_core.cancel import CancelToken
 from alt_ani_core.config import ExtractOptions
 from alt_ani_core.errors import (
@@ -32,10 +37,6 @@ from alt_ani_core.extract.common import CATEGORY_NO_STREAM_URL, CATEGORY_PARSER_
 from alt_ani_core.models import ExtractionFailure
 from alt_ani_core.testing import FakeTransport, make_stream
 from alt_ani_core.transport.api import DecodeError, HttpStatusError, NetworkError, TransportTimeout
-from yt_dlp import YoutubeDL
-from yt_dlp.networking import Response
-from yt_dlp.networking.exceptions import HTTPError as YtdlpHTTPError
-from yt_dlp.networking.exceptions import TransportError as YtdlpTransportError
 
 _REFERER = "https://shinden.pl/"
 _STREAM = make_stream("https://example.com/video.mp4")

@@ -4,6 +4,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from yt_dlp.utils import DownloadError
+
+from alt_ani_cli.content import EXCEPTIONS_PL, error_text
 from alt_ani_core import download
 from alt_ani_core.cancel import CancelToken
 from alt_ani_core.config import USER_AGENT, YTDLP_SOCKET_TIMEOUT_SEC
@@ -11,9 +14,6 @@ from alt_ani_core.errors import DownloadFailedError, DownloadTargetError, Operat
 from alt_ani_core.events import DownloadLog, DownloadSaved, DownloadStarted, LegacyPartMoved
 from alt_ani_core.models import EpisodeRow, SeriesRef, StreamProtocol, StreamVariant
 from alt_ani_core.testing import RecordingSink
-from yt_dlp.utils import DownloadError
-
-from alt_ani_cli.content import EXCEPTIONS_PL, error_text
 
 _EP = EpisodeRow(number=1, title="Ep", url="https://shinden.pl/episode/1")
 _SERIES = SeriesRef(id="1", slug="show", title="Show", url="https://shinden.pl/series/1-show")
@@ -683,6 +683,95 @@ class TestCancellation:
         with pytest.raises(OperationCancelled):
             _run(_hls(), tmp_path, cancel=token)
         assert [p.name for p in tmp_path.iterdir()] == ["Show - ep1.mp4.part"]
+
+    def test_cancel_after_last_progress_callback_keeps_old_final(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        token = CancelToken()
+        fake_ydl.payload = _NEW
+        staged: list[bool] = []
+
+        class _PostprocessCancelYDL(_FakeYDL):
+            def process_ie_result(self, info: dict, download: bool = True) -> dict:
+                super().process_ie_result(info, download)
+                staged.append(self.final_path is not None and self.final_path.read_bytes() == _NEW)
+                token.cancel()
+                return info
+
+        sink = RecordingSink()
+        with patch("yt_dlp.YoutubeDL", _PostprocessCancelYDL), pytest.raises(OperationCancelled):
+            _overwrite(tmp_path, cancel=token, events=sink)
+        assert staged == [True]
+        assert final.read_bytes() == _OLD
+        assert [p.name for p in tmp_path.iterdir()] == [final.name]
+        assert sink.of(DownloadSaved) == []
+
+    def test_gc_runs_after_context_exit_before_post_download_cancel_cleanup(self, fake_ydl, tmp_path):
+        _existing_final(tmp_path)
+        token = CancelToken()
+        fake_ydl.payload = _NEW
+        staging = tmp_path / "Show - ep1.redownload.mp4"
+
+        class _PostprocessCancelYDL(_FakeYDL):
+            def process_ie_result(self, info: dict, download: bool = True) -> dict:
+                super().process_ie_result(info, download)
+                token.cancel()
+                return info
+
+        seen: list[tuple[bool, bool]] = []
+
+        def collect() -> int:
+            seen.append((_FakeYDL.instances[-1].exited, staging.exists()))
+            return 0
+
+        with (
+            patch("yt_dlp.YoutubeDL", _PostprocessCancelYDL),
+            patch.object(download.gc, "collect", side_effect=collect),
+            pytest.raises(OperationCancelled),
+        ):
+            _overwrite(tmp_path, cancel=token)
+        assert seen == [(True, True)]
+        assert not staging.exists()
+
+    def test_cancel_after_fresh_download_is_not_reported_as_saved(self, fake_ydl, tmp_path):
+        token = CancelToken()
+        fake_ydl.payload = _NEW
+
+        class _PostprocessCancelYDL(_FakeYDL):
+            def process_ie_result(self, info: dict, download: bool = True) -> dict:
+                super().process_ie_result(info, download)
+                token.cancel()
+                return info
+
+        sink = RecordingSink()
+        with patch("yt_dlp.YoutubeDL", _PostprocessCancelYDL), pytest.raises(OperationCancelled):
+            _run(_hls(), tmp_path, cancel=token, events=sink)
+        assert sink.of(DownloadSaved) == []
+
+    def test_downloader_error_racing_cancel_is_reported_as_cancel(self, fake_ydl, tmp_path):
+        final = _existing_final(tmp_path)
+        token = CancelToken()
+        fake_ydl.payload = _NEW
+
+        class _ErrorOnCancelYDL(_FakeYDL):
+            def process_ie_result(self, info: dict, download: bool = True) -> dict:
+                self.final_path = Path(self.prepare_filename(info))
+                self.final_path.with_name(self.final_path.name + ".part").write_bytes(b"NE")
+                token.cancel()
+                raise DownloadError("ERROR: interrupted while writing fragment")
+
+        sink = RecordingSink()
+        with patch("yt_dlp.YoutubeDL", _ErrorOnCancelYDL), pytest.raises(OperationCancelled) as info:
+            _overwrite(tmp_path, cancel=token, events=sink)
+        assert info.value.__context__ is None
+        assert final.read_bytes() == _OLD
+        assert [p.name for p in tmp_path.iterdir()] == [final.name]
+        assert sink.of(DownloadSaved) == []
+
+    def test_downloader_error_without_cancel_stays_a_failure(self, fake_ydl, tmp_path):
+        _existing_final(tmp_path)
+        fake_ydl.fail_in = "process_ie_result"
+        with pytest.raises(DownloadFailedError):
+            _overwrite(tmp_path, cancel=CancelToken())
 
     def test_uncancelled_token_lets_the_download_finish(self, fake_ydl, tmp_path):
         fake_ydl.payload = _NEW

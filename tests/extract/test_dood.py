@@ -3,6 +3,7 @@
 from unittest.mock import call, patch
 
 import pytest
+
 from alt_ani_core.extract.dood import resolve
 from alt_ani_core.models import StreamProtocol
 from alt_ani_core.transport.api import EXTRACTOR_PROFILE

@@ -4,6 +4,7 @@ import re
 from unittest.mock import MagicMock
 
 import pytest
+
 from alt_ani_core.config import SHINDEN_BASE
 from alt_ani_core.dom import Document, selectolax_backend
 from alt_ani_core.dom import parse as parse_html

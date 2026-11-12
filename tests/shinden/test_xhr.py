@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+
 from alt_ani_core.config import SHINDEN_XHR_BASE
 from alt_ani_core.errors import ParseError, ShindenError
 from alt_ani_core.shinden.episode import episode_path, episode_url_from_path

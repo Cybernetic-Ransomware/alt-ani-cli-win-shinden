@@ -3,18 +3,18 @@ from unittest.mock import patch
 from urllib.parse import quote
 
 import pytest
-from alt_ani_core.config import SHINDEN_XHR_BASE
-from alt_ani_core.errors import AntiBotError, ParseError
-from alt_ani_core.events import XhrFallback
-from alt_ani_core.models import PlayerSource, Purpose, SourceFilter
-from alt_ani_core.shinden import api as shinden_api
-from alt_ani_core.transport.api import TransportTimeout
 
 from alt_ani_cli.args import CliOptions
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.flow import handlers
 from alt_ani_cli.flow.handlers import HANDLERS, _prefetch_player_sources
 from alt_ani_cli.flow.state import Screen
+from alt_ani_core.config import SHINDEN_XHR_BASE
+from alt_ani_core.errors import AntiBotError, ParseError
+from alt_ani_core.events import XhrFallback
+from alt_ani_core.models import PlayerSource, Purpose, SourceFilter
+from alt_ani_core.shinden import api as shinden_api
+from alt_ani_core.transport.api import TransportTimeout
 
 from .support import (
     EMBED,

@@ -4,14 +4,14 @@ import json
 import re
 
 import pytest
+
+from alt_ani_cli.paths import flaresolverr_url
 from alt_ani_core.config import GUEST_AUTH, SHINDEN_API_BASE, SHINDEN_XHR_BASE, AccessConfig
 from alt_ani_core.dom import parse as parse_html
 from alt_ani_core.redaction import redact_text
 from alt_ani_core.shinden import api, episode, metadata, search, series, xhr
 from alt_ani_core.transport import clearance
 from alt_ani_core.transport.curl import CurlTransport
-
-from alt_ani_cli.paths import flaresolverr_url
 
 FLARESOLVERR_URL = flaresolverr_url()
 

@@ -82,9 +82,17 @@ Kotlin threads. An `asyncio` engine would have meant rewriting every extractor w
   generation; the old session is closed once its last lease is released.
 - `metadata_many` gives every worker thread its own HTTP session; no session is shared between threads.
 - Cancellation (`CancelToken`) and staleness are `EngineInterrupt(BaseException)`, so they pass through the broad
-  `except Exception` in extractor fallbacks and through yt-dlp. They are checked before and after every request,
-  before every candidate, in every wait and in yt-dlp's progress hook. An interrupted operation runs no fallback,
-  tries no further source, records no host penalty, no success and no cache entry. A request already in flight is
+  `except Exception` in extractor fallbacks and through yt-dlp. They are checked before and after every request
+  (also after a request that failed, so a transport error from a session that went stale is reported as the
+  interrupt), before every candidate and every extractor fallback, in every wait and in yt-dlp's progress hook. An
+  interrupted operation runs no fallback, tries no further source, records no host penalty, no success and no cache
+  entry.
+- A download commits only after one more cancellation check once yt-dlp returns: only then is a staged redownload
+  promoted over the old file and `DownloadSaved` emitted. A cancel before that point (also one racing a downloader
+  error) keeps the old file and discards the staging copy.
+- The Android bridge registers every call as an operation, with or without a client `op_id`, and binds it to the
+  episode session it looks up. `close_session` (and `set_access`, `close_engine`) cancels the operations bound to
+  that session and makes them report `session_closed` instead of a result; other sessions are untouched. A request already in flight is
   not aborted — it ends by its own timeout (curl 30 s, FlareSolverr 70 s, yt-dlp socket 30 s) and its result is
   discarded.
 

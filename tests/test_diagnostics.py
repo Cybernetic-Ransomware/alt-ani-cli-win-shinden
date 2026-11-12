@@ -6,6 +6,7 @@ import shlex
 from unittest.mock import patch
 
 import pytest
+
 from alt_ani_core import diagnostics
 
 

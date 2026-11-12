@@ -1,6 +1,7 @@
 """Tests for extract/flyf.py — single-step api.flyfile.app raw stream URL resolver."""
 
 import pytest
+
 from alt_ani_core.extract.flyf import resolve
 from alt_ani_core.models import StreamProtocol
 from alt_ani_core.transport.api import EXTRACTOR_PROFILE, HttpStatusError

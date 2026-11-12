@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 
 import pytest
+
 from alt_ani_core.models import PlayerEntry
 from alt_ani_core.rules import health
 from alt_ani_core.rules.health import (

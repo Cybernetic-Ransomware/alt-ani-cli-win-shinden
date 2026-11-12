@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from alt_ani_core.testing import FakeTransport, InMemoryHistory
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "shinden"

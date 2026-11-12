@@ -4,14 +4,14 @@ import io
 from unittest.mock import patch
 
 import pytest
-from alt_ani_core.models import EmbedURL, Stream, StreamVariant
-from alt_ani_core.testing import make_stream
 from rich.console import Console
 
 from alt_ani_cli.args import CliOptions
 from alt_ani_cli.playback import episode_title, playback_confirmed, print_debug, report_playback
 from alt_ani_cli.player import mpv
 from alt_ani_cli.player.runner import PlayResult
+from alt_ani_core.models import EmbedURL, Stream, StreamVariant
+from alt_ani_core.testing import make_stream
 
 _URL = "https://cdn.example/x.mp4?token=SECRET"
 _QUALITIES = {"1080p": "https://cdn.example/x1080.mp4?sig=ABC"}

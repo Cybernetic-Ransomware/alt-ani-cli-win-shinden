@@ -4,6 +4,7 @@ import json
 import re
 
 import pytest
+
 from alt_ani_core.dom import parse as parse_html
 from alt_ani_core.errors import ParseError
 from alt_ani_core.models import PlayerEntry

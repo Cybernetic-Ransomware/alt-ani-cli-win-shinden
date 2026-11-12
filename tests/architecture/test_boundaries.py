@@ -75,12 +75,12 @@ def _core_targets(entry: str) -> list[Path]:
 
 @pytest.mark.unit
 class TestEngineIsPortable:
-    @pytest.mark.parametrize("path", _files(CORE), ids=lambda p: str(p.relative_to(CORE)))
+    @pytest.mark.parametrize("path", _files(CORE), ids=lambda p: p.relative_to(CORE).as_posix())
     def test_no_terminal_or_desktop_imports(self, path):
         imports = _imports(path)
         assert not {module for module in TERMINAL_AND_DESKTOP if _uses(imports, module)}
 
-    @pytest.mark.parametrize("path", _files(CORE), ids=lambda p: str(p.relative_to(CORE)))
+    @pytest.mark.parametrize("path", _files(CORE), ids=lambda p: p.relative_to(CORE).as_posix())
     def test_no_printing_and_no_environment_access(self, path):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         offences = []
@@ -93,7 +93,9 @@ class TestEngineIsPortable:
 
     @pytest.mark.parametrize("module", sorted(CONFINED))
     def test_platform_bound_module_is_confined(self, module):
-        users = {str(p.relative_to(CORE)) for p in _files(CORE) if _uses(_imports(p), module)}
+        users = {p.relative_to(CORE).as_posix() for p in _files(CORE) if _uses(_imports(p), module)}
+        # non-empty, so a detector that finds nothing (e.g. paths spelled differently per OS) cannot pass vacuously
+        assert users
         assert users <= CONFINED[module]
 
     @pytest.mark.parametrize("entry", STDLIB_ONLY)
@@ -111,7 +113,7 @@ class TestEngineIsPortable:
 
     def test_nothing_below_services_imports_services(self):
         users = {
-            str(p.relative_to(CORE))
+            p.relative_to(CORE).as_posix()
             for p in _files(CORE)
             if _uses(_imports(p), "alt_ani_core.services") and p.parent.name != "services"
         }
@@ -134,14 +136,16 @@ class TestEngineIsPortable:
 
 @pytest.mark.unit
 class TestApplicationsStayOnTheirSide:
-    @pytest.mark.parametrize("path", _files(CLI), ids=lambda p: str(p.relative_to(CLI)))
+    @pytest.mark.parametrize("path", _files(CLI), ids=lambda p: p.relative_to(CLI).as_posix())
     def test_cli_does_not_bypass_the_engine(self, path):
         imports = _imports(path)
         assert not {module for module in ("curl_cffi", "selectolax", "yt_dlp") if _uses(imports, module)}
 
     def test_cli_entry_point_is_not_imported_by_other_cli_modules(self):
         users = {
-            str(p.relative_to(CLI)) for p in _files(CLI) if _uses(_imports(p), "alt_ani_cli.main") and p.name != "__main__.py"
+            p.relative_to(CLI).as_posix()
+            for p in _files(CLI)
+            if _uses(_imports(p), "alt_ani_cli.main") and p.name != "__main__.py"
         }
         assert not users
 

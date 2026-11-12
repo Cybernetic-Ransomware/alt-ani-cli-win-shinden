@@ -13,14 +13,14 @@ from unittest.mock import patch
 
 import pytest
 import yaml
-from alt_ani_core import events
-from alt_ani_core.errors import DownloadTargetError, ParseError, ShindenError
-from alt_ani_core.messages import MESSAGES, text
-from alt_ani_core.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesMetadata
 
 from alt_ani_cli import content, event_renderer
 from alt_ani_cli.content import CONTENT, EXCEPTIONS, EXCEPTIONS_PL, error_text, load_content
 from alt_ani_cli.ui.menus import _player_label, _player_origin, _series_label, select_episodes, select_start_mode
+from alt_ani_core import events
+from alt_ani_core.errors import DownloadTargetError, ParseError, ShindenError
+from alt_ani_core.messages import MESSAGES, text
+from alt_ani_core.models import EpisodeRow, PlayerEntry, SeriesHit, SeriesMetadata
 
 _HIT = SeriesHit(
     id="234", slug="ikkitousen", title="Ikkitousen", url="https://shinden.pl/series/234-ikkitousen", series_type="TV"

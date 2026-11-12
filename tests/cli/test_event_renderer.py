@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from unittest.mock import patch
 
 import pytest
-from alt_ani_core import download, events
-from alt_ani_core.services.episode_session import PHASE_ANTIBOT
 
 from alt_ani_cli import event_renderer
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.event_renderer import ANTIBOT_LABEL, ConsoleEvents
+from alt_ani_core import download, events
+from alt_ani_core.services.episode_session import PHASE_ANTIBOT
 
 _PROG = CONTENT["progress"]
 _DL = CONTENT["download"]

@@ -14,11 +14,10 @@ from contextlib import suppress
 from typing import Literal
 from urllib.parse import urlparse
 
-from alt_ani_core.models import EpisodeRow, PlayerEntry, PlayerSource, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
-from alt_ani_core.redaction import redact_text
-
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.ui import progress
+from alt_ani_core.models import EpisodeRow, PlayerEntry, PlayerSource, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_core.redaction import redact_text
 
 _RES_RE = re.compile(r"(\d+)")
 _M = CONTENT["menu"]

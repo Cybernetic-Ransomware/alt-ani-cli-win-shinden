@@ -1,6 +1,7 @@
 import itertools
 
 import pytest
+
 from alt_ani_core.history import sqlite as sqlite_history
 from alt_ani_core.history.sqlite import SqliteHistory
 from alt_ani_core.history.store import DownloadEntry, WatchEntry

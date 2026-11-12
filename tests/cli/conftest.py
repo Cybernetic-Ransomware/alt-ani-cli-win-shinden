@@ -3,12 +3,12 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from alt_ani_core import diagnostics
-from alt_ani_core.services.engine import Engine
 
 from alt_ani_cli import main as cli_main
 from alt_ani_cli import paths
 from alt_ani_cli.ui import progress
+from alt_ani_core import diagnostics
+from alt_ani_core.services.engine import Engine
 
 from .support import STREAM, ConsoleLog, MainResult, Site
 

@@ -1,6 +1,7 @@
 """Tests for extract/common.py — protocol sniffing and container choice shared by the extractors."""
 
 import pytest
+
 from alt_ani_core.extract.common import CATEGORY_PARSER_DRIFT, ExtractError, container_of, single_stream, sniff_protocol
 from alt_ani_core.models import StreamProtocol
 

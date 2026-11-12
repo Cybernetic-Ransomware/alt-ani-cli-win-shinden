@@ -4,6 +4,7 @@ import re
 from unittest.mock import MagicMock
 
 import pytest
+
 from alt_ani_core.cancel import CancelToken
 from alt_ani_core.config import SHINDEN_BASE
 from alt_ani_core.errors import OperationCancelled, ParseError, ShindenError

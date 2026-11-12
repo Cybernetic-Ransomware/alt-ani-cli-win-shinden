@@ -3,11 +3,11 @@
 from unittest.mock import patch
 
 import pytest
-from alt_ani_core.models import StreamProtocol, StreamVariant
 
 from alt_ani_cli.player import build_command, mpv
 from alt_ani_cli.player.mpv import build as build_mpv
 from alt_ani_cli.player.vlc import build as build_vlc
+from alt_ani_core.models import StreamProtocol, StreamVariant
 
 
 def _stream(**kw):

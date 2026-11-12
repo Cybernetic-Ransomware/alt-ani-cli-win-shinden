@@ -1,4 +1,5 @@
 import pytest
+
 from alt_ani_core.models import EpisodeRow
 from alt_ani_core.rules.episode_range import parse_range
 

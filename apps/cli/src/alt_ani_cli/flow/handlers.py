@@ -14,6 +14,13 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from alt_ani_cli import __version__, playback
+from alt_ani_cli.args import CliOptions
+from alt_ani_cli.content import CONTENT, error_text
+from alt_ani_cli.flow.state import _VIRTUAL_SCREENS, BACK, FlowState, Screen, ScreenResult, _BackSentinel
+from alt_ani_cli.paths import CliPaths
+from alt_ani_cli.player import runner as player_runner
+from alt_ani_cli.ui import menus, progress
 from alt_ani_core import diagnostics, download
 from alt_ani_core.errors import (
     DownloadFailedError,
@@ -39,14 +46,6 @@ from alt_ani_core.services.engine import Engine
 from alt_ani_core.services.episode_session import EpisodeSession
 from alt_ani_core.shinden import api as shinden_api
 from alt_ani_core.shinden import episode as shinden_episode
-
-from alt_ani_cli import __version__, playback
-from alt_ani_cli.args import CliOptions
-from alt_ani_cli.content import CONTENT, error_text
-from alt_ani_cli.flow.state import _VIRTUAL_SCREENS, BACK, FlowState, Screen, ScreenResult, _BackSentinel
-from alt_ani_cli.paths import CliPaths
-from alt_ani_cli.player import runner as player_runner
-from alt_ani_cli.ui import menus, progress
 
 _PROG = CONTENT["progress"]
 _M = CONTENT["menu"]
@@ -135,6 +134,9 @@ def _first_missing_index(episodes: list[EpisodeRow], downloaded: set[float]) -> 
 
 def handle_start_mode(state: FlowState) -> ScreenResult:
     args = state.options
+    first_entry, state.start_flags_used = not state.start_flags_used, True
+    if not first_entry:
+        return _start_menu(state)
     # When launched with flags, skip the interactive menu
     if args.resume:
         return Screen.DOWNLOAD_RESUME_PICK if args.download else Screen.RESUME_PICK
@@ -146,7 +148,10 @@ def handle_start_mode(state: FlowState) -> ScreenResult:
     if args.query:
         state.query = " ".join(args.query)
         return Screen.SERIES_PICK
+    return _start_menu(state)
 
+
+def _start_menu(state: FlowState) -> ScreenResult:
     watch_count = len(state.engine.history.watch_entries())
     download_count = len(state.engine.history.download_entries())
     while True:

@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, call
 
 import pytest
+
 from alt_ani_core.config import ExtractOptions
 from alt_ani_core.errors import AntiBotError, NoStreamError, ShindenXhrError, SourcesExhaustedError
 from alt_ani_core.events import (

@@ -4,13 +4,12 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Literal
 
+from alt_ani_cli.args import CliOptions
+from alt_ani_cli.paths import CliPaths
 from alt_ani_core.models import EpisodeRow, PlayerEntry, ResolvedStream, SeriesHit, SeriesRef
 from alt_ani_core.rules.pin import PlayerFingerprint
 from alt_ani_core.services.engine import Engine
 from alt_ani_core.services.episode_session import EpisodeSession
-
-from alt_ani_cli.args import CliOptions
-from alt_ani_cli.paths import CliPaths
 
 
 class Screen(Enum):
@@ -63,6 +62,9 @@ class FlowState:
     options: CliOptions
     engine: Engine
     paths: CliPaths
+
+    # -c/--url/QUERY pick the first screen once; going back to START_MODE afterwards shows the menu instead of looping
+    start_flags_used: bool = False
 
     # search / series
     query: str | None = None

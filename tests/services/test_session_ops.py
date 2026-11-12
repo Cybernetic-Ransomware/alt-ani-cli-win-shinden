@@ -1,4 +1,5 @@
 import pytest
+
 from alt_ani_core.errors import (
     AntiBotError,
     FreshResolveLimitError,

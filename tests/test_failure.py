@@ -1,6 +1,7 @@
 """failure.py — the one classifier shared by extract/ and shinden/api.py."""
 
 import pytest
+
 from alt_ani_core.errors import JavaScriptRequiredError, ShindenXhrError, UnsupportedHostError
 from alt_ani_core.extract import common as extract_common
 from alt_ani_core.extract.common import ExtractError

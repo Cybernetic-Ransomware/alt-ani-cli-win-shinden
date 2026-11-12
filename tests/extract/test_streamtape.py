@@ -1,6 +1,7 @@
 """Tests for extract/streamtape.py — stream URL resolver."""
 
 import pytest
+
 from alt_ani_core.extract.streamtape import resolve
 from alt_ani_core.models import StreamProtocol
 from alt_ani_core.transport.api import EXTRACTOR_PROFILE

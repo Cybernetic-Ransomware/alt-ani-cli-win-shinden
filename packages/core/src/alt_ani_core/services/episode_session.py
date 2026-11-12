@@ -340,6 +340,7 @@ class EpisodeSession:
             options=options,
             on_fallback=lambda kind, host, text: events.emit(ExtractorFallback(kind=kind, host=host, redacted_text=text)),
             cancel=cancel,
+            check=op.check,
         )
 
     def _defer_diag(self, action: str, candidate: PlayerEntry, host: str) -> None:

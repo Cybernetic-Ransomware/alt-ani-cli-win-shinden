@@ -1,4 +1,5 @@
 import pytest
+
 from alt_ani_core.redaction import REDACTED, redact_header_value, redact_headers, redact_text
 
 

@@ -3,15 +3,15 @@ from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
-from alt_ani_core.errors import ShindenError
-from alt_ani_core.models import EpisodeListing, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
-from alt_ani_core.transport.api import NetworkError
 
 from alt_ani_cli import __version__
 from alt_ani_cli.args import CliOptions
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.flow.handlers import HANDLERS, _prefetch_series_metadata, _sorted_by_date_desc
 from alt_ani_cli.flow.state import Screen, _BackSentinel
+from alt_ani_core.errors import ShindenError
+from alt_ani_core.models import EpisodeListing, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_core.transport.api import NetworkError
 
 from .support import (
     EP1,

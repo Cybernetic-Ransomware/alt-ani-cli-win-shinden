@@ -1,8 +1,7 @@
 from typing import Literal
 
-from alt_ani_core.models import StreamVariant
-
 from alt_ani_cli.player import mpv, vlc
+from alt_ani_core.models import StreamVariant
 
 
 def build_command(
