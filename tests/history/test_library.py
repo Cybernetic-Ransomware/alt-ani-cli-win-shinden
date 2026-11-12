@@ -5,7 +5,7 @@ import pytest
 from alt_ani_core.errors import InvalidTransitionError, StateConflictError, UnknownRecordError
 from alt_ani_core.state import ItemStatus, JobError, JobState, NetworkKind, OpenedVia, StorageLocator
 
-from .state_support import download, enqueue, key, open_state, ref, row, spec
+from .state_support import download, enqueue, key, open_state, owner, ref, row, sha, spec
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ class TestOfflineItems:
 
     def test_platform_locator_is_kept_opaque(self, state):
         enqueue(state, 2)
-        claim = state.queue.claim_next(NetworkKind.WIFI)
+        claim = state.queue.claim_next(NetworkKind.WIFI, owner(state))
         state.queue.begin_finalize(claim.attempt_id)
         uri = "content://com.android.externalstorage.documents/document/primary%3AMovies%2Ffate.mp4"
         item = state.queue.complete(claim.attempt_id, spec(uri, backend="saf"))
@@ -34,7 +34,7 @@ class TestOfflineItems:
     def test_one_locator_is_one_item(self, state):
         download(state, 1, name="same.mp4")
         enqueue(state, 2)
-        claim = state.queue.claim_next(NetworkKind.WIFI)
+        claim = state.queue.claim_next(NetworkKind.WIFI, owner(state))
         state.queue.begin_finalize(claim.attempt_id)
         with pytest.raises(StateConflictError) as info:
             state.queue.complete(claim.attempt_id, spec("same.mp4"))
@@ -42,14 +42,14 @@ class TestOfflineItems:
         assert state.queue.get(claim.job.id).state is JobState.FINALIZING
         # the executor can still end the attempt, so the slot is not held forever
         assert state.queue.fail(claim.attempt_id, JobError("download.target_taken"))
-        assert state.queue.claim_next(NetworkKind.WIFI) is None
+        assert state.queue.claim_next(NetworkKind.WIFI, owner(state)) is None
         assert state.queue.get(claim.job.id).state is JobState.FAILED
 
     def test_redownload_to_the_locator_of_a_missing_copy_reuses_its_row(self, state):
         _, item = download(state, 1)
         state.library.mark_missing(item.id)
         (job,) = enqueue(state, 1).added
-        claim = state.queue.claim_next(NetworkKind.WIFI)
+        claim = state.queue.claim_next(NetworkKind.WIFI, owner(state))
         state.queue.begin_finalize(claim.attempt_id)
         restored = state.queue.complete(claim.attempt_id, replace(spec("fate - ep1.mp4"), size_bytes=2000))
         assert (restored.id, restored.status, restored.spec.size_bytes) == (item.id, ItemStatus.AVAILABLE, 2000)
@@ -60,7 +60,7 @@ class TestOfflineItems:
         _, item = download(state, 1)
         state.library.mark_deleting([item.id])
         enqueue(state, 1)
-        claim = state.queue.claim_next(NetworkKind.WIFI)
+        claim = state.queue.claim_next(NetworkKind.WIFI, owner(state))
         state.queue.begin_finalize(claim.attempt_id)
         with pytest.raises(StateConflictError):
             state.queue.complete(claim.attempt_id, spec("fate - ep1.mp4"))
@@ -70,7 +70,7 @@ class TestOfflineItems:
         _, item = download(state, 1, name="shared.mp4")
         state.library.mark_missing(item.id)
         enqueue(state, 2)
-        claim = state.queue.claim_next(NetworkKind.WIFI)
+        claim = state.queue.claim_next(NetworkKind.WIFI, owner(state))
         state.queue.begin_finalize(claim.attempt_id)
         with pytest.raises(StateConflictError):
             state.queue.complete(claim.attempt_id, spec("shared.mp4"))
@@ -78,8 +78,16 @@ class TestOfflineItems:
     def test_missing_and_back(self, state):
         _, item = download(state)
         assert state.library.mark_missing(item.id).status is ItemStatus.MISSING
-        restored = state.library.mark_available(item.id, 900)
-        assert (restored.status, restored.spec.size_bytes) == (ItemStatus.AVAILABLE, 900)
+        restored = state.library.mark_available(item.id, 1000, sha())
+        assert (restored.status, restored.spec.size_bytes) == (ItemStatus.AVAILABLE, 1000)
+
+    def test_file_of_the_same_size_but_another_digest_is_not_restored(self, state):
+        _, item = download(state)
+        state.library.mark_missing(item.id)
+        with pytest.raises(StateConflictError) as exc:
+            state.library.mark_available(item.id, 1000, sha("b"))
+        assert exc.value.code == "state.identity_mismatch"
+        assert state.library.get(item.id).status is ItemStatus.MISSING
 
     def test_filters(self, state):
         _, a = download(state, 1)

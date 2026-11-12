@@ -4,10 +4,11 @@ import sqlite3
 import uuid
 from collections.abc import Iterable, Sequence
 
-from alt_ani_core.errors import StateConflictError, UnknownRecordError
+from alt_ani_core.errors import ExecutorNotOwnerError, StateConflictError, UnknownRecordError
 from alt_ani_core.history import codec
 from alt_ani_core.history.codec import Row
 from alt_ani_core.history.database import Database, upsert_episode
+from alt_ani_core.history.ownership import ExecutorOwnership
 from alt_ani_core.models import EpisodeRow, SeriesRef
 from alt_ani_core.rules.job_state import TRANSITIONS, check_transition, invalid, merge_stop
 from alt_ani_core.rules.network import download_allowed
@@ -30,7 +31,9 @@ from alt_ani_core.state import (
     OfflineItem,
     OfflineItemSpec,
     PartialTransfer,
+    PendingRemoval,
     Recovery,
+    RemovalReason,
     SelectionMode,
     SkipReason,
     SourceIdentity,
@@ -79,12 +82,30 @@ def _job(row: Row) -> DownloadJob:
         last_error=codec.error_of(row),
         offline_item_id=row["offline_item_id"],
         completed_at=row["completed_at"],
+        retry_count=row["retry_count"],
+        not_before=row["not_before"],
         revision=row["revision"],
     )
 
 
 def _unknown(job_id: str) -> UnknownRecordError:
     return UnknownRecordError(f"no download job {job_id}").coded("state.unknown_job", job_id=job_id)
+
+
+def _removal(row: Row) -> PendingRemoval:
+    return PendingRemoval(
+        id=row["id"],
+        locator=StorageLocator(row["storage_backend"], row["storage_key"]),
+        reason=RemovalReason(row["reason"]),
+        created_at=row["created_at"],
+        job_id=row["job_id"],
+    )
+
+
+def _locator_in_use(job_id: str, holder: str, status: str) -> StateConflictError:
+    return StateConflictError(f"locator of job {job_id} is held by {holder}").coded(
+        "state.locator_in_use", job_id=job_id, holder=holder, status=status
+    )
 
 
 class SqliteDownloadQueue:
@@ -111,6 +132,20 @@ class SqliteDownloadQueue:
     def _by_attempt(conn: sqlite3.Connection, attempt_id: str) -> DownloadJob | None:
         row = conn.execute("SELECT * FROM download_job WHERE attempt_id = ?", (attempt_id,)).fetchone()
         return None if row is None else _job(row)
+
+    def _check_owner(self, owner: ExecutorOwnership) -> None:
+        if not owner.owns(self._db.path):
+            raise ExecutorNotOwnerError("this process does not own the executor of this database").coded(
+                "state.executor_not_owner"
+            )
+
+    def _abandon(self, conn: sqlite3.Connection, job: DownloadJob, locator: StorageLocator, reason: RemovalReason) -> None:
+        """Recorded in the transaction that stops referencing the file, so its removal survives a crash."""
+        conn.execute(
+            """INSERT INTO pending_removal (id, storage_backend, storage_key, job_id, reason, created_at)
+               VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(storage_backend, storage_key) DO NOTHING""",
+            (uuid.uuid4().hex, locator.backend, locator.key, job.id, reason.value, self._db.now()),
+        )
 
     @staticmethod
     def _queue_revision(conn: sqlite3.Connection) -> int:
@@ -205,6 +240,19 @@ class SqliteDownloadQueue:
             jobs = tuple(self._row(conn, job_id) for job_id in added)
         return EnqueueResult(jobs, plan.skipped)
 
+    def episode_of(self, key: EpisodeKey) -> tuple[SeriesRef, EpisodeRow]:
+        """The series and episode a job was added for: the page to resolve sources from and the title to name files."""
+        with self._db.read() as conn:
+            row = conn.execute(
+                """SELECT s.id, s.slug, s.title AS series_title, s.url AS series_url, e.number, e.title, e.url
+                   FROM episode e JOIN series s ON s.id = e.series_id WHERE e.series_id = ? AND e.number = ?""",
+                (key.series_id, key.number),
+            ).fetchone()
+        if row is None:
+            raise UnknownRecordError(f"no episode {key}").coded("state.unknown_episode", series_id=key.series_id)
+        series = SeriesRef(id=row["id"], slug=row["slug"], title=row["series_title"], url=row["series_url"])
+        return series, EpisodeRow(number=row["number"], title=row["title"], url=row["url"])
+
     def get(self, job_id: str) -> DownloadJob:
         with self._db.read() as conn:
             return self._row(conn, job_id)
@@ -262,10 +310,12 @@ class SqliteDownloadQueue:
             elif target is StopTarget.QUEUED:
                 if job.state is not JobState.PAUSED:
                     raise invalid(job.id, job.state, JobState.QUEUED.value)
-                self._set(conn, job.id, state=JobState.QUEUED.value)
+                self._set(conn, job.id, state=JobState.QUEUED.value, retry_count=0, not_before=None)
             else:
                 check_transition(job.id, job.state, direct[target])
                 self._set(conn, job.id, state=direct[target].value, wait_reason=None)
+                if target is StopTarget.CANCELLED and job.partial is not None:
+                    self._abandon(conn, job, job.partial.locator, RemovalReason.CANCELLED)
             return self._row(conn, job_id)
 
     def pause(self, job_id: str) -> DownloadJob:
@@ -277,7 +327,7 @@ class SqliteDownloadQueue:
         return self._user_change(job_id, StopTarget.QUEUED)
 
     def cancel(self, job_id: str) -> DownloadJob:
-        """Keeps the partial's locator so its file can be cleaned up; an offline item already made is untouched."""
+        """The partial is queued for removal once no attempt runs; an offline item already made is untouched."""
         return self._user_change(job_id, StopTarget.CANCELLED)
 
     def retry(self, job_id: str) -> DownloadJob:
@@ -285,7 +335,7 @@ class SqliteDownloadQueue:
             job = self._row(conn, job_id)
             if job.state is not JobState.FAILED:
                 raise invalid(job.id, job.state, "retry")
-            self._set(conn, job.id, state=JobState.QUEUED.value)
+            self._set(conn, job.id, state=JobState.QUEUED.value, retry_count=0, not_before=None)
             return self._row(conn, job_id)
 
     def allow_cellular(self, job_id: str, allowed: bool) -> DownloadJob:
@@ -311,9 +361,13 @@ class SqliteDownloadQueue:
                 "source_json": codec.source_json(source),
                 "variant_json": codec.variant_json(variant),
                 "selection_mode": SelectionMode.MANUAL.value,
+                "retry_count": 0,
+                "not_before": None,
             }
             if not keep:
-                # the file itself is the executor's to remove; an unreferenced partial is an orphan for reconciliation
+                if partial is not None:
+                    same = partial.source == source and partial.variant == variant
+                    self._abandon(conn, job, partial.locator, RemovalReason.RESTARTED if same else RemovalReason.SOURCE_CHANGED)
                 for column in ("partial_backend", "partial_key", "partial_identity_json", "partial_validator_json"):
                     columns[column] = None
                 columns |= {"bytes_done": None, "bytes_total": None}
@@ -345,16 +399,19 @@ class SqliteDownloadQueue:
                 return True
             return False
 
-    def claim_next(self, network: NetworkKind) -> Claim | None:
+    def claim_next(self, network: NetworkKind, owner: ExecutorOwnership) -> Claim | None:
         """Never exceeds the active limit (stopping and finalizing attempts count) nor the job's network permission."""
+        self._check_owner(owner)
         with self._db.write() as conn:
+            now = self._db.now()
             prefs = conn.execute("SELECT download_network, max_active_downloads FROM preferences").fetchone()
             active = conn.execute(f"SELECT COUNT(*) FROM download_job WHERE state IN {_ACTIVE}").fetchone()[0]  # nosec B608
             if active >= prefs["max_active_downloads"]:
                 return None
             policy = DownloadNetwork(prefs["download_network"])
             rows = conn.execute("SELECT * FROM download_job WHERE state = 'queued' ORDER BY queue_pos, seq")
-            job = next((j for j in map(_job, rows) if download_allowed(network, policy, j.cellular_allowed)), None)
+            due = (j for j in map(_job, rows) if j.not_before is None or j.not_before <= now)
+            job = next((j for j in due if download_allowed(network, policy, j.cellular_allowed)), None)
             if job is None:
                 return None
             attempt_id = uuid.uuid4().hex
@@ -363,8 +420,9 @@ class SqliteDownloadQueue:
                 job.id,
                 state=JobState.RUNNING.value,
                 attempt_id=attempt_id,
-                attempt_started_at=self._db.now(),
+                attempt_started_at=now,
                 attempts=job.attempts + 1,
+                not_before=None,
             )
             return Claim(self._row(conn, job.id), attempt_id)
 
@@ -385,10 +443,15 @@ class SqliteDownloadQueue:
             return self._status(job)
 
     def set_partial(self, attempt_id: str, partial: PartialTransfer, bytes_done: int | None = None) -> AttemptStatus:
+        """A partial at another locator replaces the old one, which is queued for removal in the same transaction."""
         backend, key, identity, validator = codec.partial_columns(partial)
         with self._db.write() as conn:
             job = self._by_attempt(conn, attempt_id)
             if job is not None and job.state in (JobState.RUNNING, JobState.STOPPING):
+                old = job.partial
+                if old is not None and old.locator != partial.locator:
+                    same = old.source == partial.source and old.variant == partial.variant
+                    self._abandon(conn, job, old.locator, RemovalReason.RESTARTED if same else RemovalReason.SOURCE_CHANGED)
                 self._set(
                     conn,
                     job.id,
@@ -401,12 +464,32 @@ class SqliteDownloadQueue:
             return self._status(job)
 
     def set_target(self, attempt_id: str, locator: StorageLocator) -> AttemptStatus:
-        """Recorded before the transfer writes there, so recovery can find a file published right before a crash."""
+        """Reserves the locator before anything is published there; a locator someone else holds is a conflict."""
         with self._db.write() as conn:
             job = self._by_attempt(conn, attempt_id)
             if job is not None and job.state in (JobState.RUNNING, JobState.STOPPING):
+                self._check_free(conn, job, locator)
                 self._set(conn, job.id, target_backend=locator.backend, target_key=locator.key)
             return self._status(job)
+
+    def _check_free(self, conn: sqlite3.Connection, job: DownloadJob, locator: StorageLocator) -> None:
+        args = (locator.backend, locator.key)
+        other = conn.execute(
+            "SELECT id FROM download_job WHERE target_backend = ? AND target_key = ? AND id != ? AND " + OPEN_JOB,  # nosec B608
+            (*args, job.id),
+        ).fetchone()
+        if other is not None:
+            raise _locator_in_use(job.id, f"job {other['id']}", "reserved")
+        item = conn.execute(
+            "SELECT id, series_id, number, status FROM offline_item WHERE storage_backend = ? AND storage_key = ?", args
+        ).fetchone()
+        if item is not None:
+            same_episode = (item["series_id"], item["number"]) == (job.key.series_id, job.key.number)
+            if not (same_episode and item["status"] == ItemStatus.MISSING.value):
+                raise _locator_in_use(job.id, f"offline item {item['id']}", item["status"])
+        removal = conn.execute("SELECT id FROM pending_removal WHERE storage_backend = ? AND storage_key = ?", args).fetchone()
+        if removal is not None:
+            raise _locator_in_use(job.id, f"pending removal {removal['id']}", "removing")
 
     def _settle(self, conn: sqlite3.Connection, job: DownloadJob, error: JobError | None = None) -> None:
         """Applies a stopping job's target once its attempt has ended."""
@@ -424,6 +507,8 @@ class SqliteDownloadQueue:
         if error is not None:
             columns |= {"last_error_code": code, "last_error_params": params, "last_error_at": self._db.now()}
         self._set(conn, job.id, **columns)
+        if job.stop_target is StopTarget.CANCELLED and job.partial is not None:
+            self._abandon(conn, job, job.partial.locator, RemovalReason.CANCELLED)
 
     def ack_stopped(self, attempt_id: str) -> bool:
         """The executor's confirmation that its I/O has ended; only now the job reaches its requested state."""
@@ -477,19 +562,21 @@ class SqliteDownloadQueue:
                 spec.protocol,
                 spec.container,
                 spec.source_player,
+                spec.sha256,
             )
             if item_id is None:
                 item_id = uuid.uuid4().hex
                 conn.execute(
                     """INSERT INTO offline_item (id, series_id, number, storage_backend, storage_key, status, size_bytes,
-                         audio, subs, height, variant_label, protocol, container, source_player, created_at, verified_at)
-                       VALUES (?, ?, ?, ?, ?, 'available', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                         audio, subs, height, variant_label, protocol, container, source_player, sha256, created_at,
+                         verified_at)
+                       VALUES (?, ?, ?, ?, ?, 'available', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (item_id, job.key.series_id, job.key.number, spec.locator.backend, spec.locator.key, *details, now, now),
                 )
             else:
                 conn.execute(
                     """UPDATE offline_item SET status = 'available', size_bytes = ?, audio = ?, subs = ?, height = ?,
-                         variant_label = ?, protocol = ?, container = ?, source_player = ?, verified_at = ?,
+                         variant_label = ?, protocol = ?, container = ?, source_player = ?, sha256 = ?, verified_at = ?,
                          revision = revision + 1
                        WHERE id = ?""",
                     (*details, now, item_id),
@@ -502,6 +589,8 @@ class SqliteDownloadQueue:
                 completed_at=now,
                 offline_item_id=item_id,
             )
+            if job.partial is not None and job.partial.locator != spec.locator:
+                self._abandon(conn, job, job.partial.locator, RemovalReason.COMPLETED)
             row = conn.execute("SELECT * FROM offline_item WHERE id = ?", (item_id,)).fetchone()
             return codec.item_of(row)
 
@@ -539,8 +628,44 @@ class SqliteDownloadQueue:
         """Like ``wait``: only a user's pause or cancel requested meanwhile overrides the failure."""
         return self._end_attempt(attempt_id, JobState.FAILED, error, None)
 
-    def recover_interrupted(self) -> Recovery:
-        """Call once per process before any executor starts; assumes one executing process per database file."""
+    def defer(self, attempt_id: str, error: JobError, not_before: str | None, *, counts: bool = True) -> bool:
+        """Back to the queue, spending a retry if ``counts``; a pending stop settles exactly as ``ack_stopped`` would."""
+        with self._db.write() as conn:
+            job = self._by_attempt(conn, attempt_id)
+            if job is None:
+                return False
+            if job.state is JobState.STOPPING:
+                self._settle(conn, job, error)
+                return True
+            if job.state is not JobState.RUNNING:
+                return False
+            code, params = codec.error_columns(error)
+            self._set(
+                conn,
+                job.id,
+                state=JobState.QUEUED.value,
+                attempt_id=None,
+                last_error_code=code,
+                last_error_params=params,
+                last_error_at=self._db.now(),
+                not_before=not_before,
+                retry_count=job.retry_count + int(counts),
+            )
+            return True
+
+    def pending_removals(self) -> list[PendingRemoval]:
+        with self._db.read() as conn:
+            rows = conn.execute("SELECT * FROM pending_removal ORDER BY created_at, id").fetchall()
+        return [_removal(r) for r in rows]
+
+    def forget_removal(self, removal_id: str) -> None:
+        """Called once the file is gone (or was never there); unknown ids are ignored, so a repeat is harmless."""
+        with self._db.write() as conn:
+            conn.execute("DELETE FROM pending_removal WHERE id = ?", (removal_id,))
+
+    def recover_interrupted(self, owner: ExecutorOwnership) -> Recovery:
+        """Only the executor owner may call it, after acquiring ownership and before claiming any job."""
+        self._check_owner(owner)
         requeued: list[str] = []
         settled: list[str] = []
         reconcile: list[Claim] = []
@@ -560,6 +685,7 @@ class SqliteDownloadQueue:
                         last_error_code=code,
                         last_error_params=params,
                         last_error_at=self._db.now(),
+                        not_before=None,
                     )
                     requeued.append(job.id)
                 else:

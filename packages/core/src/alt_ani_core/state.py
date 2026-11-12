@@ -240,6 +240,8 @@ class DownloadJob:
     last_error: JobError | None = None
     offline_item_id: str | None = None
     completed_at: str | None = None
+    retry_count: int = 0
+    not_before: str | None = None
     revision: int = 0
 
 
@@ -294,6 +296,11 @@ class OfflineItemSpec:
     protocol: str | None = None
     container: str | None = None
     source_player: str | None = None
+    sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.sha256 is not None and (len(self.sha256) != 64 or self.sha256.strip("0123456789abcdef")):
+            raise ValueError("sha256 must be 64 lowercase hex digits")
 
 
 @dataclass(frozen=True)
@@ -305,6 +312,24 @@ class OfflineItem:
     created_at: str
     verified_at: str | None = None
     revision: int = 0
+
+
+class RemovalReason(StrEnum):
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    RESTARTED = "restarted"
+    SOURCE_CHANGED = "source_changed"
+
+
+@dataclass(frozen=True)
+class PendingRemoval:
+    """A file or partial directory the executor created and abandoned; only these are ever removed automatically."""
+
+    id: str
+    locator: StorageLocator
+    reason: RemovalReason
+    created_at: str
+    job_id: str | None = None
 
 
 class DownloadNetwork(StrEnum):
