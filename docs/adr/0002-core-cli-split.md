@@ -73,6 +73,7 @@ Kotlin threads. An `asyncio` engine would have meant rewriting every extractor w
 - **History**: `HistoryStore` protocol, SQLite implementation (schema versioned by `user_version`, a connection per
   operation, `BEGIN IMMEDIATE`, `foreign_keys=ON` on every connection). `last_ep` is a resume cursor reported by the
   application, not proof of watching; real playback progress would be a later schema version.
+  Schema 2 adds it, together with the download queue and the offline library: [ADR-0004](0004-local-state-model.md).
 
 ### Concurrency, cancellation, staleness
 

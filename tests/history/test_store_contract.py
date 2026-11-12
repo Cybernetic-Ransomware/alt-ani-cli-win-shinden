@@ -2,7 +2,7 @@ import itertools
 
 import pytest
 
-from alt_ani_core.history import sqlite as sqlite_history
+from alt_ani_core.history.database import Database
 from alt_ani_core.history.sqlite import SqliteHistory
 from alt_ani_core.history.store import DownloadEntry, WatchEntry
 from alt_ani_core.models import SeriesRef
@@ -21,10 +21,9 @@ def clock():
 
 
 @pytest.fixture(params=["sqlite", "memory"])
-def store(request, tmp_path, monkeypatch, clock):
+def store(request, tmp_path, clock):
     if request.param == "sqlite":
-        monkeypatch.setattr(sqlite_history, "_now", clock)
-        return SqliteHistory(tmp_path / "history.db")
+        return SqliteHistory(Database(tmp_path / "history.db", clock=clock))
     return InMemoryHistory(clock=clock)
 
 

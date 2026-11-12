@@ -1,114 +1,50 @@
-"""SQLite history: one short-lived connection per operation, so any thread may call it."""
+"""SQLite history: the CLI's resume cursor and download records, on the shared local database."""
 
 import sqlite3
 from collections.abc import Iterable, Iterator
-from contextlib import closing, contextmanager
-from datetime import UTC, datetime
+from contextlib import contextmanager
 from pathlib import Path
 
-from alt_ani_core.errors import HistoryVersionError
+from alt_ani_core.history.database import Database, upsert_series
+from alt_ani_core.history.migrations import SCHEMA_VERSION
 from alt_ani_core.history.store import DownloadEntry, LegacySeries, WatchEntry
 from alt_ani_core.models import SeriesRef
 
-SCHEMA_VERSION = 1
-_BUSY_TIMEOUT_MS = 5000
-
-_MIGRATIONS: dict[int, tuple[str, ...]] = {
-    1: (
-        """CREATE TABLE series (
-            id TEXT PRIMARY KEY,
-            slug TEXT NOT NULL,
-            title TEXT NOT NULL,
-            url TEXT NOT NULL,
-            last_ep REAL,
-            watch_updated_at TEXT,
-            download_updated_at TEXT
-        )""",
-        """CREATE TABLE downloaded_episode (
-            series_id TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,
-            episode REAL NOT NULL,
-            recorded_at TEXT,
-            PRIMARY KEY (series_id, episode)
-        )""",
-        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-    ),
-}
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
+__all__ = ["SCHEMA_VERSION", "SqliteHistory"]
 
 
 class SqliteHistory:
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._ready = False
+    def __init__(self, source: Path | Database) -> None:
+        self._db = source if isinstance(source, Database) else Database(source)
 
     @property
     def path(self) -> Path:
-        return self._path
+        return self._db.path
 
     def _connect(self) -> sqlite3.Connection:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        # autocommit: every transaction below is opened explicitly with BEGIN IMMEDIATE
-        conn = sqlite3.connect(self._path, timeout=_BUSY_TIMEOUT_MS / 1000, isolation_level=None)
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
-        return conn
+        return self._db.connect()
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
-        with closing(self._connect()) as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                self._migrate(conn)
-                yield conn
-            except BaseException:
-                conn.execute("ROLLBACK")
-                raise
-            conn.execute("COMMIT")
-            # only a committed transaction proves the schema exists
-            self._ready = True
+        with self._db.write(self._connect) as conn:
+            yield conn
 
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:
-        if not self._ready:
-            with self._write():
-                pass
-        with closing(self._connect()) as conn:
+        with self._db.read(self._connect) as conn:
             yield conn
-
-    def _migrate(self, conn: sqlite3.Connection) -> None:
-        """Runs inside the caller's write transaction, so a failed migration leaves the file as it was."""
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version > SCHEMA_VERSION:
-            raise HistoryVersionError(f"history database schema {version} is newer than supported {SCHEMA_VERSION}").coded(
-                "history.newer_schema", found=version, supported=SCHEMA_VERSION
-            )
-        for step in range(version + 1, SCHEMA_VERSION + 1):
-            for statement in _MIGRATIONS[step]:
-                conn.execute(statement)
-            conn.execute(f"PRAGMA user_version = {step}")
-
-    @staticmethod
-    def _upsert_series(conn: sqlite3.Connection, series: SeriesRef) -> None:
-        conn.execute(
-            """INSERT INTO series (id, slug, title, url) VALUES (?, ?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET slug = excluded.slug, title = excluded.title, url = excluded.url""",
-            (series.id, series.slug, series.title, series.url),
-        )
 
     def record_watch(self, series: SeriesRef, episode: float) -> None:
         with self._write() as conn:
-            self._upsert_series(conn, series)
+            upsert_series(conn, series)
             conn.execute(
-                "UPDATE series SET last_ep = ?, watch_updated_at = ? WHERE id = ?", (float(episode), _now(), series.id)
+                "UPDATE series SET last_ep = ?, watch_updated_at = ? WHERE id = ?", (float(episode), self._db.now(), series.id)
             )
 
     def record_download(self, series: SeriesRef, episode: float) -> None:
-        now = _now()
+        now = self._db.now()
         with self._write() as conn:
-            self._upsert_series(conn, series)
+            upsert_series(conn, series)
             conn.execute(
                 "INSERT OR IGNORE INTO downloaded_episode (series_id, episode, recorded_at) VALUES (?, ?, ?)",
                 (series.id, float(episode), now),
@@ -140,9 +76,12 @@ class SqliteHistory:
         ]
 
     def clear(self) -> None:
-        """Removes every entry but keeps ``meta``, so an already imported legacy file is not imported again."""
+        """Removes the cursor and download records only; ``meta``, watch state, jobs and the library stay."""
         with self._write() as conn:
-            conn.execute("DELETE FROM series")
+            conn.execute("UPDATE series SET last_ep = NULL, watch_updated_at = NULL, download_updated_at = NULL")
+            conn.execute("DELETE FROM downloaded_episode")
+            # series rows still referenced by newer state must stay; the rest go, as before
+            conn.execute("DELETE FROM series WHERE id NOT IN (SELECT series_id FROM episode)")
 
     def meta(self, key: str) -> str | None:
         with self._read() as conn:

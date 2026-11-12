@@ -29,11 +29,28 @@ CONFINED = {
     "curl_cffi": {"transport/curl.py"},
     "selectolax": {"dom/selectolax_backend.py"},
     "yt_dlp": {"extract/ytdlp_resolver.py", "download.py"},
-    "sqlite3": {"history/sqlite.py"},
+    "sqlite3": {
+        "history/database.py",
+        "history/sqlite.py",
+        "history/watch.py",
+        "history/queue.py",
+        "history/library.py",
+        "history/preferences.py",
+    },
     "urllib.request": {"transport/clearance.py"},
 }
 
-STDLIB_ONLY = ["models.py", "errors.py", "events.py", "cancel.py", "redaction.py", "messages.py", "config.py", "rules"]
+STDLIB_ONLY = [
+    "models.py",
+    "state.py",
+    "errors.py",
+    "events.py",
+    "cancel.py",
+    "redaction.py",
+    "messages.py",
+    "config.py",
+    "rules",
+]
 
 # package → engine packages it must not import
 LAYERS = {
