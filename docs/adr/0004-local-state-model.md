@@ -94,6 +94,10 @@ Same source and variant only make a partial a *candidate* (`resume_candidate`). 
 after refreshing the URL, resumes only if `same_resource` holds; otherwise it starts over. Another source or variant
 always drops the partial.
 
+*Superseded in part by [ADR-0005](0005-offline-executor.md):* the evidence must be a strong validator checked in the
+very request that adds bytes, together with a durable checkpoint; without it the job waits for a source decision
+instead of starting over, unless the compatible-alternatives policy authorises it.
+
 ### Offline items and the file system
 
 An offline item is created only by `complete`, in the same transaction that completes the job. If a `missing` item of
@@ -108,10 +112,17 @@ locator is recorded before the transfer writes there and the file is published b
 `finalizing` job is checked against its target, an item without its file becomes `missing`, a `deleting` item is
 finished, and a file without a row is only reported, never removed.
 
+*Amended by [ADR-0005](0005-offline-executor.md):* the target is reserved by `set_target`, which refuses a locator held
+by another open job, an item (except a missing copy of the same episode) or a pending removal, and `mark_deleting`
+refuses a locator an open job has reserved — a conflict is caught before publishing, not by `complete`. Items record
+their SHA-256; a missing item becomes available again only when the digest matches. Files the store stops referencing
+are queued in `pending_removal` in the same transaction; only those are removed automatically.
+
 ### Restart
 
-One process executes the queue per database file (an assumption, not a lock). At start it calls
-`recover_interrupted()` before any executor: `running` jobs are re-queued with `job.interrupted` (partial kept),
+One process executes the queue per database file, enforced by the executor ownership lock of
+[ADR-0005](0005-offline-executor.md): `recover_interrupted(owner)` and `claim_next(network, owner)` refuse without it.
+After acquiring ownership the owner calls `recover_interrupted` before claiming anything: `running` jobs are re-queued with `job.interrupted` (partial kept),
 `stopping` jobs settle on their target, and `finalizing` jobs get a fresh attempt for reconciliation, which makes the
 old attempt `LOST`.
 
