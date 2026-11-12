@@ -19,6 +19,7 @@ from alt_ani_core import dom
 from alt_ani_core.config import EngineConfig
 from alt_ani_core.services.engine import Engine
 from alt_ani_core.testing import FakeTransport, InMemoryHistory
+import alt_ani_core.services.offline, alt_ani_core.storage.fs, alt_ani_core.history.ownership
 
 with Engine(EngineConfig(cache_dir=Path(tempfile.mkdtemp())), transport=FakeTransport(), history=InMemoryHistory()) as engine:
     ref = engine.series_from_url("https://shinden.pl/series/61064-sousou-no-frieren")
