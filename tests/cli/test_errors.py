@@ -15,8 +15,18 @@ from alt_ani_core.errors import (
     PlayerNotFoundError,
     ShindenError,
 )
+from alt_ani_core.history.local import open_local_state
 from alt_ani_core.history.sqlite import SCHEMA_VERSION, SqliteHistory
 from alt_ani_core.messages import MESSAGES
+from alt_ani_core.state import (
+    DownloadCriteria,
+    EpisodeKey,
+    JobState,
+    NetworkKind,
+    OfflineItemSpec,
+    OpenedVia,
+    StorageLocator,
+)
 from alt_ani_core.testing import FakeResponse
 from alt_ani_core.transport.api import HttpStatusError, NetworkError
 
@@ -330,6 +340,28 @@ class TestHistoryStartup:
         assert transport.sessions == []
         assert store.watch_entries() == []
         assert store.download_entries() == []
+
+    def test_delete_history_keeps_watch_state_queue_and_library(self, run_main, cli_paths):
+        local = open_local_state(cli_paths.history_db)
+        local.history.record_watch(REF, 3.0)
+        local.history.record_download(REF, 1.0)
+        local.watch.record_opened(REF, episode(2), OpenedVia.PLAYER)
+        session = local.watch.begin_playback(EpisodeKey(REF.id, 2))
+        local.watch.record_position(session, 1, 90_000)
+        local.queue.enqueue(REF, [episode(4)], DownloadCriteria())
+        local.queue.enqueue(REF, [episode(5)], DownloadCriteria())
+        claim = local.queue.claim_next(NetworkKind.WIFI)
+        local.queue.begin_finalize(claim.attempt_id)
+        local.queue.complete(claim.attempt_id, OfflineItemSpec(StorageLocator("fs", "/videos/ep4.mp4")))
+
+        result = run_main(["-D"])
+
+        assert result.code == 0
+        assert local.history.watch_entries() == []
+        assert local.history.download_entries() == []
+        assert local.watch.get(EpisodeKey(REF.id, 2)).position_ms == 90_000
+        assert [(j.key.number, j.state) for j in local.queue.jobs()] == [(4.0, JobState.COMPLETED), (5.0, JobState.QUEUED)]
+        assert len(local.library.items()) == 1
 
     def test_delete_history_runs_after_the_legacy_import_and_clears_it(self, run_main, console, cli_paths):
         _write_legacy(cli_paths, _LEGACY)
