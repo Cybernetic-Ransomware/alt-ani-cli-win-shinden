@@ -4,10 +4,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from alt_ani_cli.config import SHINDEN_XHR_BASE
-from alt_ani_cli.errors import ParseError, ShindenError
-from alt_ani_cli.shinden.episode import episode_path, episode_url_from_path
-from alt_ani_cli.shinden.xhr import BACKEND_API4, BACKEND_NEW, load_episode, parse_backend, read_episode
+from alt_ani_core.config import SHINDEN_XHR_BASE
+from alt_ani_core.errors import ParseError, ShindenError
+from alt_ani_core.shinden.episode import episode_path, episode_url_from_path
+from alt_ani_core.shinden.xhr import BACKEND_API4, BACKEND_NEW, load_episode, parse_backend, read_episode
 
 from .conftest import EPISODE_URL, TEST_TOKEN, TRAP_ID
 
@@ -128,7 +128,7 @@ class TestPageContract:
             _read(html[:start] + "[]" + html[end:])
 
     def test_player_json_is_parsed_once(self, episode_page, monkeypatch):
-        from alt_ani_cli.shinden import episode
+        from alt_ani_core.shinden import episode
 
         calls = []
         original = episode._player_data

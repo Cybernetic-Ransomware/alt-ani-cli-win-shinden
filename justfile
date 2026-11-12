@@ -13,16 +13,22 @@ commit:
 bump:
     uv run cz bump
 
-# Apply ruff formatting to src/
+# Apply ruff formatting to all Python sources
 format:
-    uv run ruff format src/
+    uv run ruff format .
 
 # Run the full linting suite
 lint:
-    uv run ruff check src/
-    uv run ty check src/
-    uv run python -m codespell_lib src/
-    uv run bandit -c pyproject.toml -r src/ -q
+    uv run ruff check .
+    uv run ruff format --check .
+    uv run ty check apps packages/core/src
+    uv run lint-imports
+    uv run python -m codespell_lib apps packages docs
+    uv run bandit -c pyproject.toml -r apps packages/core/src -q
+
+# Build both wheels and check them in clean virtual environments
+package:
+    uv run python tools/check_packaging.py
 
 # Run tests
 test:

@@ -19,16 +19,18 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
-from curl_cffi.requests import exceptions as cffi_exceptions
-
-from alt_ani_cli import config, extract
-from alt_ani_cli.diagnostics import _host_of_url
-from alt_ani_cli.errors import AntiBotError, NoStreamError, ShindenError, ShindenXhrError
-from alt_ani_cli.shinden import api as shinden_api
-from alt_ani_cli.shinden import episode as shinden_episode
-from alt_ani_cli.shinden import http as shinden_http
-from alt_ani_cli.shinden import xhr as shinden_xhr
+from alt_ani_cli import paths
 from alt_ani_cli.ui import progress
+from alt_ani_core import extract
+from alt_ani_core.diagnostics import host_of_url
+from alt_ani_core.errors import AntiBotError, NoStreamError, ShindenError, ShindenXhrError
+from alt_ani_core.rules.failure import classify_exception, http_status_of
+from alt_ani_core.shinden import api as shinden_api
+from alt_ani_core.shinden import episode as shinden_episode
+from alt_ani_core.shinden import xhr as shinden_xhr
+from alt_ani_core.transport import clearance
+from alt_ani_core.transport.api import HttpSession, Transport, TransportError
+from alt_ani_core.transport.curl import CurlTransport
 
 _RESOLVE_DIAG_FIELDS = (
     "layer",
@@ -299,7 +301,9 @@ def _harness_error(case: ReplayCase, note: str, exc: Exception | None = None) ->
     )
 
 
-def replay_case(client, case: ReplayCase, *, backend: str = shinden_xhr.BACKEND_NEW) -> ReplayOutcome:
+def replay_case(
+    client: HttpSession, case: ReplayCase, *, transport: Transport, backend: str = shinden_xhr.BACKEND_NEW
+) -> ReplayOutcome:
     """Re-run resolve_embed -> extract.resolve for one case. Never launches a player or touches history."""
     if case.online_id is None:
         return _harness_error(case, "missing player context in log")
@@ -310,7 +314,7 @@ def replay_case(client, case: ReplayCase, *, backend: str = shinden_xhr.BACKEND_
         return _harness_error(case, "missing episode context in log")
     try:
         _players, xhr = shinden_xhr.load_episode(client, episode_url, backend=backend)
-    except (ShindenError, cffi_exceptions.RequestException) as exc:
+    except (ShindenError, TransportError) as exc:
         return _harness_error(case, "episode page could not be loaded", exc)
     if case.online_id == xhr.trap_id:
         return _harness_error(case, "player id is now the episode's honeypot")
@@ -318,27 +322,27 @@ def replay_case(client, case: ReplayCase, *, backend: str = shinden_xhr.BACKEND_
         return _harness_error(case, "player no longer listed on the episode page")
     xhr.begin_operation()
 
-    outcome = _replay_resolve(client, case, xhr)
+    outcome = _replay_resolve(client, transport, case, xhr)
     fallback = f"api4 fallback: {xhr.fallback_reason}" if xhr.fallback_reason else None
     note = "; ".join(n for n in (outcome.note, fallback) if n) or None
     return replace(outcome, now_backend=xhr.backend, note=note)
 
 
-def _replay_resolve(client, case: ReplayCase, xhr: shinden_xhr.EpisodeXhr) -> ReplayOutcome:
+def _replay_resolve(client: HttpSession, transport: Transport, case: ReplayCase, xhr: shinden_xhr.EpisodeXhr) -> ReplayOutcome:
     online_id = case.online_id or ""
     try:
         embed = shinden_api.resolve_embed(client, online_id, xhr=xhr)
     except AntiBotError as exc:
         now = _NowSnapshot(ok=False, host=None, harness_error=False, layer="shinden_api", category="anti_bot")
         return _finalize(case, now, exc)
-    except (ShindenError, cffi_exceptions.RequestException) as exc:
+    except (ShindenError, TransportError) as exc:
         now = _NowSnapshot(
             ok=False,
             host=None,
             harness_error=False,
             layer="shinden_api",
-            category=extract._classify(exc),
-            http_status=extract._http_status(exc),
+            category=classify_exception(exc),
+            http_status=http_status_of(exc),
         )
         outcome = _finalize(case, now, exc)
         if isinstance(exc, ShindenXhrError) and shinden_api.xhr_outcome(exc) is not shinden_api.XhrOutcome.NEXT_PLAYER:
@@ -355,11 +359,12 @@ def _replay_resolve(client, case: ReplayCase, xhr: shinden_xhr.EpisodeXhr) -> Re
             note="unexpected error resolving embed",
         )
 
-    host = _host_of_url(embed.url)
+    host = host_of_url(embed.url)
     try:
-        extract.resolve(embed.url, embed.referer)
+        extract.resolve(embed.url, embed.referer, transport=transport)
     except NoStreamError as exc:
-        fields = {name: getattr(exc, name, None) for name in _RESOLVE_DIAG_FIELDS}
+        failure = exc.failure
+        fields = {name: getattr(failure, name, None) for name in _RESOLVE_DIAG_FIELDS}
         now = _NowSnapshot(ok=False, host=host, harness_error=False, **fields)
         return _finalize(case, now, exc)
     except Exception as exc:
@@ -477,7 +482,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        backend = shinden_xhr.parse_backend(args.xhr_backend or config.XHR_BACKEND)
+        cli_paths = paths.load_paths()
+        config = paths.load_engine_config(cli_paths)
+        backend = shinden_xhr.parse_backend(args.xhr_backend or config.xhr_backend)
     except ValueError as exc:
         progress.error(str(exc))
         return 1
@@ -499,7 +506,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        client = shinden_http.make_client()
+        transport = CurlTransport()
+        client = transport.open(clearance.shinden_profile(clearance.get_clearance(config.access, config.cache_dir)))
     except Exception as exc:
         progress.error(f"Could not create an HTTP client: {type(exc).__name__}")
         return 1
@@ -507,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
     outcomes: list[ReplayOutcome] = []
     try:
         for case in cases:
-            outcome = replay_case(client, case, backend=backend)
+            outcome = replay_case(client, case, transport=transport, backend=backend)
             outcomes.append(outcome)
             render_case(outcome)
             if outcome.xhr_stop is not None:

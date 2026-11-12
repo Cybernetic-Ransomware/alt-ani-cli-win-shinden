@@ -4,9 +4,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from alt_ani_cli.config import SHINDEN_BASE
-from alt_ani_cli.errors import ParseError
-from alt_ani_cli.shinden.search import _parse_results, search_series
+from alt_ani_core.config import SHINDEN_BASE
+from alt_ani_core.errors import ParseError
+from alt_ani_core.shinden.search import _parse_results, search_series
 
 _FRIEREN_COUNTER = '<span class="sh-tagi-liczba"><b>4</b> anime</span>'
 _EMPTY_MARKER = '<div class="sh-szukaj-brak"><p>Nic nie pasuje.</p></div>'

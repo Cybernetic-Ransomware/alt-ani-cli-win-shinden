@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from alt_ani_cli import diagnostics
+from alt_ani_core import diagnostics
 
 
 @pytest.fixture(autouse=True)
@@ -22,8 +22,7 @@ def _reset_diagnostics_logger():
 @pytest.mark.unit
 class TestConfigure:
     def test_creates_session_log_under_diag_dir(self, tmp_path):
-        with patch("alt_ani_cli.diagnostics.DIAG_DIR", tmp_path):
-            path = diagnostics.configure()
+        path = diagnostics.configure(tmp_path)
         assert path.exists()
         assert path.parent == tmp_path
         assert path.name.startswith("session_")
@@ -33,10 +32,9 @@ class TestConfigure:
 @pytest.mark.unit
 class TestConfigureIdempotent:
     def test_second_configure_stops_writing_to_first_file(self, tmp_path):
-        with patch("alt_ani_cli.diagnostics.DIAG_DIR", tmp_path):
-            first = diagnostics.configure()
-            second = diagnostics.configure()
-            diagnostics.series_selected("123", "Test Series")
+        first = diagnostics.configure(tmp_path)
+        second = diagnostics.configure(tmp_path)
+        diagnostics.series_selected("123", "Test Series")
 
         assert first != second
         assert "series_selected" not in first.read_text(encoding="utf-8")
@@ -51,8 +49,8 @@ class TestPruning:
             f.write_text("stale", encoding="utf-8")
             os.utime(f, (i, i))
 
-        with patch("alt_ani_cli.diagnostics.DIAG_DIR", tmp_path), patch("alt_ani_cli.diagnostics._MAX_SESSIONS", 3):
-            path = diagnostics.configure()
+        with patch("alt_ani_core.diagnostics._MAX_SESSIONS", 3):
+            path = diagnostics.configure(tmp_path)
 
         remaining = {p.name for p in tmp_path.glob("session_*.log")}
         assert remaining == {"session_old_3.log", "session_old_4.log", path.name}
@@ -62,16 +60,16 @@ class TestPruning:
 class TestHostOfUrl:
     def test_strips_userinfo_port_path_query(self):
         url = "https://user:token@evilcdn.example.com:8443/path?token=abc123"
-        assert diagnostics._host_of_url(url) == "evilcdn.example.com"
+        assert diagnostics.host_of_url(url) == "evilcdn.example.com"
 
     def test_strips_www_prefix(self):
-        assert diagnostics._host_of_url("https://www.mp4upload.com/embed-xyz.html") == "mp4upload.com"
+        assert diagnostics.host_of_url("https://www.mp4upload.com/embed-xyz.html") == "mp4upload.com"
 
     def test_falls_back_to_unknown_host_for_garbage_input(self):
-        assert diagnostics._host_of_url("not a url") == "unknown-host"
+        assert diagnostics.host_of_url("not a url") == "unknown-host"
 
     def test_falls_back_to_unknown_host_when_hostname_missing(self):
-        assert diagnostics._host_of_url("/relative/path") == "unknown-host"
+        assert diagnostics.host_of_url("/relative/path") == "unknown-host"
 
 
 @pytest.mark.unit
@@ -116,12 +114,11 @@ class TestSafeValueRoundTrip:
 class TestEventEmission:
     @pytest.fixture
     def log_path(self, tmp_path):
-        with patch("alt_ani_cli.diagnostics.DIAG_DIR", tmp_path):
-            return diagnostics.configure()
+        return diagnostics.configure(tmp_path)
 
     def test_resolve_result_failure_records_host_and_exception_class_without_full_url(self, log_path):
         secret_url = "https://evilcdn.example.com/embed/abc?token=SUPERSECRETTOKEN123"
-        diagnostics.resolve_result(diagnostics._host_of_url(secret_url), False, "NoStreamError", 1.23)
+        diagnostics.resolve_result(diagnostics.host_of_url(secret_url), False, "NoStreamError", 1.23)
 
         content = log_path.read_text(encoding="utf-8")
         assert "host=evilcdn.example.com" in content
@@ -232,7 +229,7 @@ class TestEventEmission:
     def test_host_health_records_states_and_context_without_urls(self, log_path):
         secret_url = "https://evilcdn.example.com/embed/abc?token=SUPERSECRETTOKEN123"
         diagnostics.host_health(
-            host=diagnostics._host_of_url(secret_url),
+            host=diagnostics.host_of_url(secret_url),
             from_state="degraded",
             to_state="unavailable",
             signal="transient",

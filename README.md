@@ -154,9 +154,28 @@ Failed players are marked with `✗` and can be retried interactively.
 
 Files are saved to `%USERPROFILE%\Videos\alt-ani-cli\` by default.
 
+## History
+
+Watch and download history is kept in a local SQLite file, `history.db`, in the application's data directory.
+A `history.json` written by an earlier version is imported once on the first start: the JSON file is only read,
+a `history.json.pre-sqlite.bak` copy is placed next to it, and entries that cannot be read are skipped.
+`-D` clears the history without bringing the old file back. Details are in
+[ADR-0002](docs/adr/0002-core-cli-split.md#history-migration).
+
 ## Development
 
 For branching, integration, and release rules, see [ADR-0001](docs/adr/0001-branching-and-release-flow.md).
+
+### Project layout
+
+A uv workspace; architecture and layer rules are described in [ADR-0002](docs/adr/0002-core-cli-split.md).
+
+| Path | What it is |
+|------|------------|
+| `packages/core` | `alt-ani-core` — the engine: Shinden integration, extractors, downloads, history. No terminal, no desktop paths |
+| `apps/cli` | `alt-ani-cli-win` — this CLI: arguments, menus, mpv/VLC, paths, Polish texts |
+| `apps/android` | Feasibility spike and `alt_ani_bridge`, a JSON facade over the engine ([ADR-0003](docs/adr/0003-android-feasibility.md)); not built by CI |
+| `tests` | One suite for the workspace, including `tests/architecture` (layer rules) and `tests/bridge` |
 
 One-time setup:
 
@@ -169,8 +188,9 @@ Day-to-day with [just](https://github.com/casey/just):
 
 ```powershell
 just test           # run tests
-just lint           # ruff check, ty, codespell, bandit
-just format         # apply ruff formatting to src/
+just lint           # ruff check + format check, ty, import contracts, codespell, bandit
+just format         # apply ruff formatting
+just package        # build both wheels and check them in clean virtual environments
 just replay-failures "PATH_TO_LOG"  # replay resolve_result failures from a diagnostics session log
 ```
 
@@ -193,7 +213,7 @@ custom decrypting proxy — the host fails fast with a clear message instead of 
 
 ## Security notes
 
-**`GUEST_AUTH` token** — the value hardcoded in `config.py` is a public guest token issued by shinden.pl for unauthenticated API access.
+**`GUEST_AUTH` token** — the value hardcoded in `alt_ani_core/config.py` is a public guest token issued by shinden.pl for unauthenticated API access.
 
 It encodes the literal string `_guest_:0,5,21000000,255,4174293644` in Base64. Any visitor to shinden.pl receives the same token, so it is safe to commit and share openly.
 
@@ -205,14 +225,11 @@ Scripts in `tools/` are used during development to inspect the shinden.pl API. T
 
 | Script | Purpose |
 |--------|---------|
-| `tools/spike_curl_cffi.py` | Verifies the Cloudflare bypass chain: curl_cffi TLS → FlareSolverr |
 | `tools/debug_embed.py <url>` | Scans a player JS bundle for CDN domains and HLS/token patterns — used to reverse-engineer new embed hosts |
-| `tools/dump_search_html.py [query]` | Dumps parsed search result rows from shinden.pl — used to debug the search HTML parser |
 | `tools/replay_failed_resolvers.py <log>` | Replays `resolve_result ok=False` entries from a diagnostics session log against live hosts, showing a BEFORE/NOW comparison per case — also available as `just replay-failures <log>` |
+| `tools/check_packaging.py` | Builds both wheels and checks entry points, packaged content and a terminal-free engine in clean virtual environments — also `just package` |
 
 ```powershell
-uv run python tools/spike_curl_cffi.py
-uv run python tools/dump_search_html.py "soul eater"
 uv run python tools/debug_embed.py https://example-embed-host.com/e/abc123
 just replay-failures "$env:LOCALAPPDATA\alt-ani-cli\alt-ani-cli\Cache\diagnostics\session_20260919_232825_752907.log"
 ```

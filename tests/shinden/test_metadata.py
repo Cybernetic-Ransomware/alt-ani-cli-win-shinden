@@ -4,18 +4,19 @@ import re
 from unittest.mock import MagicMock
 
 import pytest
-from curl_cffi.requests.exceptions import HTTPError as CurlHTTPError
-from selectolax.parser import HTMLParser
 
-from alt_ani_cli.config import SHINDEN_BASE
-from alt_ani_cli.errors import ParseError, ShindenError
-from alt_ani_cli.models import SeriesRef
-from alt_ani_cli.shinden.metadata import (
+from alt_ani_core.config import SHINDEN_BASE
+from alt_ani_core.dom import Document, selectolax_backend
+from alt_ani_core.dom import parse as parse_html
+from alt_ani_core.errors import ParseError, ShindenError
+from alt_ani_core.models import SeriesRef
+from alt_ani_core.shinden.metadata import (
     _TAG_GROUP_ORDER,
     _parse_air_date,
     _parse_description,
     fetch_series_metadata,
 )
+from alt_ani_core.transport.api import HttpStatusError
 
 _REF = SeriesRef(
     id="61064", slug="sousou-no-frieren", title="Sousou No Frieren", url=f"{SHINDEN_BASE}/series/61064-sousou-no-frieren"
@@ -26,12 +27,12 @@ def _events(events, name):
     return [fields for event, fields in events if event == name]
 
 
-def _info(dd: str) -> HTMLParser:
-    return HTMLParser(f'<dl class="sh-tp-info"><dt>Typ</dt><dd>TV</dd><dt>Emisja</dt><dd>{dd}</dd></dl>')
+def _info(dd: str) -> Document:
+    return parse_html(f'<dl class="sh-tp-info"><dt>Typ</dt><dd>TV</dd><dt>Emisja</dt><dd>{dd}</dd></dl>')
 
 
 def _description(inner: str) -> str:
-    return _parse_description(HTMLParser(f'<div id="description" class="sh-tp-desc sh-zwin">{inner}</div>'))
+    return _parse_description(parse_html(f'<div id="description" class="sh-tp-desc sh-zwin">{inner}</div>'))
 
 
 def _emisja(html: str, value: str) -> str:
@@ -101,21 +102,21 @@ class TestParseAirDate:
         assert diag_events == []
 
     def test_missing_label_is_absence(self, diag_events):
-        info = HTMLParser('<dl class="sh-tp-info"><dt>Typ</dt><dd>TV</dd></dl>').css_first("dl")
+        info = parse_html('<dl class="sh-tp-info"><dt>Typ</dt><dd>TV</dd></dl>').css_first("dl")
         assert _parse_air_date(info) == (None, None)
         assert diag_events == []
 
     def test_whitespace_between_dt_and_dd(self):
-        info = HTMLParser('<dl class="sh-tp-info"><dt>Emisja</dt>\n  <dd>20.10.1999</dd></dl>').css_first("dl")
+        info = parse_html('<dl class="sh-tp-info"><dt>Emisja</dt>\n  <dd>20.10.1999</dd></dl>').css_first("dl")
         assert _parse_air_date(info) == ("20.10.1999", (1999, 10, 20))
 
     def test_label_without_dd_does_not_take_next_label_value(self, diag_events):
-        info = HTMLParser('<dl class="sh-tp-info"><dt>Emisja</dt><dt>Premiera</dt><dd>2027</dd></dl>').css_first("dl")
+        info = parse_html('<dl class="sh-tp-info"><dt>Emisja</dt><dt>Premiera</dt><dd>2027</dd></dl>').css_first("dl")
         assert _parse_air_date(info) == (None, None)
         assert diag_events == []
 
     def test_legacy_label_is_not_matched(self):
-        info = HTMLParser('<dl class="sh-tp-info"><dt>Data emisji:</dt><dd>30.07.2003</dd></dl>').css_first("dl")
+        info = parse_html('<dl class="sh-tp-info"><dt>Data emisji:</dt><dd>30.07.2003</dd></dl>').css_first("dl")
         assert _parse_air_date(info) == (None, None)
 
 
@@ -146,13 +147,13 @@ class TestParseDescription:
         assert _description("  a \n\t b  ") == "a b"
 
     def test_tree_is_not_mutated(self):
-        tree = HTMLParser('<div id="description">a<br>b</div>')
+        tree = selectolax_backend.parse('<div id="description">a<br>b</div>')
         before = tree.html
         _parse_description(tree)
         assert tree.html == before
 
     def test_missing_node_returns_empty(self):
-        assert _parse_description(HTMLParser("<div class='nothing'></div>")) == ""
+        assert _parse_description(parse_html("<div class='nothing'></div>")) == ""
 
     def test_empty_node_returns_empty(self):
         assert _description("") == ""
@@ -273,7 +274,7 @@ class TestPageStructure:
     def test_http_error_propagates(self, fake_response):
         client = MagicMock()
         client.get.return_value = fake_response(status=404)
-        with pytest.raises(CurlHTTPError):
+        with pytest.raises(HttpStatusError):
             fetch_series_metadata(client, _REF)
 
     def test_requests_ref_url(self, fake_response, shinden_html):

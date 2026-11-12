@@ -1,0 +1,42 @@
+import os
+import shutil
+import sys
+
+from alt_ani_cli.content import EXCEPTIONS
+from alt_ani_core.config import USER_AGENT
+from alt_ani_core.errors import PlayerNotFoundError
+from alt_ani_core.models import StreamVariant
+
+
+def build(stream: StreamVariant, *, title: str) -> list[str]:
+    path = _find()
+    referer = stream.headers.get("Referer") or stream.headers.get("referer", "")
+    cmd = [
+        path,
+        stream.url,
+        "--play-and-exit",
+        f"--meta-title={title}",
+        f"--http-user-agent={stream.headers.get('User-Agent', USER_AGENT)}",
+    ]
+    if referer:
+        cmd.append(f"--http-referrer={referer}")
+    return cmd
+
+
+def _find() -> str:
+    env = os.environ.get("ANI_CLI_PLAYER", "")
+    if env:
+        return env
+    candidates = ["vlc.exe", "vlc"]
+    if sys.platform == "win32":
+        candidates += [
+            r"C:\Program Files\VideoLAN\VLC\vlc.exe",
+            r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe",
+        ]
+    for c in candidates:
+        found = shutil.which(c)
+        if found:
+            return found
+        if sys.platform == "win32" and os.path.isfile(c):
+            return c
+    raise PlayerNotFoundError(EXCEPTIONS["player"]["vlc_not_found"])

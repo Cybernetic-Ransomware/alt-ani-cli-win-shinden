@@ -5,8 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from alt_ani_cli import health
-from alt_ani_cli.health import (
+from alt_ani_core.models import PlayerEntry
+from alt_ani_core.rules import health
+from alt_ani_core.rules.health import (
     EVIDENCE_TTL_SEC,
     HealthTransition,
     HostState,
@@ -15,7 +16,6 @@ from alt_ani_cli.health import (
     _LayerEffect,
     classify_failure,
 )
-from alt_ani_cli.models import PlayerEntry
 
 
 def _player(
@@ -638,7 +638,7 @@ class TestModulePurity:
 @pytest.mark.unit
 class TestCategoryLiteralsMatchExtractCommon:
     def test_known_category_constants_are_classified(self):
-        from alt_ani_cli.extract import common as extract_common
+        from alt_ani_core.extract import common as extract_common
 
         assert (
             classify_failure(

@@ -1,6 +1,6 @@
 import pytest
 
-from alt_ani_cli.redaction import REDACTED, redact_header_value, redact_headers, redact_text
+from alt_ani_core.redaction import REDACTED, redact_header_value, redact_headers, redact_text
 
 
 @pytest.mark.unit
