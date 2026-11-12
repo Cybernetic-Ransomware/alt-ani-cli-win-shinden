@@ -1,3 +1,4 @@
+import errno
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
@@ -130,6 +131,18 @@ class UnknownRecordError(ShindenError):
     """No episode, job or offline item with the given identity is stored."""
 
 
+class ExecutorBusyError(ShindenError):
+    """Another process already executes the download queue of this database."""
+
+
+class ExecutorNotOwnerError(ShindenError):
+    """Only the process holding the executor ownership may claim jobs or recover interrupted ones."""
+
+
+class StorageError(ShindenError):
+    """A file operation of the offline library failed; ``code`` tells which condition (no space, access denied, ...)."""
+
+
 class EngineClosedError(ShindenError):
     """The engine was closed and accepts no further operations."""
 
@@ -144,3 +157,35 @@ class OperationCancelled(EngineInterrupt):
 
 class StaleSessionError(EngineInterrupt):
     """The engine's access changed or it was closed while this operation ran; its result must be discarded."""
+
+
+NO_SPACE = "storage.no_space"
+ACCESS_DENIED = "storage.access_denied"
+IN_USE = "storage.in_use"
+TARGET_EXISTS = "storage.target_exists"
+OUTSIDE_ROOT = "storage.outside_root"
+UNAVAILABLE = "storage.unavailable"
+NO_ATOMIC_PUBLISH = "storage.no_atomic_publish"
+FAILED = "storage.failed"
+
+_NO_SPACE_ERRNOS = {errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)}
+_DENIED_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
+# Windows error codes: disk full, handle disk full, access denied, sharing and lock violations, file exists
+_WIN_NO_SPACE = {39, 112}
+_WIN_DENIED = {5}
+_WIN_IN_USE = {32, 33}
+_WIN_EXISTS = {80, 183}
+
+
+def classify_os_error(exc: OSError) -> str:
+    """A ``storage.*`` code from the error number only: messages carry local paths."""
+    winerror = getattr(exc, "winerror", None)
+    if winerror in _WIN_NO_SPACE or exc.errno in _NO_SPACE_ERRNOS:
+        return NO_SPACE
+    if winerror in _WIN_IN_USE:
+        return IN_USE
+    if winerror in _WIN_EXISTS or isinstance(exc, FileExistsError):
+        return TARGET_EXISTS
+    if winerror in _WIN_DENIED or exc.errno in _DENIED_ERRNOS:
+        return ACCESS_DENIED
+    return FAILED

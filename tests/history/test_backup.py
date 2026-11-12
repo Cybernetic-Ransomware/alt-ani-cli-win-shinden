@@ -10,6 +10,7 @@ import pytest
 
 from alt_ani_core.errors import HistoryBackupError
 from alt_ani_core.history import database
+from alt_ani_core.history.migrations import SCHEMA_VERSION
 from alt_ani_core.history.sqlite import SqliteHistory
 
 from .state_support import FIXTURES, scalar
@@ -64,7 +65,7 @@ class TestBackupBeforeUpgrade:
     def test_upgrade_completes_and_publishes_one_verified_copy(self, v1_db):
         result = _run_child(v1_db, "")
         assert result.returncode == 0, result.stderr
-        assert scalar(v1_db, "PRAGMA user_version") == 2
+        assert scalar(v1_db, "PRAGMA user_version") == SCHEMA_VERSION
         (backup,) = _published(v1_db)
         _assert_valid_v1_copy(backup)
         assert _temps(v1_db) == []
@@ -92,7 +93,7 @@ class TestInterruptedBackup:
         assert _temps(v1_db) != []
 
         SqliteHistory(v1_db).watch_entries()
-        assert scalar(v1_db, "PRAGMA user_version") == 2
+        assert scalar(v1_db, "PRAGMA user_version") == SCHEMA_VERSION
         assert _temps(v1_db) == []
         _assert_valid_v1_copy(_published(v1_db)[0])
 
@@ -112,7 +113,7 @@ class TestInterruptedBackup:
         assert _published(v1_db) == []
 
         SqliteHistory(v1_db).watch_entries()
-        assert scalar(v1_db, "PRAGMA user_version") == 2
+        assert scalar(v1_db, "PRAGMA user_version") == SCHEMA_VERSION
         assert _temps(v1_db) == []
         _assert_valid_v1_copy(_published(v1_db)[0])
 
@@ -158,7 +159,7 @@ class TestFailedBackup:
 
         monkeypatch.undo()
         SqliteHistory(v1_db).watch_entries()
-        assert scalar(v1_db, "PRAGMA user_version") == 2
+        assert scalar(v1_db, "PRAGMA user_version") == SCHEMA_VERSION
 
     def test_existing_backup_is_neither_trusted_nor_overwritten(self, v1_db):
         stale = v1_db.with_name(f"{v1_db.name}.schema-1.20000101T000000000000Z.bak")
@@ -191,7 +192,7 @@ class TestConcurrentStart:
             thread.join(timeout=60)
         assert errors == []
         assert seen == [3, 3]
-        assert scalar(v1_db, "PRAGMA user_version") == 2
+        assert scalar(v1_db, "PRAGMA user_version") == SCHEMA_VERSION
         assert len(_published(v1_db)) == 1
 
 
@@ -216,6 +217,42 @@ class TestDurability:
         monkeypatch.setattr(os, "fsync", tracking_fsync)
         SqliteHistory(v1_db).watch_entries()
         assert str(v1_db.parent) in synced
+
+    def test_backup_is_renamed_and_its_directory_synced_before_any_schema_step(self, v1_db, monkeypatch):
+        events: list[str] = []
+        real_replace, real_open, real_fsync = os.replace, os.open, os.fsync
+        directories: set[int] = set()
+
+        def tracking_replace(src, dst):
+            real_replace(src, dst)
+            if str(dst).endswith(database.BACKUP_SUFFIX):
+                events.append("rename")
+
+        def tracking_open(path, flags, *args):
+            fd = real_open(path, flags, *args)
+            if str(path) == str(v1_db.parent):
+                directories.add(fd)
+            return fd
+
+        def tracking_fsync(fd):
+            real_fsync(fd)
+            if fd in directories:
+                events.append("fsync_dir")
+
+        class RecordingSteps(tuple):
+            def __iter__(self):
+                events.append("migrate")
+                return super().__iter__()
+
+        steps = {step: RecordingSteps(statements) for step, statements in database.MIGRATIONS.items()}
+        monkeypatch.setattr(database, "MIGRATIONS", steps)
+        monkeypatch.setattr(os, "replace", tracking_replace)
+        monkeypatch.setattr(os, "open", tracking_open)
+        monkeypatch.setattr(os, "fsync", tracking_fsync)
+        SqliteHistory(v1_db).watch_entries()
+        expected = ["rename", "fsync_dir", "migrate"] if os.name == "posix" else ["rename", "migrate"]
+        assert events[: len(expected)] == expected
+        assert "migrate" not in events[: len(expected) - 1]
 
 
 @pytest.mark.unit

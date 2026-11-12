@@ -55,6 +55,27 @@ class _EventLogger:
         self._emit(f"[error] {msg}")
 
 
+def base_options(
+    stream: StreamVariant, logger: object, progress_hooks: list, *, socket_timeout: float = YTDLP_SOCKET_TIMEOUT_SEC
+) -> dict:
+    """yt-dlp options shared by the CLI download and the offline executor's transfer."""
+    return {
+        "http_headers": {
+            **stream.headers,
+            "User-Agent": stream.headers.get("User-Agent", USER_AGENT),
+        },
+        # Match yt-dlp CLI retry counts, but fail instead of silently skipping unavailable HLS fragments.
+        "retries": 10,
+        "fragment_retries": 10,
+        "skip_unavailable_fragments": False,
+        "socket_timeout": socket_timeout,
+        "quiet": True,
+        "noprogress": True,
+        "logger": logger,
+        "progress_hooks": progress_hooks,
+    }
+
+
 def _output_template(stream: StreamVariant, base: Path) -> str:
     # Generic extraction names extensionless direct URLs "unknown_video"; segmented streams keep yt-dlp's ext (remux).
     ext = stream.container if stream.protocol is StreamProtocol.PROGRESSIVE and stream.container else "%(ext)s"
@@ -142,22 +163,8 @@ def run(
     def _stop_when_cancelled(_status: dict) -> None:
         cancel.raise_if_cancelled()
 
-    opts: dict = {
-        "outtmpl": _output_template(stream, dest_dir / f"{safe_title} - ep{ep_label}"),
-        "http_headers": {
-            **stream.headers,
-            "User-Agent": stream.headers.get("User-Agent", USER_AGENT),
-        },
-        # Match yt-dlp CLI retry counts, but fail instead of silently skipping unavailable HLS fragments.
-        "retries": 10,
-        "fragment_retries": 10,
-        "skip_unavailable_fragments": False,
-        "socket_timeout": YTDLP_SOCKET_TIMEOUT_SEC,
-        "quiet": True,
-        "noprogress": True,
-        "logger": _EventLogger(events),
-        "progress_hooks": [_stop_when_cancelled],
-    }
+    opts = base_options(stream, _EventLogger(events), [_stop_when_cancelled])
+    opts["outtmpl"] = _output_template(stream, dest_dir / f"{safe_title} - ep{ep_label}")
 
     events.emit(DownloadStarted(title=safe_title, episode_label=ep_label, directory=str(dest_dir)))
     failed = False

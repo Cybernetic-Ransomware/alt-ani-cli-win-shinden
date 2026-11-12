@@ -12,6 +12,8 @@ from alt_ani_core.history.migrations import MIGRATIONS, SCHEMA_VERSION
 from alt_ani_core.models import EpisodeRow, SeriesRef
 
 BUSY_TIMEOUT_MS = 5000
+# what a store operation raises when the file cannot be read or written; lets callers outside history/ catch it
+STORE_ERRORS: tuple[type[Exception], ...] = (sqlite3.Error,)
 BACKUP_SUFFIX = ".bak"
 _TEMP_SUFFIX = ".tmp"
 

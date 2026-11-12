@@ -7,7 +7,7 @@ import pytest
 from alt_ani_core.errors import StateConflictError
 from alt_ani_core.state import AttemptStatus, JobState, NetworkKind, SkipReason
 
-from .state_support import enqueue, key, open_state
+from .state_support import enqueue, key, open_state, owner
 
 
 @pytest.fixture
@@ -47,16 +47,19 @@ class TestConcurrentWrites:
         assert [r.skipped for r in results if not r.added] == [((key(1), SkipReason.ALREADY_QUEUED),)]
         assert len(open_state(path).queue.jobs()) == 1
 
-    def test_two_executors_never_exceed_one_active_download(self, path):
+    def test_concurrent_claims_never_exceed_one_active_download(self, path):
         enqueue(open_state(path), 1, 2)
         a, b = open_state(path), open_state(path)
-        claims = _together(lambda: a.queue.claim_next(NetworkKind.WIFI), lambda: b.queue.claim_next(NetworkKind.WIFI))
+        held = owner(a)
+        claims = _together(
+            lambda: a.queue.claim_next(NetworkKind.WIFI, held), lambda: b.queue.claim_next(NetworkKind.WIFI, held)
+        )
         assert sum(c is not None for c in claims) == 1
 
     def test_progress_racing_a_pause_never_loses_the_pause(self, path):
         state = open_state(path)
         enqueue(state, 1)
-        claim = state.queue.claim_next(NetworkKind.WIFI)
+        claim = state.queue.claim_next(NetworkKind.WIFI, owner(state))
         user, executor = open_state(path), open_state(path)
         _, status = _together(
             lambda: user.queue.pause(claim.job.id), lambda: executor.queue.report_progress(claim.attempt_id, 7)

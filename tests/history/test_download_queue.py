@@ -31,6 +31,7 @@ from .state_support import (
     enqueue,
     key,
     open_state,
+    owner,
     partial,
     ref,
     rows,
@@ -47,7 +48,7 @@ def state(tmp_path):
 
 def _running(state, number: float = 1):
     (job,) = enqueue(state, number).added
-    claim = state.queue.claim_next(WIFI)
+    claim = state.queue.claim_next(WIFI, owner(state))
     assert claim is not None and claim.job.id == job.id
     return claim
 
@@ -189,11 +190,11 @@ class TestManualPauseVersusWaiting:
         claim = _running(state)
         enqueue(state, 2)
         state.queue.pause(claim.job.id)
-        assert state.queue.claim_next(WIFI) is None
+        assert state.queue.claim_next(WIFI, owner(state)) is None
         assert state.queue.report_progress(claim.attempt_id, 10) is AttemptStatus.STOP
         assert state.queue.ack_stopped(claim.attempt_id)
         assert state.queue.get(claim.job.id).state is JobState.PAUSED
-        assert state.queue.claim_next(WIFI).job.key == key(2)
+        assert state.queue.claim_next(WIFI, owner(state)).job.key == key(2)
 
     def test_network_hold_and_release_on_a_queued_job(self, state):
         (job,) = enqueue(state, 1).added
@@ -280,12 +281,12 @@ class TestManualPauseVersusWaiting:
 class TestCellularConsent:
     def test_wifi_only_job_is_not_claimed_on_cellular(self, state):
         enqueue(state, 1)
-        assert state.queue.claim_next(CELLULAR) is None
+        assert state.queue.claim_next(CELLULAR, owner(state)) is None
 
     def test_consent_belongs_to_one_job(self, state):
         a, b = enqueue(state, 1, 2).added
         state.queue.allow_cellular(b.id, True)
-        claim = state.queue.claim_next(CELLULAR)
+        claim = state.queue.claim_next(CELLULAR, owner(state))
         assert claim.job.id == b.id
         assert state.queue.get(a.id).cellular_allowed is False
 
@@ -298,38 +299,38 @@ class TestCellularConsent:
     def test_global_policy_applies_without_changing_jobs(self, state):
         (job,) = enqueue(state, 1).added
         state.preferences.update(download_network=DownloadNetwork.ANY)
-        assert state.queue.claim_next(CELLULAR).job.id == job.id
+        assert state.queue.claim_next(CELLULAR, owner(state)).job.id == job.id
         assert state.queue.get(job.id).cellular_allowed is False
 
     def test_offline_claims_nothing(self, state):
         (job,) = enqueue(state, 1, cellular_allowed=True).added
-        assert state.queue.claim_next(NetworkKind.OFFLINE) is None
+        assert state.queue.claim_next(NetworkKind.OFFLINE, owner(state)) is None
 
 
 @pytest.mark.unit
 class TestClaim:
     def test_order_and_one_active_download(self, state):
         a, b = enqueue(state, 1, 2).added
-        claim = state.queue.claim_next(WIFI)
+        claim = state.queue.claim_next(WIFI, owner(state))
         assert claim.job.id == a.id and claim.job.attempts == 1
-        assert state.queue.claim_next(WIFI) is None
+        assert state.queue.claim_next(WIFI, owner(state)) is None
 
     def test_higher_limit(self, state):
         enqueue(state, 1, 2, 3)
         state.preferences.update(max_active_downloads=2)
-        assert state.queue.claim_next(WIFI) and state.queue.claim_next(WIFI)
-        assert state.queue.claim_next(WIFI) is None
+        assert state.queue.claim_next(WIFI, owner(state)) and state.queue.claim_next(WIFI, owner(state))
+        assert state.queue.claim_next(WIFI, owner(state)) is None
 
     def test_waiting_for_interaction_does_not_block_the_rest(self, state):
         a, b = enqueue(state, 1, 2).added
-        claim = state.queue.claim_next(WIFI)
+        claim = state.queue.claim_next(WIFI, owner(state))
         assert state.queue.wait(claim.attempt_id, WaitReason.INTERACTION)
-        assert state.queue.claim_next(WIFI).job.id == b.id
+        assert state.queue.claim_next(WIFI, owner(state)).job.id == b.id
 
     def test_paused_jobs_are_skipped(self, state):
         a, b = enqueue(state, 1, 2).added
         state.queue.pause(a.id)
-        assert state.queue.claim_next(WIFI).job.id == b.id
+        assert state.queue.claim_next(WIFI, owner(state)).job.id == b.id
 
 
 @pytest.mark.unit
@@ -391,7 +392,7 @@ class TestAttemptFencing:
         assert state.queue.wait(claim.attempt_id, WaitReason.INTERACTION)
         job = state.queue.get(claim.job.id)
         assert (job.state, job.wait_reason, job.stop_target) == (JobState.WAITING, WaitReason.INTERACTION, None)
-        assert state.queue.claim_next(WIFI) is None
+        assert state.queue.claim_next(WIFI, owner(state)) is None
 
     def test_executor_reason_wins_over_a_pending_network_stop(self, state):
         claim = _running(state)
@@ -430,7 +431,7 @@ class TestAttemptFencing:
 
     def test_executor_calls_never_raise_for_a_lost_attempt(self, state):
         claim = _running(state)
-        state.queue.recover_interrupted()
+        state.queue.recover_interrupted(owner(state))
         assert not state.queue.wait(claim.attempt_id, WaitReason.STORAGE)
         assert not state.queue.fail(claim.attempt_id, JobError("x"))
 
@@ -444,7 +445,7 @@ class TestAttemptFencing:
             None,
         )
         assert state.queue.retry(claim.job.id).state is JobState.QUEUED
-        assert state.queue.claim_next(WIFI).job.attempts == 2
+        assert state.queue.claim_next(WIFI, owner(state)).job.attempts == 2
 
 
 @pytest.mark.unit
@@ -504,7 +505,7 @@ class TestRecovery:
     def test_running_job_is_requeued_and_its_old_attempt_is_lost(self, state):
         claim = _running(state)
         state.queue.set_partial(claim.attempt_id, partial())
-        recovery = state.queue.recover_interrupted()
+        recovery = state.queue.recover_interrupted(owner(state))
         assert recovery.requeued == (claim.job.id,)
         job = state.queue.get(claim.job.id)
         assert (job.state, job.attempt_id, job.partial, job.last_error) == (
@@ -519,14 +520,14 @@ class TestRecovery:
     def test_stopping_job_settles_on_its_target(self, state):
         claim = _running(state)
         state.queue.pause(claim.job.id)
-        assert state.queue.recover_interrupted().settled == (claim.job.id,)
+        assert state.queue.recover_interrupted(owner(state)).settled == (claim.job.id,)
         assert state.queue.get(claim.job.id).state is JobState.PAUSED
 
     def test_finalizing_job_goes_to_reconciliation_with_a_new_attempt(self, state):
         claim = _running(state)
         state.queue.set_target(claim.attempt_id, StorageLocator("fs", "/v/f.mp4"))
         state.queue.begin_finalize(claim.attempt_id)
-        (reconcile,) = state.queue.recover_interrupted().reconcile
+        (reconcile,) = state.queue.recover_interrupted(owner(state)).reconcile
         assert reconcile.job.target == StorageLocator("fs", "/v/f.mp4")
         assert state.queue.complete(claim.attempt_id, spec()) is None
         assert state.queue.complete(reconcile.attempt_id, spec()) is not None
@@ -560,7 +561,7 @@ class TestNoSecrets:
             source=source_identity(entry),
             variant=variant_identity(variant),
         )
-        claim = state.queue.claim_next(WIFI)
+        claim = state.queue.claim_next(WIFI, owner(state))
         state.queue.set_partial(claim.attempt_id, partial(source=source_identity(entry)))
         state.queue.begin_finalize(claim.attempt_id)
         state.queue.complete(claim.attempt_id, spec())

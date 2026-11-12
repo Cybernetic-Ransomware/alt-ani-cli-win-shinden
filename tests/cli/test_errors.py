@@ -16,6 +16,7 @@ from alt_ani_core.errors import (
     ShindenError,
 )
 from alt_ani_core.history.local import open_local_state
+from alt_ani_core.history.ownership import ExecutorOwnership
 from alt_ani_core.history.sqlite import SCHEMA_VERSION, SqliteHistory
 from alt_ani_core.messages import MESSAGES
 from alt_ani_core.state import (
@@ -350,7 +351,9 @@ class TestHistoryStartup:
         local.watch.record_position(session, 1, 90_000)
         local.queue.enqueue(REF, [episode(4)], DownloadCriteria())
         local.queue.enqueue(REF, [episode(5)], DownloadCriteria())
-        claim = local.queue.claim_next(NetworkKind.WIFI)
+        owner = ExecutorOwnership.try_acquire(cli_paths.history_db)
+        claim = local.queue.claim_next(NetworkKind.WIFI, owner)
+        owner.release()
         local.queue.begin_finalize(claim.attempt_id)
         local.queue.complete(claim.attempt_id, OfflineItemSpec(StorageLocator("fs", "/videos/ep4.mp4")))
 

@@ -4,6 +4,7 @@ from contextlib import closing
 from pathlib import Path
 
 from alt_ani_core.history.local import LocalState, open_local_state
+from alt_ani_core.history.ownership import ExecutorOwnership
 from alt_ani_core.models import EpisodeRow, SeriesRef
 from alt_ani_core.state import (
     DownloadCriteria,
@@ -65,7 +66,13 @@ def partial(validator: ResourceValidator | None = VALIDATOR, source: SourceIdent
 
 def spec(name: str = "fate - ep1.mp4", backend: str = "fs") -> OfflineItemSpec:
     return OfflineItemSpec(
-        locator=StorageLocator(backend, name), size_bytes=1000, audio="jp", subs="pl", height=720, variant_label="720p"
+        locator=StorageLocator(backend, name),
+        size_bytes=1000,
+        audio="jp",
+        subs="pl",
+        height=720,
+        variant_label="720p",
+        sha256=sha(),
     )
 
 
@@ -78,12 +85,34 @@ def download(state: LocalState, number: float = 1, name: str | None = None):
     from alt_ani_core.state import NetworkKind
 
     (job,) = enqueue(state, number).added
-    claim = state.queue.claim_next(NetworkKind.WIFI)
+    claim = state.queue.claim_next(NetworkKind.WIFI, owner(state))
     assert claim is not None and claim.job.id == job.id
     assert state.queue.begin_finalize(claim.attempt_id)
     item = state.queue.complete(claim.attempt_id, spec(name or f"fate - ep{number:g}.mp4"))
     assert item is not None
     return state.queue.get(job.id), item
+
+
+_owners: dict[Path, ExecutorOwnership] = {}
+
+
+def owner(state: LocalState) -> ExecutorOwnership:
+    """The executor ownership of this test's database, acquired once and released after the test."""
+    path = state.database.path.resolve()
+    if path not in _owners:
+        acquired = ExecutorOwnership.try_acquire(path)
+        assert acquired is not None
+        _owners[path] = acquired
+    return _owners[path]
+
+
+def release_owners() -> None:
+    while _owners:
+        _owners.popitem()[1].release()
+
+
+def sha(seed: str = "a") -> str:
+    return (seed * 64)[:64]
 
 
 def scalar(path: Path, sql: str):

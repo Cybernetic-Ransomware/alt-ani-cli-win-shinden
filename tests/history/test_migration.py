@@ -16,6 +16,7 @@ from .state_support import FIXTURES, open_state, scalar
 
 V1_TABLES = ["downloaded_episode", "meta", "series"]
 V2_TABLES = ["download_job", "episode", "offline_item", "preferences", "watch_state"]
+V3_TABLES = ["pending_removal"]
 
 
 def _v1(path) -> None:
@@ -49,12 +50,12 @@ def v1_snapshot(v1_db):
 
 @pytest.mark.unit
 class TestUpgradeFromSchema1:
-    def test_schema_version_is_2(self):
-        assert SCHEMA_VERSION == 2
+    def test_schema_version_is_3(self):
+        assert SCHEMA_VERSION == 3
 
     def test_existing_rows_and_meta_are_kept_verbatim(self, v1_db, v1_snapshot):
         SqliteHistory(v1_db).watch_entries()
-        assert scalar(v1_db, "PRAGMA user_version") == 2
+        assert scalar(v1_db, "PRAGMA user_version") == SCHEMA_VERSION
         assert {table: _rows(v1_db, table) for table in V1_TABLES} == v1_snapshot
 
     def test_nothing_is_derived_from_the_cursor_or_download_records(self, v1_db):
@@ -89,12 +90,28 @@ class TestUpgradeFromSchema1:
 
 
 @pytest.mark.unit
+class TestUpgradeFromSchema2:
+    def test_jobs_and_items_gain_retry_and_digest_columns_with_one_backup(self, tmp_path):
+        path = tmp_path / "history.db"
+        with closing(sqlite3.connect(path)) as conn:
+            for step in (1, 2):
+                for statement in migrations.MIGRATIONS[step]:
+                    conn.execute(statement)
+            conn.execute("PRAGMA user_version = 2")
+            conn.commit()
+        state = open_state(path)
+        assert state.queue.jobs() == [] and state.queue.pending_removals() == []
+        assert scalar(path, "PRAGMA user_version") == 3
+        assert len(list(tmp_path.glob("history.db.schema-2.*.bak"))) == 1
+
+
+@pytest.mark.unit
 class TestFreshDatabase:
-    def test_empty_file_goes_straight_to_2_without_a_backup(self, tmp_path):
+    def test_empty_file_goes_straight_to_the_latest_schema_without_a_backup(self, tmp_path):
         path = tmp_path / "history.db"
         open_state(path).preferences.get()
-        assert scalar(path, "PRAGMA user_version") == 2
-        assert _tables(path) == sorted(V1_TABLES + V2_TABLES)
+        assert scalar(path, "PRAGMA user_version") == SCHEMA_VERSION
+        assert _tables(path) == sorted(V1_TABLES + V2_TABLES + V3_TABLES)
         assert list(tmp_path.glob("*.bak")) == []
 
 
@@ -110,7 +127,7 @@ class TestInterruptedMigration:
         assert _tables(v1_db) == V1_TABLES
         monkeypatch.setitem(migrations.MIGRATIONS, 2, tuple(steps))
         SqliteHistory(v1_db).watch_entries()
-        assert scalar(v1_db, "PRAGMA user_version") == 2
+        assert scalar(v1_db, "PRAGMA user_version") == SCHEMA_VERSION
         assert {table: _rows(v1_db, table) for table in V1_TABLES} == v1_snapshot
 
     def test_process_killed_mid_migration_rolls_back_on_next_open(self, v1_db, v1_snapshot):
@@ -135,16 +152,16 @@ class TestInterruptedMigration:
         assert result.returncode == 3
         assert scalar(v1_db, "PRAGMA user_version") == 1
         SqliteHistory(v1_db).watch_entries()
-        assert scalar(v1_db, "PRAGMA user_version") == 2
+        assert scalar(v1_db, "PRAGMA user_version") == SCHEMA_VERSION
         assert {table: _rows(v1_db, table) for table in V1_TABLES} == v1_snapshot
 
 
 @pytest.mark.unit
 class TestNewerSchema:
-    def test_schema_3_is_refused_and_untouched(self, tmp_path):
+    def test_newer_schema_is_refused_and_untouched(self, tmp_path):
         path = tmp_path / "history.db"
         with closing(sqlite3.connect(path)) as conn:
-            conn.execute("PRAGMA user_version = 3")
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
             conn.commit()
         before = path.read_bytes()
         with pytest.raises(HistoryVersionError):

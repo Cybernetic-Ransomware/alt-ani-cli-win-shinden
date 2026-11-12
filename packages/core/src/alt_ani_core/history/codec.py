@@ -127,6 +127,7 @@ def item_of(row: Row) -> OfflineItem:
             protocol=row["protocol"],
             container=row["container"],
             source_player=row["source_player"],
+            sha256=row["sha256"],
         ),
         created_at=row["created_at"],
         verified_at=row["verified_at"],

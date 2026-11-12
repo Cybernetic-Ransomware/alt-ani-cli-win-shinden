@@ -1,6 +1,6 @@
 """Schema steps of the local database; step N brings ``user_version`` N-1 to N inside one transaction."""
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _OPEN_JOB = "state NOT IN ('cancelled','completed')"
 _WAIT_REASONS = "('network','interaction','storage','source_decision')"
@@ -138,5 +138,20 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         )""",
         f"CREATE UNIQUE INDEX ux_job_open_episode ON download_job(series_id, number) WHERE {_OPEN_JOB}",
         "CREATE INDEX ix_job_queue ON download_job(state, queue_pos, seq)",
+    ),
+    # Bounded automatic retries, the digest that identifies a published file, and files the executor still has to remove.
+    3: (
+        "ALTER TABLE download_job ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0)",
+        "ALTER TABLE download_job ADD COLUMN not_before TEXT",
+        "ALTER TABLE offline_item ADD COLUMN sha256 TEXT CHECK (sha256 IS NULL OR length(sha256) = 64)",
+        """CREATE TABLE pending_removal (
+            id TEXT PRIMARY KEY,
+            storage_backend TEXT NOT NULL,
+            storage_key TEXT NOT NULL,
+            job_id TEXT REFERENCES download_job(id) ON DELETE SET NULL,
+            reason TEXT NOT NULL CHECK (reason IN ('completed','cancelled','restarted','source_changed')),
+            created_at TEXT NOT NULL,
+            UNIQUE (storage_backend, storage_key)
+        )""",
     ),
 }
