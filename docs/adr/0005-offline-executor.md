@@ -64,8 +64,9 @@ grant lives in memory only); no source or variant matching the job's criteria wa
 fallback past the criteria.
 
 Storage waits are released only on evidence: free space for the known remainder plus a reserve, or the platform saying
-space was freed (`notify_storage_changed`). A storage wait replaced by a network wait is remembered by the running
-scheduler and re-checked before the job is queued again. Nothing else is ever deleted to make room.
+space was freed (`notify_storage_changed`). Until then no other condition replaces the stored storage wait, so it
+survives a lost network and a restart; once lifted, the job's other conditions are checked before it is queued.
+Nothing else is ever deleted to make room.
 
 FlareSolverr is used only when the configuration allows it **and** the device is on Wi-Fi.
 
@@ -81,11 +82,16 @@ A partial is continued only when both hold:
    - progressive: the SHA-256 of the strong ETag and the total from the first transfer response. A resume learns the
      current ETag with a HEAD (only its hash is stored), sends it as `If-Range`, and the response must be 206 with the
      same start, total and ETag. A subclass of `YoutubeDL` overriding `urlopen` checks this before yt-dlp opens the
-     file, so a refusal leaves the partial untouched;
+     file, so a refusal leaves the partial untouched. An output whose size differs from that total is a failure, never
+     a result;
    - HLS (unencrypted, without byte ranges or init maps): a manifest of the SHA-256 of every segment's strong ETag,
      taken by HEAD requests before the first byte and fsynced in `validators.json` (the database keeps its digest);
      every segment response, retries included, must match its entry, and the segments already appended are
      revalidated before resuming. Replacing segments behind an identical playlist is therefore caught.
+
+Only an answer about the resource refuses a resume: a HEAD with another or no strong ETag, or 405/501 (no HEAD at
+all). A probe that got no answer (transport error, timeout, any other HTTP error) is a transfer failure for the retry
+policy, and the partial and its checkpoint stay for the next attempt.
 
 yt-dlp's own state is rebuilt from the checkpoint, never trusted: `.part` is truncated to the checkpoint length,
 leftover fragments are removed and `.ytdl` is rewritten with the checkpoint's fragment index. A missing, corrupt,

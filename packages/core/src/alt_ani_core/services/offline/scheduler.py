@@ -23,8 +23,6 @@ class Scheduler:
         self._attempts: dict[str, Attempt] = {}
         self._storage_notified = False
         self._unreadable_since: float | None = None
-        # jobs whose full-disk wait was replaced by another stored reason before any evidence lifted it
-        self._storage_held: set[str] = set()
         self._network = ctx.network.current()
         self._thread = threading.Thread(target=self._loop, name="offline-scheduler", daemon=True)
         self.ticks = 0
@@ -159,10 +157,7 @@ class Scheduler:
         """Returns whether some job may be claimed now; an idle pass then opens no write transaction at all."""
         queue = self._ctx.state.queue
         jobs = queue.jobs([JobState.QUEUED, JobState.WAITING])
-        self._storage_held &= {j.id for j in jobs if j.state is JobState.WAITING}
-        storage_blocked = bool(self._storage_held) or any(
-            j.state is JobState.WAITING and j.wait_reason is WaitReason.STORAGE for j in jobs
-        )
+        storage_blocked = any(j.state is JobState.WAITING and j.wait_reason is WaitReason.STORAGE for j in jobs)
         now = self._ctx.wall().isoformat()
         claimable = False
         for job in jobs:
@@ -173,22 +168,19 @@ class Scheduler:
     def _apply(self, job: DownloadJob, conditions: Conditions, storage_blocked: bool) -> bool:
         """True when the job ends up queued."""
         queue = self._ctx.state.queue
-        if job.id in self._storage_held and storage_ok(job, conditions):
-            self._storage_held.discard(job.id)
         blocking = blocking_condition(job, conditions, storage_blocked=storage_blocked)
         if job.state is JobState.WAITING:
             reason = job.wait_reason
             if reason is None or reason not in CONDITION_REASONS or reason is blocking:
+                return False
+            if reason is WaitReason.STORAGE and not storage_ok(job, conditions):
+                # only evidence lifts a full disk; the stored reason must survive a restart
                 return False
             # one stored reason: lifting it re-checks the others before the job can be claimed
             if not queue.release(job.id, reason):
                 return False
             if blocking is not None:
                 queue.hold(job.id, blocking)
-                if blocking is WaitReason.STORAGE:
-                    self._storage_held.discard(job.id)
-                elif reason is WaitReason.STORAGE and not storage_ok(job, conditions):
-                    self._storage_held.add(job.id)
                 return False
             return True
         if blocking is not None:

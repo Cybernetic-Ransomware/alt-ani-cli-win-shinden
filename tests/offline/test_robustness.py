@@ -249,35 +249,57 @@ class TestStoreOutage:
 
 @pytest.mark.unit
 class TestConditionBookkeeping:
-    def test_a_full_disk_is_not_forgotten_when_the_network_drops_and_returns(self, tmp_path):
+    @staticmethod
+    def _scheduler(tmp_path, network: StaticNetwork) -> tuple[Scheduler, ExecutorOwnership]:
+        """A fresh process: its own state, ownership and scheduler over the same database."""
+        owner = ExecutorOwnership.try_acquire(tmp_path / "history.db")
+        assert owner is not None
+        ctx = Context(
+            state=open_local_state(tmp_path / "history.db"),
+            store=FsFileStore(tmp_path / "library"),
+            sources=FakeSources([], {}),
+            network=network,
+            grants=Grants(),
+            events=RecordingSink(),
+            config=fast_config(),
+        )
+        return Scheduler(ctx, owner), owner
+
+    @pytest.mark.parametrize("restart", [False, True])
+    def test_a_full_disk_outlives_a_network_drop_and_a_restart(self, tmp_path, restart):
         state = open_local_state(tmp_path / "history.db")
         (job,) = state.queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
-        owner = ExecutorOwnership.try_acquire(tmp_path / "history.db")
+        network = StaticNetwork()
+        scheduler, owner = self._scheduler(tmp_path, network)
         try:
             claim = state.queue.claim_next(NetworkKind.WIFI, owner)
             assert state.queue.wait(claim.attempt_id, WaitReason.STORAGE)
-            network = StaticNetwork()
-            ctx = Context(
-                state=state,
-                store=FsFileStore(tmp_path / "library"),
-                sources=FakeSources([], {}),
-                network=network,
-                grants=Grants(),
-                events=RecordingSink(),
-                config=fast_config(),
-            )
-            scheduler = Scheduler(ctx, owner)
-
-            def reason():
-                current = state.queue.get(job.id)
-                return current.state, current.wait_reason
-
             network.set(NetworkKind.OFFLINE)
             scheduler.tick()
-            assert reason() == (JobState.WAITING, WaitReason.NETWORK)
+            if restart:
+                owner.release()
+                scheduler, owner = self._scheduler(tmp_path, network)
             network.set(NetworkKind.WIFI)
+            # free space is unknown against an unknown remainder, so nothing proves the disk was freed
             scheduler.tick()
-            assert reason() == (JobState.WAITING, WaitReason.STORAGE)
+            current = state.queue.get(job.id)
+            assert (current.state, current.wait_reason) == (JobState.WAITING, WaitReason.STORAGE)
             assert scheduler.active == []
+        finally:
+            owner.release()
+
+    def test_a_full_disk_still_lifts_on_evidence_while_offline(self, tmp_path):
+        state = open_local_state(tmp_path / "history.db")
+        (job,) = state.queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
+        network = StaticNetwork()
+        scheduler, owner = self._scheduler(tmp_path, network)
+        try:
+            claim = state.queue.claim_next(NetworkKind.WIFI, owner)
+            assert state.queue.wait(claim.attempt_id, WaitReason.STORAGE)
+            network.set(NetworkKind.OFFLINE)
+            scheduler.notify_storage_changed()
+            scheduler.tick()
+            current = state.queue.get(job.id)
+            assert (current.state, current.wait_reason) == (JobState.WAITING, WaitReason.NETWORK)
         finally:
             owner.release()

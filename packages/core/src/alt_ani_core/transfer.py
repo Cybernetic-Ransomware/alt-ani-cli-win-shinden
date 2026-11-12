@@ -22,6 +22,8 @@ from alt_ani_core.state import ResourceValidator
 MANIFEST_FILE = "validators.json"
 MEDIA_STEM = "media"
 MAX_SWEEP_SEGMENTS = 5000
+# no HEAD at all is an answer about validation, not a transient failure
+_HEAD_UNSUPPORTED = frozenset({405, 501})
 
 
 class ResumeRefused(BaseException):  # noqa: N818 - control flow, like EngineInterrupt
@@ -78,8 +80,8 @@ def strong_etag(value: str | None) -> str | None:
 
 
 def fsync_path(path: Path) -> None:
-    # opened for writing: Windows flushes a file only through a handle with write access
-    fd = os.open(path, os.O_RDWR)
+    # Windows flushes only through a writable handle; without O_BINARY its CRT strips a trailing 0x1A
+    fd = os.open(path, os.O_RDWR | getattr(os, "O_BINARY", 0))
     try:
         os.fsync(fd)
     finally:
@@ -353,14 +355,21 @@ def _fetch_text(ydl, url: str, headers: dict, cancel: CancelToken) -> str:
 
 
 def _segment_etag(ydl, url: str, headers: dict, cancel: CancelToken) -> str | None:
+    """None only when the server answered without a strong ETag; a probe that got no such answer raises ``TransferFailed``."""
     from yt_dlp.networking import Request
+    from yt_dlp.networking.exceptions import HTTPError, RequestError
 
     cancel.raise_if_cancelled()
     try:
         with ydl.urlopen(Request(url, headers=headers, method="HEAD")) as response:
             return strong_etag(_header(response, "ETag"))
-    except Exception:
-        return None
+    except HTTPError as exc:
+        if exc.status in _HEAD_UNSUPPORTED:
+            return None
+        failure = classify(exc)
+    except RequestError as exc:
+        failure = classify(exc)
+    raise failure from None
 
 
 def _segment_manifest(ydl, playlist: MediaPlaylist, headers: dict, cancel: CancelToken) -> list[str] | None:
@@ -368,7 +377,11 @@ def _segment_manifest(ydl, playlist: MediaPlaylist, headers: dict, cancel: Cance
         return None
     hashes: list[str] = []
     for url in playlist.segments:
-        etag = _segment_etag(ydl, url, headers, cancel)
+        try:
+            etag = _segment_etag(ydl, url, headers, cancel)
+        except TransferFailed:
+            # best effort: a fresh transfer goes on, only without the evidence a later resume would need
+            return None
         if etag is None:
             return None
         hashes.append(_digest(etag))
@@ -477,9 +490,12 @@ def transfer(
     media = paths["media"]
     if not media.is_file():
         raise TransferFailed("missing_output")
+    size = media.stat().st_size
+    if guard.kind == KIND_HTTP and guard.total is not None and size != guard.total:
+        raise TransferFailed("size_mismatch")
     return TransferResult(
         media=media,
-        size=media.stat().st_size,
+        size=size,
         protocol=guard.kind,
         extension=media.suffix.lstrip("."),
         fragments=len(guard.segments) if guard.kind == KIND_HLS else None,

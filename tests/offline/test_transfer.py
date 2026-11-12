@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from alt_ani_core import transfer as transfer_module
 from alt_ani_core.cancel import CancelToken
 from alt_ani_core.errors import OperationCancelled
 from alt_ani_core.events import DownloadLog
@@ -19,6 +20,7 @@ from alt_ani_core.transfer import (
     ResumeRefused,
     TransferCallbacks,
     TransferFailed,
+    fsync_path,
     parse_media_playlist,
     transfer,
 )
@@ -164,6 +166,59 @@ class TestProgressiveTransfer:
         assert part.read_bytes()[:length] == body[:length]
         assert part.stat().st_size >= length
 
+    def test_a_checkpoint_ending_in_ctrl_z_resumes_to_the_whole_file(self, work):
+        # every byte is 0x1A, so whichever length the stop lands on, the partial ends in the byte text mode drops
+        body = b"" * 2_000_000
+        state = ServerState(resources={"/v.mp4": Resource(body, '"e1"')})
+        with serve(state) as url:
+            validator = _stopped_partial(_progressive(url), work, 200_000)
+            length, _ = checkpoint_of(validator)
+            assert (work / "media.mp4.part").stat().st_size >= length
+            result = _run(_progressive(url), work, Recorder(), resume=validator)
+        assert result.media.read_bytes() == body
+
+    def test_an_output_shorter_than_the_known_total_is_not_a_result(self, work, monkeypatch):
+        body = random_body(2_000_000)
+        state = ServerState(resources={"/v.mp4": Resource(body, '"e1"')})
+        real_fsync = transfer_module.fsync_path
+
+        def truncating_fsync(path):
+            real_fsync(path)
+            if path.stat().st_size == len(body):
+                with path.open("r+b") as fh:
+                    fh.truncate(len(body) - 1)
+
+        monkeypatch.setattr(transfer_module, "fsync_path", truncating_fsync)
+        policy = CheckpointPolicy(interval_sec=1e9, every_bytes=1)
+        with serve(state) as url, pytest.raises(TransferFailed) as exc:
+            _run(_progressive(url), work, Recorder(), policy=policy)
+        assert exc.value.category == "size_mismatch"
+
+    @pytest.mark.parametrize(("failure", "category"), [(503, "http_error"), ("drop", "network_error")])
+    def test_a_failed_probe_is_a_transient_failure_that_keeps_the_partial(self, work, failure, category):
+        body = random_body(2_000_000)
+        state = ServerState(resources={"/v.mp4": Resource(body, '"e1"')})
+        with serve(state) as url:
+            validator = _stopped_partial(_progressive(url), work, 200_000)
+            partial = (work / "media.mp4.part").read_bytes()
+            state.head_failure = failure
+            with pytest.raises(TransferFailed) as exc:
+                _run(_progressive(url), work, Recorder(), resume=validator)
+            assert exc.value.category == category
+            assert (work / "media.mp4.part").read_bytes() == partial
+            state.head_failure = None
+            result = _run(_progressive(url), work, Recorder(), resume=validator)
+        assert result.media.read_bytes() == body
+
+    def test_a_server_without_head_is_refused_as_unverifiable(self, work):
+        state = ServerState(resources={"/v.mp4": Resource(random_body(2_000_000), '"e1"')})
+        with serve(state) as url:
+            validator = _stopped_partial(_progressive(url), work, 200_000)
+            state.head_allowed = False
+            with pytest.raises(ResumeRefused) as exc:
+                _run(_progressive(url), work, Recorder(), resume=validator)
+        assert exc.value.reason == "resource_changed"
+
     @pytest.mark.parametrize("etag", [None, 'W/"weak"'])
     def test_without_a_strong_etag_nothing_is_resumed(self, work, etag):
         state = ServerState(resources={"/v.mp4": Resource(random_body(2_000_000), etag)})
@@ -264,6 +319,22 @@ class TestHlsTransfer:
         assert length <= len(part) <= index * 18800 or index == 0
         assert part == whole[: len(part)]
 
+    @pytest.mark.parametrize(("failure", "category"), [(503, "http_error"), ("drop", "network_error")])
+    def test_a_failed_segment_probe_is_a_transient_failure_not_a_refusal(self, work, failure, category):
+        state = ServerState()
+        whole = hls(state)
+        with serve(state) as url:
+            validator = _stopped_partial(_hls_variant(url), work, 3 * 18800)
+            partial = (work / "media.mp4.part").read_bytes()
+            state.head_failure = failure
+            with pytest.raises(TransferFailed) as exc:
+                _run(_hls_variant(url), work, Recorder(), resume=validator)
+            assert exc.value.category == category
+            assert (work / "media.mp4.part").read_bytes() == partial
+            state.head_failure = None
+            result = _run(_hls_variant(url), work, Recorder(), resume=validator)
+        assert result.media.read_bytes() == whole
+
     def test_without_segment_etags_nothing_is_resumed(self, work):
         state = ServerState()
         hls(state, etags=False)
@@ -283,6 +354,15 @@ class TestHlsTransfer:
             with pytest.raises(ResumeRefused) as exc:
                 _run(_hls_variant(url), work, Recorder(), resume=validator)
         assert exc.value.reason == "manifest_unavailable"
+
+
+@pytest.mark.unit
+class TestFsyncPath:
+    def test_a_trailing_ctrl_z_is_kept(self, tmp_path):
+        path = tmp_path / "media.part"
+        path.write_bytes(b"payload")
+        fsync_path(path)
+        assert path.read_bytes() == b"payload"
 
 
 @pytest.mark.unit

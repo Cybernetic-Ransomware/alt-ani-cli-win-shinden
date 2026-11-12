@@ -22,6 +22,8 @@ class ServerState:
     resources: dict[str, Resource] = field(default_factory=dict)
     ignore_range: bool = False
     head_allowed: bool = True
+    # a status, or "drop" to close the connection unanswered
+    head_failure: int | str | None = None
     stall_after: int | None = None
     stall: threading.Event = field(default_factory=threading.Event)
     log: list[tuple[str, str, str | None, str | None]] = field(default_factory=list)
@@ -52,6 +54,14 @@ class _Handler(BaseHTTPRequestHandler):
             resource = state.resources.get(path)
         if state.forbidden_query and state.forbidden_query in self.path:
             self.send_response(403)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if head and state.head_failure == "drop":
+            self.close_connection = True
+            return
+        if head and isinstance(state.head_failure, int):
+            self.send_response(state.head_failure)
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
