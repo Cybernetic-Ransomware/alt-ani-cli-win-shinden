@@ -13,7 +13,7 @@ from alt_ani_core.services.engine import GuardedSession
 from alt_ani_core.testing import FakeRequest, make_stream
 from alt_ani_core.transport.api import NetworkError
 
-from .support import Background, Gate, embed_host, is_show
+from .support import EPISODE, EPISODE_URL, Background, Gate, embed_host, iframe, is_show, route_xhr
 
 _VIDARA = "vidara.to"
 
@@ -126,6 +126,45 @@ class TestDispatcherChecksLivenessBeforeFallback:
         ytdlp.assert_not_called()
         on_fallback.assert_not_called()
 
+    @pytest.mark.parametrize("path", ["custom", "generic"])
+    def test_fallback_callback_cancelling_the_token_starts_no_ytdlp(self, ytdlp, path):
+        token = CancelToken()
+        on_fallback = MagicMock(side_effect=lambda *_a: token.cancel())
+        url = "https://custom.example/e/1" if path == "custom" else "https://unknown.example/e/1"
+        rule = extract.HostRule("custom", MagicMock(side_effect=ValueError("parse failure")))
+        with (
+            patch.dict(extract.HOST_RULES, {"custom.example": rule}),
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=ValueError("no player")),
+            pytest.raises(OperationCancelled),
+        ):
+            extract.resolve(url, "r", transport=MagicMock(), on_fallback=on_fallback, cancel=token, check=lambda: None)
+        on_fallback.assert_called_once()
+        ytdlp.assert_not_called()
+
+    @pytest.mark.parametrize("path", ["custom", "generic"])
+    def test_fallback_callback_invalidating_the_generation_starts_no_ytdlp(self, ytdlp, path):
+        stale = False
+
+        def check() -> None:
+            if stale:
+                raise StaleSessionError()
+
+        def retire(*_args) -> None:
+            nonlocal stale
+            stale = True
+
+        on_fallback = MagicMock(side_effect=retire)
+        url = "https://custom.example/e/1" if path == "custom" else "https://unknown.example/e/1"
+        rule = extract.HostRule("custom", MagicMock(side_effect=ValueError("parse failure")))
+        with (
+            patch.dict(extract.HOST_RULES, {"custom.example": rule}),
+            patch("alt_ani_core.extract.jwplayer.resolve", side_effect=ValueError("no player")),
+            pytest.raises(StaleSessionError),
+        ):
+            extract.resolve(url, "r", transport=MagicMock(), on_fallback=on_fallback, check=check)
+        on_fallback.assert_called_once()
+        ytdlp.assert_not_called()
+
     def test_live_operation_still_falls_back(self, ytdlp):
         on_fallback = MagicMock()
         with patch("alt_ani_core.extract.jwplayer.resolve", side_effect=ValueError("no player")):
@@ -184,6 +223,37 @@ class TestInvalidatedDuringFailingExtractorRequest:
         assert isinstance(op.error, OperationCancelled)
         ytdlp.assert_not_called()
         assert sink.of(ExtractorFallback) == []
+        diag.resolve_result.assert_not_called()
+
+    @pytest.mark.parametrize("how", ["cancel", "set_access", "close"])
+    @pytest.mark.parametrize("method", ["GET", "POST"])
+    def test_fallback_event_listener_interrupting_the_operation_starts_no_ytdlp(
+        self, make_engine, transport, episode_page, diag, ytdlp, how, method
+    ):
+        token = CancelToken()
+        engines: list = []
+
+        class _InterruptingSink:
+            def __init__(self) -> None:
+                self.fallbacks = 0
+
+            def emit(self, event) -> None:
+                if isinstance(event, ExtractorFallback):
+                    self.fallbacks += 1
+                    token.cancel() if how == "cancel" else _retire(engines[0], how)
+
+        sink = _InterruptingSink()
+        transport.route(EPISODE_URL, episode_page())
+        route_xhr(transport, show=_vidara_iframe if method == "POST" else iframe)
+        transport.route(_is_embed_request, NetworkError("connection reset"))
+        engines.append(make_engine(events=sink))
+        session = engines[0].open_episode(EPISODE)
+
+        with pytest.raises(OperationCancelled if how == "cancel" else StaleSessionError):
+            session.resolve(session.sources[0], cancel=token)
+
+        assert sink.fallbacks == 1
+        ytdlp.assert_not_called()
         diag.resolve_result.assert_not_called()
 
     @pytest.mark.parametrize("method", ["GET", "POST"])

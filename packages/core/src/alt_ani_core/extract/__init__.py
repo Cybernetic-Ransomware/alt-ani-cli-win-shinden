@@ -232,6 +232,8 @@ def resolve(
             ensure_live()
             if on_fallback:
                 on_fallback("extractor_fallback", host, _exc_text(exc, embed_url, host))
+            # the callback runs host code that may cancel or retire the operation
+            ensure_live()
             try:
                 return ytdlp_resolver.resolve(embed_url, referer, options)
             except Exception as fallback_exc:
@@ -248,6 +250,7 @@ def resolve(
         ensure_live()
         if on_fallback:
             on_fallback("jwplayer_fallback", host, _exc_text(exc, embed_url, host))
+        ensure_live()
 
     try:
         return ytdlp_resolver.resolve(embed_url, referer, options)
