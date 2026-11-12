@@ -114,6 +114,22 @@ class HistoryVersionError(ShindenError):
     """The history database was written by a newer schema than this code knows."""
 
 
+class HistoryBackupError(ShindenError):
+    """The copy taken before a schema upgrade could not be written or verified; the database was left as it was."""
+
+
+class StateConflictError(ShindenError):
+    """The caller acted on a revision of local state that has changed since it was read."""
+
+
+class InvalidTransitionError(ShindenError):
+    """The requested change is not allowed from the record's current state."""
+
+
+class UnknownRecordError(ShindenError):
+    """No episode, job or offline item with the given identity is stored."""
+
+
 class EngineClosedError(ShindenError):
     """The engine was closed and accepts no further operations."""
 

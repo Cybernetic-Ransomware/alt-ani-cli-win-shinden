@@ -135,7 +135,7 @@ layers = [
     "alt_ani_core.shinden : alt_ani_core.extract : alt_ani_core.download : alt_ani_core.history",
     "alt_ani_core.rules",
     "alt_ani_core.transport : alt_ani_core.dom : alt_ani_core.diagnostics",
-    "alt_ani_core.models : alt_ani_core.errors : alt_ani_core.events : alt_ani_core.cancel : alt_ani_core.config : alt_ani_core.redaction : alt_ani_core.messages",
+    "alt_ani_core.models : alt_ani_core.state : alt_ani_core.errors : alt_ani_core.events : alt_ani_core.cancel : alt_ani_core.config : alt_ani_core.redaction : alt_ani_core.messages",
 ]
 ignore_imports = [
     # test doubles implement every contract in one module
