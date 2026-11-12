@@ -37,6 +37,18 @@ def _no_outbound_network(request, monkeypatch):
     def _blocked(*args, **kwargs):
         raise AssertionError("outbound network attempted in a unit test")
 
+    if request.node.get_closest_marker("loopback"):
+        # the test talks to its own local server only; libcurl cannot be filtered by address, so it stays open
+        real_connect = socket.socket.connect
+
+        def _loopback_only(sock, address):
+            host = address[0] if isinstance(address, tuple) else address
+            if host not in ("127.0.0.1", "::1", "localhost"):
+                raise AssertionError("non-loopback network attempted in a loopback test")
+            return real_connect(sock, address)
+
+        monkeypatch.setattr(socket.socket, "connect", _loopback_only)
+        return
     monkeypatch.setattr(Curl, "perform", _blocked)
     monkeypatch.setattr(socket.socket, "connect", _blocked)
 

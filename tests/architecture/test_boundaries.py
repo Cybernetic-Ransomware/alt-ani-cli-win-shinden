@@ -28,7 +28,9 @@ TERMINAL_AND_DESKTOP = {
 CONFINED = {
     "curl_cffi": {"transport/curl.py"},
     "selectolax": {"dom/selectolax_backend.py"},
-    "yt_dlp": {"extract/ytdlp_resolver.py", "download.py"},
+    "yt_dlp": {"extract/ytdlp_resolver.py", "download.py", "transfer.py"},
+    "fcntl": {"history/ownership.py"},
+    "msvcrt": {"history/ownership.py"},
     "sqlite3": {
         "history/database.py",
         "history/sqlite.py",
@@ -54,13 +56,15 @@ STDLIB_ONLY = [
 
 # package → engine packages it must not import
 LAYERS = {
-    "rules": {"shinden", "extract", "services", "download", "history", "dom", "diagnostics"},
+    "rules": {"shinden", "extract", "services", "download", "transfer", "storage", "history", "dom", "diagnostics"},
     "transport": {"shinden", "extract", "services", "download", "history", "dom", "rules"},
     "dom": {"shinden", "extract", "services", "download", "history", "transport", "rules"},
     "shinden": {"extract", "services", "download", "history"},
     "extract": {"shinden", "services", "download", "history"},
-    "history": {"shinden", "extract", "services", "download", "transport", "dom"},
-    "download.py": {"shinden", "extract", "services", "history", "transport", "dom"},
+    "history": {"shinden", "extract", "services", "download", "transfer", "storage", "transport", "dom"},
+    "storage": {"shinden", "extract", "services", "download", "transfer", "history", "transport", "dom", "diagnostics"},
+    "transfer.py": {"shinden", "extract", "services", "history", "storage", "transport", "dom"},
+    "download.py": {"shinden", "extract", "services", "history", "storage", "transfer", "transport", "dom"},
     "diagnostics.py": {"shinden", "extract", "services", "download", "history", "transport", "dom"},
 }
 
@@ -132,7 +136,7 @@ class TestEngineIsPortable:
         users = {
             p.relative_to(CORE).as_posix()
             for p in _files(CORE)
-            if _uses(_imports(p), "alt_ani_core.services") and p.parent.name != "services"
+            if _uses(_imports(p), "alt_ani_core.services") and "services" not in p.relative_to(CORE).parts[:-1]
         }
         assert not users
 
@@ -142,6 +146,7 @@ class TestEngineIsPortable:
             "import sys\n"
             "import alt_ani_core.services.engine, alt_ani_core.testing, alt_ani_core.download, alt_ani_core.extract\n"
             "import alt_ani_core.history.sqlite, alt_ani_core.transport.clearance\n"
+            "import alt_ani_core.storage.fs, alt_ani_core.history.ownership\n"
             "heavy = {'rich', 'InquirerPy', 'prompt_toolkit', 'platformdirs', 'yaml', 'colorama', 'curl_cffi',"
             " 'selectolax', 'yt_dlp', 'alt_ani_cli'}\n"
             "loaded = sorted(heavy & {name.split('.')[0] for name in sys.modules})\n"
