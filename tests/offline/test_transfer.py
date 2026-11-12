@@ -1,3 +1,5 @@
+import gc
+import io
 import json
 import threading
 import time
@@ -7,13 +9,16 @@ import pytest
 
 from alt_ani_core.cancel import CancelToken
 from alt_ani_core.errors import OperationCancelled
+from alt_ani_core.events import DownloadLog
 from alt_ani_core.models import StreamProtocol, StreamVariant
 from alt_ani_core.rules.resume import KIND_HLS, KIND_HTTP, checkpoint_of, with_checkpoint
 from alt_ani_core.state import ResourceValidator
+from alt_ani_core.testing import RecordingSink
 from alt_ani_core.transfer import (
     CheckpointPolicy,
     ResumeRefused,
     TransferCallbacks,
+    TransferFailed,
     parse_media_playlist,
     transfer,
 )
@@ -62,16 +67,31 @@ def _hls_variant(url: str) -> StreamVariant:
 
 
 def _run(variant, work: Path, recorder: Recorder, resume=None, **kwargs):
-    return transfer(
-        variant,
-        work,
-        resume=resume,
-        callbacks=recorder.callbacks(),
-        policy=kwargs.pop("policy", NEVER_PERIODIC),
-        cancel=recorder.cancel,
-        socket_timeout=kwargs.pop("socket_timeout", 5),
-        **kwargs,
-    )
+    sink = RecordingSink()
+    try:
+        return transfer(
+            variant,
+            work,
+            resume=resume,
+            callbacks=recorder.callbacks(),
+            policy=kwargs.pop("policy", NEVER_PERIODIC),
+            cancel=recorder.cancel,
+            socket_timeout=kwargs.pop("socket_timeout", 5),
+            events=sink,
+            **kwargs,
+        )
+    except TransferFailed as exc:
+        # the category alone hides yt-dlp's own error; its log lines are the diagnosis
+        exc.add_note("\n".join(e.redacted_line for e in sink.of(DownloadLog)))
+        raise
+
+
+def _open_files_in(work: Path) -> list[str]:
+    return [
+        str(o.name)
+        for o in gc.get_objects()
+        if isinstance(o, io.IOBase) and not o.closed and str(getattr(o, "name", "")).startswith(str(work))
+    ]
 
 
 def _stopped_partial(variant, work: Path, stop_at: int) -> ResourceValidator:
@@ -197,6 +217,16 @@ class TestHlsTransfer:
         fields = dict(recorder.validator.fields)
         assert recorder.validator.kind == KIND_HLS and fields["segments"] == 6 and len(fields["manifest"]) == 64
         assert SECRET not in (work / "validators.json").read_text()
+
+    def test_a_stop_leaves_no_file_of_the_work_dir_open(self, work):
+        state = ServerState()
+        hls(state)
+        recorder = Recorder(stop_at=3 * 18800)
+        with serve(state) as url, pytest.raises(OperationCancelled) as stopped:
+            _run(_hls_variant(url), work, recorder)
+        # the traceback is still referenced here, as it is while a caller handles the stop
+        assert stopped.value.__traceback__ is not None
+        assert _open_files_in(work) == []
 
     @pytest.mark.parametrize("ytdl", ["kept", "missing", "lagging", "ahead"])
     def test_resume_rebuilds_ytdl_state_from_the_checkpoint(self, work, ytdl):

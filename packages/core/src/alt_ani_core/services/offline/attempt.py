@@ -113,11 +113,33 @@ class Attempt:
         self.validator: ResourceValidator | None = None
         self._last_report = float("-inf")
         self._finished = threading.Event()
+        self._unsettled: Callable[[], Any] | None = None
         self.thread = threading.Thread(target=self.run, name=f"offline-attempt-{claim.job.id[:8]}", daemon=True)
 
     @property
-    def done(self) -> bool:
+    def io_ended(self) -> bool:
         return self._finished.is_set()
+
+    @property
+    def done(self) -> bool:
+        """The I/O ended and the store holds the outcome; until then the scheduler keeps the attempt."""
+        return self._finished.is_set() and self._unsettled is None
+
+    def settle_pending(self) -> bool:
+        """Retries the outcome write that failed after the I/O ended; True once nothing is left to store."""
+        call = self._unsettled
+        if not self._finished.is_set() or call is None:
+            return self.done
+        try:
+            call()
+        except STORE_ERRORS:
+            return False
+        except Exception:
+            # the store refused rather than failed: recovery settles the job at the next start
+            self._unsettled = None
+            return True
+        self._unsettled = None
+        return True
 
     def stop(self, kind: str = "stop") -> None:
         if not self.token.cancelled:
@@ -145,7 +167,7 @@ class Attempt:
         self._finished.set()
 
     def _store_call(self, name: str, call: Callable[[], Any]) -> Any:
-        """Store writes after the I/O ended must land; a busy or failing file is retried a bounded number of times."""
+        """The outcome write must land: after bounded retries it is kept for the scheduler to retry (``settle_pending``)."""
         config = self.ctx.config
         for attempt in range(config.store_retries):
             try:
@@ -153,6 +175,7 @@ class Attempt:
             except STORE_ERRORS:
                 if attempt == config.store_retries - 1:
                     self.ctx.events.emit(StoreUnavailable(operation=name))
+                    self._unsettled = call
                     return None
                 threading.Event().wait(config.store_retry_delay_sec)
         return None
@@ -172,11 +195,13 @@ class Attempt:
     def _end_stopped(self) -> None:
         if self.lost:
             return
-        if self._store_call("ack_stopped", lambda: self.queue.ack_stopped(self.attempt_id)):
-            return
-        # nothing in the store asked for this stop (shutdown, unreadable store): give the slot back unspent
-        error = JobError(f"executor.{self.stop_kind}")
-        self._store_call("defer", lambda: self.queue.defer(self.attempt_id, error, None, counts=False))
+        queue, error = self.queue, JobError(f"executor.{self.stop_kind}")
+
+        def settle() -> bool:
+            # nothing in the store asked for this stop (shutdown, unreadable store): give the slot back unspent
+            return queue.ack_stopped(self.attempt_id) or queue.defer(self.attempt_id, error, None, counts=False)
+
+        self._store_call("ack_stopped", settle)
 
     def _check(self, status: AttemptStatus | None) -> None:
         if status is AttemptStatus.LOST:
@@ -486,8 +511,13 @@ class Attempt:
             source_player=sid.player or None,
             sha256=evidence[1],
         )
-        try:
-            self._store_call("complete", lambda: self.queue.complete(self.attempt_id, spec))
-        except StateConflictError:
-            self._finish(retry.fail("storage.location_conflict"))
+        queue = self.queue
+
+        def complete() -> object:
+            try:
+                return queue.complete(self.attempt_id, spec)
+            except StateConflictError:
+                return queue.fail(self.attempt_id, retry.fail("storage.location_conflict").error)
+
+        self._store_call("complete", complete)
         raise _Finished

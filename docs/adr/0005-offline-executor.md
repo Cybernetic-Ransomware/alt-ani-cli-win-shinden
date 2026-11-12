@@ -46,8 +46,11 @@ disk); abandoned files recorded in `pending_removal` are removed; jobs are claim
 An attempt ends in exactly one store operation, called after the transfer has returned (yt-dlp context closed, handles
 collected). Stop checks are separate from persistence: every progress callback and every yt-dlp retry message checks the
 attempt's cancel token; progress is written at most every 2 s; durable checkpoints every 5 s or 32 MiB. Without store
-reads for 10 s the executor stops transfers it can no longer confirm are allowed. An attempt whose I/O does not end
-within `2 × socket timeout + 10 s` keeps its slot; the process exit releases ownership and the next start recovers it.
+reads for 10 s (any read of a pass, preferences included) the executor stops transfers it can no longer confirm are
+allowed. An outcome write that still fails after its bounded retries stays with the scheduler, which keeps the slot and
+retries it every pass until the store accepts it. An attempt whose I/O does not end within `2 × socket timeout + 10 s`
+keeps its slot; the process exit releases ownership and the next start recovers it. `close` releases ownership only once
+the scheduler loop and every attempt's I/O have ended; otherwise it returns `False` and may be called again to wait.
 
 `defer` (schema 3) returns a running attempt to the queue with a `not_before` and spends one of three automatic
 retries (30 s, 2 min, 10 min); user actions (`retry`, `resume`, `choose_source`) reset the budget. A stop pending
@@ -61,7 +64,8 @@ grant lives in memory only); no source or variant matching the job's criteria wa
 fallback past the criteria.
 
 Storage waits are released only on evidence: free space for the known remainder plus a reserve, or the platform saying
-space was freed (`notify_storage_changed`). Nothing else is ever deleted to make room.
+space was freed (`notify_storage_changed`). A storage wait replaced by a network wait is remembered by the running
+scheduler and re-checked before the job is queued again. Nothing else is ever deleted to make room.
 
 FlareSolverr is used only when the configuration allows it **and** the device is on Wi-Fi.
 
@@ -132,7 +136,9 @@ directory under the root is only reported (`OrphanFound`).
 
 ### Library
 
-Deleting is per item (`mark_deleting` → remove → `forget`); a failed removal keeps the row `deleting` for a retry; a
+Deleting is per item (`mark_deleting` → remove → `forget`); the check, removal and `forget` hold one OS lock beside the
+database (`<db>.delete-lock`), shared by every process, and re-read the row under it. A deep verification compares the
+SHA-256 of an available copy too and marks a mismatch missing. A failed removal keeps the row `deleting` for a retry; a
 file that no longer is the recorded copy is left in place and reported. Exports are streamed copies (never links) into
 a temporary file, fsynced, then published without replacing anything (numbered on conflict, or refused). Watch state
 is never touched. Bulk operations report each item.

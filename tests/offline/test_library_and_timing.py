@@ -1,10 +1,11 @@
 import threading
+from contextlib import suppress
 from dataclasses import dataclass
 
 import pytest
 
 from alt_ani_core.config import AccessConfig
-from alt_ani_core.errors import StorageError
+from alt_ani_core.errors import OperationCancelled, StorageError
 from alt_ani_core.history.database import Database
 from alt_ani_core.history.queue import SqliteDownloadQueue
 from alt_ani_core.services.offline.library import ResultKind
@@ -115,7 +116,9 @@ def _counting(monkeypatch, cls, name):
 
 
 class BurstTransfer:
-    """Reports progress as fast as possible with a fake clock; stops at the first callback after a cancel."""
+    """Reports progress with no real waits under a fake clock, then holds until cancelled; the next callback stops it."""
+
+    GATE = 5_000
 
     def __init__(self, clock) -> None:
         self.clock = clock
@@ -127,12 +130,13 @@ class BurstTransfer:
         for i in range(10_000):
             self.clock.now += 0.002
             callbacks.progress(i * 1000, 10**9)
-            if i == 5_000:
+            if i == self.GATE:
                 self.paused.set()
+                with suppress(OperationCancelled):
+                    cancel.wait(30)
             if cancel.cancelled:
                 self.callbacks_after_stop = i
                 cancel.raise_if_cancelled()
-            threading.Event().wait(0.0001)
         media = work / "media.mp4"
         media.write_bytes(b"x")
         return TransferResult(media=media, size=1, protocol="http", extension="mp4")
@@ -166,9 +170,9 @@ class TestWriteRates:
             wait_for(lambda: state.queue.get(job.id).state is JobState.PAUSED)
         finally:
             queue.close()
-        # 10 000 callbacks over 20 fake seconds: one write per 2 s, however soon the stop came
-        assert len(writes) <= 11
-        assert burst.callbacks_after_stop is not None and burst.callbacks_after_stop < 10_000
+        # 5 001 callbacks over 10 fake seconds: one write per 2 s, and the stop is seen at the first check after it
+        assert len(writes) <= 6
+        assert burst.callbacks_after_stop == BurstTransfer.GATE
 
     def test_idle_scheduler_neither_writes_nor_spins(self, tmp_path, monkeypatch):
         queue, state, _ = make_queue(tmp_path, FakeSources([], {}))

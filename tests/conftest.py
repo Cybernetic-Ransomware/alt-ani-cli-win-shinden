@@ -1,7 +1,12 @@
 import logging
 import socket
+import threading
+from collections.abc import Iterator
+from contextlib import suppress
+from urllib.parse import urlsplit
 
 import pytest
+from curl_cffi.const import CurlInfo, CurlOpt
 from curl_cffi.curl import Curl
 
 from alt_ani_cli import paths
@@ -28,6 +33,42 @@ def _close_diagnostics_log():
         handler.close()
 
 
+LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+
+@pytest.fixture(scope="session")
+def _sinkhole_port() -> Iterator[int]:
+    """A local listener that drops every connection: the proxy libcurl gets for any host that is not loopback."""
+    listener = socket.create_server(("127.0.0.1", 0))
+
+    def drop() -> None:
+        with suppress(OSError):
+            while True:
+                conn, _ = listener.accept()
+                conn.close()
+
+    threading.Thread(target=drop, daemon=True).start()
+    yield listener.getsockname()[1]
+    listener.close()
+
+
+def _loopback_curl(real_perform, sinkhole_port: int):
+    """libcurl bypasses Python sockets and follows redirects itself; only loopback hosts skip the dead proxy."""
+
+    def perform(curl, *args, **kwargs):
+        curl.setopt(CurlOpt.PROXY, f"http://127.0.0.1:{sinkhole_port}")
+        curl.setopt(CurlOpt.NOPROXY, ",".join(LOOPBACK_HOSTS))
+        try:
+            return real_perform(curl, *args, **kwargs)
+        finally:
+            url = curl.getinfo(CurlInfo.EFFECTIVE_URL)
+            host = urlsplit(url.decode() if isinstance(url, bytes) else str(url)).hostname
+            if host not in LOOPBACK_HOSTS:
+                raise AssertionError("non-loopback network attempted in a loopback test")
+
+    return perform
+
+
 @pytest.fixture(autouse=True)
 def _no_outbound_network(request, monkeypatch):
     """Fail fast if a missing fake would let a unit test reach libcurl or a raw socket."""
@@ -38,16 +79,16 @@ def _no_outbound_network(request, monkeypatch):
         raise AssertionError("outbound network attempted in a unit test")
 
     if request.node.get_closest_marker("loopback"):
-        # the test talks to its own local server only; libcurl cannot be filtered by address, so it stays open
         real_connect = socket.socket.connect
 
         def _loopback_only(sock, address):
             host = address[0] if isinstance(address, tuple) else address
-            if host not in ("127.0.0.1", "::1", "localhost"):
+            if host not in LOOPBACK_HOSTS:
                 raise AssertionError("non-loopback network attempted in a loopback test")
             return real_connect(sock, address)
 
         monkeypatch.setattr(socket.socket, "connect", _loopback_only)
+        monkeypatch.setattr(Curl, "perform", _loopback_curl(Curl.perform, request.getfixturevalue("_sinkhole_port")))
         return
     monkeypatch.setattr(Curl, "perform", _blocked)
     monkeypatch.setattr(socket.socket, "connect", _blocked)

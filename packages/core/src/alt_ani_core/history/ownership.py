@@ -3,17 +3,23 @@
 import os
 import sys
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Self
 
+from alt_ani_core.cancel import NEVER, CancelToken
+
 LOCK_SUFFIX = ".executor-lock"
+DELETE_LOCK_SUFFIX = ".delete-lock"
+_LOCK_POLL_SEC = 0.05
 
 _registry_lock = threading.Lock()
 _held: dict[Path, ExecutorOwnership] = {}
 
 
-def lock_path(db_path: Path) -> Path:
-    return db_path.with_name(db_path.name + LOCK_SUFFIX)
+def lock_path(db_path: Path, suffix: str = LOCK_SUFFIX) -> Path:
+    return db_path.with_name(db_path.name + suffix)
 
 
 def _try_lock(fd: int) -> bool:
@@ -45,6 +51,22 @@ def _unlock(fd: int) -> None:
         import fcntl
 
         fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+@contextmanager
+def exclusive(path: Path, cancel: CancelToken = NEVER) -> Iterator[None]:
+    """Blocks until held; each holder opens its own descriptor, so threads of one process exclude each other too."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        while not _try_lock(fd):
+            cancel.wait(_LOCK_POLL_SEC)
+        try:
+            yield
+        finally:
+            _unlock(fd)
+    finally:
+        os.close(fd)
 
 
 class ExecutorOwnership:

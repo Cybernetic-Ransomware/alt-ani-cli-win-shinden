@@ -14,6 +14,7 @@ from alt_ani_core.errors import (
     UnknownRecordError,
 )
 from alt_ani_core.history.library import SqliteLibraryStore
+from alt_ani_core.history.ownership import DELETE_LOCK_SUFFIX, exclusive, lock_path
 from alt_ani_core.state import ItemStatus, OfflineItem
 from alt_ani_core.storage.api import FileStore
 from alt_ani_core.storage.fs import export_copy
@@ -51,7 +52,18 @@ class LibraryService:
         return results
 
     def finish_delete(self, item: OfflineItem, *, cancel: CancelToken = NEVER) -> ItemResult:
-        """Removes the file only when it is still the recorded copy; another file found there is left and reported."""
+        """One cross-process lock spans check, removal and ``forget``; the row is re-read under it, not taken from ``item``."""
+        try:
+            with exclusive(lock_path(self._library.db_path, DELETE_LOCK_SUFFIX), cancel):
+                return self._finish_delete(item.id, cancel)
+        except OperationCancelled:
+            return ItemResult(item.id, ResultKind.FAILED, "cancelled")
+
+    def _finish_delete(self, item_id: str, cancel: CancelToken) -> ItemResult:
+        try:
+            item = self._library.get(item_id)
+        except UnknownRecordError:
+            return ItemResult(item_id, ResultKind.SKIPPED, "not_deleting")
         if item.status is not ItemStatus.DELETING:
             return ItemResult(item.id, ResultKind.SKIPPED, "not_deleting")
         try:
@@ -61,8 +73,6 @@ class LibraryService:
         except StorageError as exc:
             # the row stays deleting: its locator is what a retry needs
             return ItemResult(item.id, ResultKind.FAILED, exc.code)
-        except OperationCancelled:
-            return ItemResult(item.id, ResultKind.FAILED, "cancelled")
         with suppress(UnknownRecordError):
             self._library.forget(item.id)
         return ItemResult(item.id, ResultKind.SKIPPED if kept else ResultKind.OK, "foreign_file_kept" if kept else None)
@@ -81,7 +91,7 @@ class LibraryService:
         return [self.finish_delete(item, cancel=cancel) for item in self._library.items(status=ItemStatus.DELETING)]
 
     def verify(self, item_ids: list[str] | None = None, *, deep: bool = False, cancel: CancelToken = NEVER) -> list[ItemResult]:
-        """Existence and size decide availability; only a matching digest (``deep``) brings a missing copy back."""
+        """Existence and size decide availability; ``deep`` also compares the SHA-256, both ways."""
         items = self._library.items() if item_ids is None else [self._library.get(i) for i in item_ids]
         results: list[ItemResult] = []
         for item in items:
@@ -95,10 +105,14 @@ class LibraryService:
         stat = self._store.stat(item.spec.locator)
         size_ok = stat is not None and not stat.is_dir and item.spec.size_bytes in (None, stat.size)
         if item.status is ItemStatus.AVAILABLE:
-            if size_ok:
-                return ItemResult(item.id, ResultKind.OK)
-            self._library.mark_missing(item.id)
-            return ItemResult(item.id, ResultKind.FAILED, "missing")
+            if not size_ok:
+                self._library.mark_missing(item.id)
+                return ItemResult(item.id, ResultKind.FAILED, "missing")
+            if deep and item.spec.sha256 and self._store.digest(item.spec.locator, cancel) != item.spec.sha256:
+                # same length, other content: not the recorded copy, so it is no longer offered for playback
+                self._library.mark_missing(item.id)
+                return ItemResult(item.id, ResultKind.FAILED, "identity_mismatch")
+            return ItemResult(item.id, ResultKind.OK)
         if item.status is ItemStatus.MISSING and deep and size_ok and stat is not None and item.spec.sha256:
             digest = self._store.digest(item.spec.locator, cancel)
             if digest == item.spec.sha256:

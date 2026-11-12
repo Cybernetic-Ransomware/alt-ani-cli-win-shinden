@@ -5,7 +5,7 @@ from datetime import datetime
 
 from alt_ani_core.history.database import STORE_ERRORS
 from alt_ani_core.history.ownership import ExecutorOwnership
-from alt_ani_core.rules.conditions import CONDITION_REASONS, Conditions, blocking_condition
+from alt_ani_core.rules.conditions import CONDITION_REASONS, Conditions, blocking_condition, storage_ok
 from alt_ani_core.rules.network import download_allowed
 from alt_ani_core.services.offline.attempt import Attempt, Context
 from alt_ani_core.services.offline.cleanup import remove_pending
@@ -23,6 +23,8 @@ class Scheduler:
         self._attempts: dict[str, Attempt] = {}
         self._storage_notified = False
         self._unreadable_since: float | None = None
+        # jobs whose full-disk wait was replaced by another stored reason before any evidence lifted it
+        self._storage_held: set[str] = set()
         self._network = ctx.network.current()
         self._thread = threading.Thread(target=self._loop, name="offline-scheduler", daemon=True)
         self.ticks = 0
@@ -52,22 +54,29 @@ class Scheduler:
         self.wake()
 
     def close(self, timeout: float | None = None) -> bool:
-        """Stops claiming, stops every attempt and waits for their I/O; False when some attempt did not end in time."""
+        """Stops claiming and every attempt; False while the loop or some attempt's I/O still runs, so it may be retried."""
         with self._cond:
             self._closing = True
             self._cond.notify_all()
         if self._thread.is_alive():
             self._thread.join(timeout)
+        # a loop still inside a pass may claim after the snapshot below; only its end makes the snapshot final
+        ended = not self._thread.is_alive()
         attempts = self.active
         for attempt in attempts:
             attempt.stop("shutdown")
         wait = self._ctx.config.stuck_after_sec if timeout is None else timeout
-        ended = True
         for attempt in attempts:
+            if attempt.thread.ident is None:
+                ended = False
+                continue
             attempt.thread.join(wait)
             if attempt.thread.is_alive():
                 ended = False
                 self._ctx.events.emit(AttemptStuck(job_id=attempt.job.id))
+        if ended:
+            # a last try for outcomes the store refused; whatever stays unwritten is recovered at the next start
+            self._reap()
         return ended
 
     def _loop(self) -> None:
@@ -94,8 +103,14 @@ class Scheduler:
         network = ctx.network.current()
         if network is not self._network:
             self._network = network
-        prefs = ctx.state.preferences.get()
-        self._monitor(network, prefs.download_network)
+        try:
+            prefs = ctx.state.preferences.get()
+            rows = {job.attempt_id: job for job in ctx.state.queue.jobs(ACTIVE_STATES)}
+        except STORE_ERRORS:
+            self._unreadable(True)
+            raise
+        self._unreadable(False)
+        self._monitor(network, prefs.download_network, rows)
         with self._cond:
             notified, self._storage_notified = self._storage_notified, False
         claimable = self._apply_conditions(Conditions(network, prefs.download_network, ctx.store.free_space(), notified))
@@ -106,19 +121,17 @@ class Scheduler:
         return self._sleep_for()
 
     def _reap(self) -> None:
+        """An attempt whose outcome the store refused stays here, keeping its slot, until a retry writes it."""
+        for attempt in self.active:
+            if attempt.io_ended and not attempt.done:
+                attempt.settle_pending()
         with self._cond:
             for attempt_id in [k for k, a in self._attempts.items() if a.done]:
                 del self._attempts[attempt_id]
 
-    def _monitor(self, network: NetworkKind, policy: DownloadNetwork) -> None:
+    def _monitor(self, network: NetworkKind, policy: DownloadNetwork, rows: dict[str | None, DownloadJob]) -> None:
         """Frequent and read-only: a stop recorded by anyone, or a network the job may not use, ends the I/O."""
         queue = self._ctx.state.queue
-        try:
-            rows = {job.attempt_id: job for job in queue.jobs(ACTIVE_STATES)}
-        except STORE_ERRORS:
-            self._unreadable(True)
-            return
-        self._unreadable(False)
         for attempt in self.active:
             job = rows.get(attempt.attempt_id)
             if job is None:
@@ -146,7 +159,10 @@ class Scheduler:
         """Returns whether some job may be claimed now; an idle pass then opens no write transaction at all."""
         queue = self._ctx.state.queue
         jobs = queue.jobs([JobState.QUEUED, JobState.WAITING])
-        storage_blocked = any(j.state is JobState.WAITING and j.wait_reason is WaitReason.STORAGE for j in jobs)
+        self._storage_held &= {j.id for j in jobs if j.state is JobState.WAITING}
+        storage_blocked = bool(self._storage_held) or any(
+            j.state is JobState.WAITING and j.wait_reason is WaitReason.STORAGE for j in jobs
+        )
         now = self._ctx.wall().isoformat()
         claimable = False
         for job in jobs:
@@ -157,6 +173,8 @@ class Scheduler:
     def _apply(self, job: DownloadJob, conditions: Conditions, storage_blocked: bool) -> bool:
         """True when the job ends up queued."""
         queue = self._ctx.state.queue
+        if job.id in self._storage_held and storage_ok(job, conditions):
+            self._storage_held.discard(job.id)
         blocking = blocking_condition(job, conditions, storage_blocked=storage_blocked)
         if job.state is JobState.WAITING:
             reason = job.wait_reason
@@ -167,6 +185,10 @@ class Scheduler:
                 return False
             if blocking is not None:
                 queue.hold(job.id, blocking)
+                if blocking is WaitReason.STORAGE:
+                    self._storage_held.discard(job.id)
+                elif reason is WaitReason.STORAGE and not storage_ok(job, conditions):
+                    self._storage_held.add(job.id)
                 return False
             return True
         if blocking is not None:
@@ -175,16 +197,18 @@ class Scheduler:
         return True
 
     def _claim(self, network: NetworkKind) -> None:
-        with self._cond:
-            if self._closing:
-                return
         while True:
+            with self._cond:
+                if self._closing:
+                    return
             claim = self._ctx.state.queue.claim_next(network, self._owner)
             if claim is None:
                 return
             attempt = Attempt(self._ctx, claim)
             with self._cond:
                 self._attempts[claim.attempt_id] = attempt
+                if self._closing:
+                    attempt.stop("shutdown")
             attempt.thread.start()
 
     def _sleep_for(self) -> float:

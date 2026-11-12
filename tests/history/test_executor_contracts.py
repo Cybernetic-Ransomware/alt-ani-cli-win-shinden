@@ -78,7 +78,10 @@ class TestExecutorOwnership:
         finally:
             child.kill()
             child.wait(timeout=30)
-        taken = ExecutorOwnership.try_acquire(db)
+        # Windows drops a dead process's locks asynchronously, and a venv launcher's interpreter dies after it
+        deadline = time.monotonic() + 30
+        while (taken := ExecutorOwnership.try_acquire(db)) is None and time.monotonic() < deadline:
+            time.sleep(0.05)
         assert taken is not None
         taken.release()
 

@@ -2,6 +2,7 @@
 
 import sqlite3
 from collections.abc import Callable
+from pathlib import Path
 
 from alt_ani_core.errors import InvalidTransitionError, StateConflictError, UnknownRecordError
 from alt_ani_core.history.codec import item_of
@@ -21,6 +22,10 @@ class SqliteLibraryStore:
 
     def __init__(self, db: Database) -> None:
         self._db = db
+
+    @property
+    def db_path(self) -> Path:
+        return self._db.path
 
     @staticmethod
     def _get(conn: sqlite3.Connection, item_id: str) -> OfflineItem:

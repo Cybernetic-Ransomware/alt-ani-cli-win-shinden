@@ -86,17 +86,18 @@ class OfflineQueue:
             return report
 
     def close(self, timeout: float | None = None) -> bool:
-        """Ownership is released only when every attempt's I/O has ended; otherwise the process exit releases it."""
+        """Ownership is released only when the loop and every attempt's I/O have ended; on False, call it again to wait."""
         with self._lock:
             scheduler, owner = self._scheduler, self._owner
-            self._scheduler = None
         if scheduler is None or owner is None:
             return True
-        ended = scheduler.close(timeout)
-        if ended:
-            owner.release()
-            self._owner = None
-        return ended
+        if not scheduler.close(timeout):
+            return False
+        with self._lock:
+            if self._scheduler is scheduler:
+                self._scheduler, self._owner = None, None
+        owner.release()
+        return True
 
     def __enter__(self) -> OfflineQueue:
         return self

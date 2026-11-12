@@ -316,6 +316,15 @@ def _cause_chain(exc: BaseException) -> list[BaseException]:
     return chain
 
 
+def _release_handles(exc: BaseException) -> None:
+    """yt-dlp's open .part stream sits in a cycle reachable from the traceback; on Windows it blocks the next rename."""
+    for cur in _cause_chain(exc):
+        cur.__traceback__ = None
+        if isinstance(cur.__dict__.get("exc_info"), tuple):
+            cur.__dict__["exc_info"] = None
+    gc.collect()
+
+
 def classify(exc: BaseException) -> TransferFailed:
     from yt_dlp.networking.exceptions import HTTPError, TransportError
 
@@ -459,11 +468,11 @@ def transfer(
             cancel.raise_if_cancelled()
     except DownloadError as exc:
         failure = classify(exc)
-        gc.collect()
+        _release_handles(exc)
         cancel.raise_if_cancelled()
         raise failure from None
-    except EngineInterrupt, ResumeRefused:
-        gc.collect()
+    except (EngineInterrupt, ResumeRefused) as exc:
+        _release_handles(exc)
         raise
     media = paths["media"]
     if not media.is_file():
