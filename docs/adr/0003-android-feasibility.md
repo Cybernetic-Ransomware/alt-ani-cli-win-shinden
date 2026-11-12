@@ -13,6 +13,10 @@ merge condition of the split, and the split must not be read as proof that Andro
 
 Out of scope for now: building our own wheels, a Kotlin HTTP transport, mobile downloads, sync, Compose screens.
 
+> Scope note (2026-11): these exclusions applied to the feasibility experiment and the core/CLI split. They do not
+> remove mobile downloads or Compose screens from the Android MVP, which includes both — see the
+> [product requirements](../product/android-mvp.md).
+
 ## Facts and sources (checked 2026-11-10 unless noted)
 
 | Fact | Source |

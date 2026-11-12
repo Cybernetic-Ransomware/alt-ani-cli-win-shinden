@@ -162,6 +162,11 @@ a `history.json.pre-sqlite.bak` copy is placed next to it, and entries that cann
 `-D` clears the history without bringing the old file back. Details are in
 [ADR-0002](docs/adr/0002-core-cli-split.md#history-migration).
 
+The same file also holds state prepared for the Android client (watch progress, a download queue and an offline
+library; [ADR-0004](docs/adr/0004-local-state-model.md)). `-D` does not remove it. When a database from version
+0.3.x is upgraded, a verified copy `history.db.schema-1.<time>.bak` is written next to it first; an older version
+refuses the upgraded file, and restoring that copy is the way back.
+
 ## Development
 
 For branching, integration, and release rules, see [ADR-0001](docs/adr/0001-branching-and-release-flow.md).
