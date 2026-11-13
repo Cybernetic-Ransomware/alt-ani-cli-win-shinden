@@ -54,6 +54,43 @@ STDLIB_ONLY = [
     "rules",
 ]
 
+# the engine modules the bridge may use: public services, rules, state and adapters, never a store's internals
+BRIDGE_CORE_ALLOWLIST = {
+    "alt_ani_core",
+    "alt_ani_core.cancel",
+    "alt_ani_core.config",
+    "alt_ani_core.diagnostics",
+    "alt_ani_core.errors",
+    "alt_ani_core.events",
+    "alt_ani_core.history.database",
+    "alt_ani_core.history.local",
+    "alt_ani_core.history.ownership",
+    "alt_ani_core.history.store",
+    "alt_ani_core.models",
+    "alt_ani_core.redaction",
+    "alt_ani_core.rules.conditions",
+    "alt_ani_core.rules.criteria",
+    "alt_ani_core.rules.episodes",
+    "alt_ani_core.rules.job_state",
+    "alt_ani_core.rules.network",
+    "alt_ani_core.services.engine",
+    "alt_ani_core.services.episode_session",
+    "alt_ani_core.services.offline",
+    "alt_ani_core.services.offline.events",
+    "alt_ani_core.services.offline.library",
+    "alt_ani_core.services.offline.sources",
+    "alt_ani_core.services.playback",
+    "alt_ani_core.shinden",
+    "alt_ani_core.shinden.xhr",
+    "alt_ani_core.state",
+    "alt_ani_core.storage.api",
+    "alt_ani_core.storage.fs",
+    "alt_ani_core.transport.api",
+    "alt_ani_core.transport.curl",
+}
+# from history.database only the error tuple; SQL stays in the stores
+BRIDGE_HISTORY_NAMES = {"alt_ani_core.history.database": {"STORE_ERRORS"}}
+
 # package → engine packages it must not import
 LAYERS = {
     "rules": {"shinden", "extract", "services", "download", "transfer", "storage", "history", "dom", "diagnostics"},
@@ -196,3 +233,32 @@ class TestApplicationsStayOnTheirSide:
             for name in ([a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""])
         }
         assert not any("curl" in name for name in top_level)
+
+
+def _from_imports(path: Path) -> list[tuple[str, str]]:
+    return [
+        (node.module or "", alias.name)
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.ImportFrom) and node.level == 0
+        for alias in node.names
+    ]
+
+
+@pytest.mark.unit
+class TestBridgeUsesTheEngineContract:
+    @pytest.mark.parametrize("path", _files(BRIDGE), ids=lambda p: p.relative_to(BRIDGE).as_posix())
+    def test_only_allowlisted_engine_modules(self, path):
+        modules = {module for module, _ in _from_imports(path) if module.startswith("alt_ani_core")}
+        modules |= {
+            name for name in _imports(path) if name.startswith("alt_ani_core") and "." not in name.removeprefix("alt_ani_core")
+        }
+        assert modules <= BRIDGE_CORE_ALLOWLIST, modules - BRIDGE_CORE_ALLOWLIST
+
+    @pytest.mark.parametrize("path", _files(BRIDGE), ids=lambda p: p.relative_to(BRIDGE).as_posix())
+    def test_no_sql_and_no_private_engine_names(self, path):
+        assert not _uses(_imports(path), "sqlite3")
+        for module, name in _from_imports(path):
+            if module.startswith("alt_ani_core"):
+                assert not name.startswith("_"), (module, name)
+                allowed = BRIDGE_HISTORY_NAMES.get(module)
+                assert allowed is None or name in allowed, (module, name)

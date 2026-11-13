@@ -72,7 +72,7 @@ class TestCatalogue:
     def test_network_failure_is_retryable(self, client):
         client.transport.route("https://shinden.pl/series", TransportTimeout())
         error = client.error("search", query="frieren")
-        assert (error["code"], error["kind"], error["retryable"]) == ("timeout", "network", True)
+        assert (error["code"], error["kind"], error["retryable"]) == ("timeout", "unavailable", True)
 
     def test_http_403_is_an_access_block(self, client):
         client.transport.route("https://shinden.pl/series", FakeResponse(status_code=403))
@@ -256,7 +256,9 @@ class TestOperations:
         release.set()
         thread.join(5)
 
-        assert closed == {"ok": True, "data": {"cancelled_operations": 1, "closed_sessions": 1}}
+        assert closed["ok"] is True
+        assert closed["data"]["cancelled_operations"] == 1
+        assert closed["data"]["closed_sessions"] == 1
         assert replies[0]["error"]["code"] == "session_closed"
         assert replies[0]["error"]["params"]["closed_by"] == "close_engine"
         extract_ok.assert_not_called()
@@ -312,7 +314,7 @@ class TestCloseSessionDuringOperation:
         assert client.data("engine_status")["running_operations"] == 0
 
     def test_result_computed_before_close_but_handed_back_after_is_not_a_success(self, client, extract_ok):
-        from alt_ani_bridge import bridge as bridge_module
+        from alt_ani_bridge.methods import catalogue as bridge_module
 
         session_id, sources = _open(client)
         real = bridge_module.dto.resolved_stream
@@ -326,13 +328,16 @@ class TestCloseSessionDuringOperation:
             error = client.error("resolve", session_id=session_id, online_id=sources[0]["online_id"])
         assert error["code"] == "session_closed"
 
-    def test_close_from_the_operations_own_event_callback_does_not_deadlock(self, tmp_path, client, extract_ok):
+    def test_close_from_the_listener_does_not_deadlock(self, tmp_path, client, extract_ok):
+        """Push delivery runs on its own thread, so a listener calling back into the bridge cannot block an operation."""
         closed: list[dict] = []
         session_ids: list[str] = []
+        delivered = threading.Event()
 
         def listener(message: str) -> None:
-            if json.loads(message)["type"] == "EmbedResolved" and not closed:
+            if json.loads(message)["type"] == "engine.phase" and not closed:
                 closed.append(client.data("close_session", session_id=session_ids[0]))
+                delivered.set()
 
         client.close()
         client.create(listener=listener)
@@ -342,8 +347,9 @@ class TestCloseSessionDuringOperation:
         thread.join(5)
 
         assert not thread.is_alive()
-        assert closed == [{"closed": True, "cancelled_operations": 1}]
-        assert replies[0]["error"]["code"] == "session_closed"
+        assert delivered.wait(5)
+        assert closed[0]["closed"] is True
+        assert replies[0]["ok"] or replies[0]["error"]["code"] == "session_closed"
 
     def test_closing_one_session_leaves_another_sessions_operation_alone(self, client):
         first, sources = _open(client)
@@ -409,25 +415,37 @@ class TestCloseSessionDuringOperation:
         assert replies[0]["error"]["params"]["closed_by"] == "set_access"
 
 
+def _wait_events(client, predicate, timeout: float = 5.0) -> list[dict]:
+    deadline = threading.Event()
+    for _ in range(int(timeout / 0.01)):
+        if predicate(client.events):
+            return client.events
+        deadline.wait(0.01)
+    raise AssertionError(f"events not delivered: {client.events}")
+
+
 class TestEvents:
-    def test_events_arrive_as_typed_json(self, client, extract_ok):
+    def test_events_arrive_as_v2_json_on_the_push_thread(self, client, extract_ok):
         session_id, sources = _open(client)
         client.data("resolve", session_id=session_id, online_id=sources[0]["online_id"])
-        types = [event["type"] for event in client.events]
-        assert types[:2] == ["PhaseStarted", "PhaseFinished"]
-        assert {"type": "PhaseStarted", "phase": "antibot_delay"} in client.events
+        events = _wait_events(client, lambda ev: any(e["type"] == "engine.phase" for e in ev))
+        phase = next(e for e in events if e["type"] == "engine.phase")
+        assert set(phase) == {"epoch", "seq", "type", "at", "op_id", "data"}
+        assert phase["data"] == {"phase": "antibot_delay", "state": "started"}
 
     def test_listener_object_with_on_event(self, client, extract_ok):
         received: list[str] = []
+        got = threading.Event()
 
         class Listener:
             def onEvent(self, message: str) -> None:  # noqa: N802
                 received.append(message)
+                got.set()
 
         client.create(listener=Listener())
         session_id, sources = _open(client)
         client.data("resolve", session_id=session_id, online_id=sources[0]["online_id"])
-        assert received
+        assert got.wait(5)
         assert all(isinstance(json.loads(message)["type"], str) for message in received)
 
     def test_failing_listener_does_not_break_the_operation(self, client, extract_ok):
@@ -438,6 +456,10 @@ class TestEvents:
         session_id, sources = _open(client)
         data = client.data("resolve", session_id=session_id, online_id=sources[0]["online_id"])
         assert data["variants"]
+        for _ in range(500):
+            if client.data("engine_status")["listener_errors"] >= 2:
+                break
+            threading.Event().wait(0.01)
         assert client.data("engine_status")["listener_errors"] >= 2
 
     def test_no_listener_is_allowed(self, client, extract_ok):
@@ -447,7 +469,7 @@ class TestEvents:
             )
         )
         assert reply["ok"]
-        client.bridge.close_engine(json.dumps(reply["data"]))
+        client.bridge.close_engine(json.dumps({"engine_id": reply["data"]["engine_id"]}))
 
 
 class TestHistory:
@@ -473,13 +495,16 @@ class TestPlatformPieces:
         from alt_ani_bridge import Bridge
         from alt_ani_bridge import bridge as bridge_module
 
+        bridge = Bridge(transport_factory=bridge_module._default_transport)
         with patch.dict("sys.modules", {"alt_ani_core.transport.curl": None}):
-            reply = json.loads(
-                Bridge(transport_factory=bridge_module._default_transport).create_engine(
-                    json.dumps({"cache_dir": str(tmp_path), "history_path": str(tmp_path / "h.db")})
-                )
+            created = json.loads(
+                bridge.create_engine(json.dumps({"cache_dir": str(tmp_path), "history_path": str(tmp_path / "h.db")}))
             )
+            # the transport is created lazily: the handle works for local state and a remote call reports it missing
+            engine_id = created["data"]["engine_id"]
+            reply = json.loads(bridge.call("search", json.dumps({"engine_id": engine_id, "query": "x"})))
         assert reply["error"]["code"] == "transport_unavailable"
+        assert reply["error"]["kind"] == "unavailable"
 
     def test_http_status_other_than_403(self):
         from alt_ani_bridge.errors import describe

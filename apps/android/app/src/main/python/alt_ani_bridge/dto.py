@@ -31,10 +31,6 @@ def series_ref(ref: SeriesRef) -> dict[str, Any]:
     return {"id": ref.id, "slug": ref.slug, "title": ref.title, "url": ref.url}
 
 
-def parse_series_ref(data: dict[str, Any]) -> SeriesRef:
-    return SeriesRef(id=str(data["id"]), slug=str(data.get("slug", "")), title=str(data["title"]), url=str(data["url"]))
-
-
 def _related(item: RelatedSeries) -> dict[str, Any]:
     return {"id": item.id, "slug": item.slug, "title": item.title, "url": item.url, "relation": item.relation}
 
@@ -53,10 +49,6 @@ def series_metadata(meta: SeriesMetadata | None) -> dict[str, Any] | None:
 
 def episode(row: EpisodeRow) -> dict[str, Any]:
     return {"number": row.number, "title": row.title, "url": row.url}
-
-
-def parse_episode(data: dict[str, Any]) -> EpisodeRow:
-    return EpisodeRow(number=float(data["number"]), title=str(data.get("title", "")), url=str(data["url"]))
 
 
 def episode_listing(listing: EpisodeListing) -> dict[str, Any]:
@@ -102,15 +94,15 @@ def _mime(variant: StreamVariant) -> str | None:
     return _MIME[variant.protocol]
 
 
-def _variant(variant: StreamVariant) -> dict[str, Any]:
+def variant(value: StreamVariant) -> dict[str, Any]:
     return {
-        "label": variant.label,
-        "url": variant.url,
-        "protocol": variant.protocol.value,
-        "mime": _mime(variant),
-        "container": variant.container,
-        "height": variant.height or None,
-        "headers": dict(variant.headers),
+        "label": value.label,
+        "url": value.url,
+        "protocol": value.protocol.value,
+        "mime": _mime(value),
+        "container": value.container,
+        "height": value.height or None,
+        "headers": dict(value.headers),
     }
 
 
@@ -120,7 +112,7 @@ def resolved_stream(resolved: ResolvedStream, quality: str | None) -> dict[str, 
     return {
         "source": player(resolved.source),
         "embed_host": host_of_url(resolved.embed.url),
-        "variants": [_variant(v) for v in stream.variants],
+        "variants": [variant(v) for v in stream.variants],
         "default_index": stream.default_index,
         "selected_index": stream.variants.index(chosen),
     }
