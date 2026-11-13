@@ -117,7 +117,9 @@ def recover(
         (completed if _reconcile(state, store, claim, cancel) else failed).append(claim.job.id)
 
     library = LibraryService(state.library, store)
+    cancel.raise_if_cancelled()
     finished = [r.item_id for r in library.retry_pending_deletes(cancel=cancel) if r.kind is not ResultKind.FAILED]
+    cancel.raise_if_cancelled()
     missing: list[str] = []
     restored: list[str] = []
     for result in library.verify(deep=True, cancel=cancel):
@@ -125,6 +127,8 @@ def recover(
             missing.append(result.item_id)
         elif result.code == "restored":
             restored.append(result.item_id)
+    # the library steps report a cancelled item instead of raising; recovery itself must stop
+    cancel.raise_if_cancelled()
 
     removals = remove_pending(state.queue, store)
     known = _referenced(state)

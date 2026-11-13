@@ -18,7 +18,9 @@ from alt_ani_core.storage.api import (
     OUTSIDE_ROOT,
     TARGET_EXISTS,
     UNAVAILABLE,
+    ExportWriter,
     FileStat,
+    PlaybackTarget,
     PublishName,
     from_os_error,
     storage_error,
@@ -190,6 +192,9 @@ class FsFileStore:
         except OSError as exc:
             raise from_os_error(exc) from None
 
+    def playback_target(self, locator: StorageLocator) -> PlaybackTarget:
+        return PlaybackTarget("file", str(self._path(locator)))
+
     def free_space(self) -> int | None:
         try:
             return shutil.disk_usage(self._root).free
@@ -214,6 +219,89 @@ class FsFileStore:
         return found
 
 
+ON_CONFLICT = ("fail", "rename")
+
+
+class DirectoryWriter:
+    """A temporary file in the destination directory, published under a free name only on ``commit``."""
+
+    def __init__(self, dest_dir: Path, file_name: str, *, rename: bool, on_temp: Callable[[Path], None] | None) -> None:
+        stem, dot, ext = file_name.rpartition(".")
+        self._stem = naming.safe_component(stem if dot else file_name, "export")
+        self._ext = naming.safe_extension(ext) if dot else "bin"
+        self._dest = dest_dir
+        self._rename = rename
+        self.temp = dest_dir / f"{EXPORT_PREFIX}{uuid.uuid4().hex}.tmp"
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            if on_temp is not None:
+                on_temp(self.temp)
+            self._out: BinaryIO = self.temp.open("xb")
+        except OSError as exc:
+            raise from_os_error(exc) from None
+        self.path: Path | None = None
+
+    def write(self, chunk: bytes) -> None:
+        try:
+            self._out.write(chunk)
+        except OSError as exc:
+            raise from_os_error(exc) from None
+
+    def commit(self) -> str:
+        try:
+            self._out.flush()
+            os.fsync(self._out.fileno())
+            self._out.close()
+            for attempt in range(1, _MAX_ALLOCATE + 1):
+                name = f"{self._stem}.{self._ext}" if attempt == 1 else f"{self._stem} ({attempt}).{self._ext}"
+                try:
+                    publish_no_replace(self.temp, self._dest / name)
+                except StorageError as exc:
+                    if exc.code == TARGET_EXISTS and self._rename:
+                        continue
+                    raise
+                self.path = self._dest / name
+                return name
+            raise storage_error(TARGET_EXISTS)
+        except OSError as exc:
+            raise from_os_error(exc) from None
+        finally:
+            self.abort()
+
+    def abort(self) -> None:
+        """Safe after ``commit`` too: the temporary name is gone once the file is published."""
+        if not self._out.closed:
+            self._out.close()
+        self.temp.unlink(missing_ok=True)
+
+
+class DirectoryExportTarget:
+    def __init__(self, dest_dir: Path, *, on_temp: Callable[[Path], None] | None = None) -> None:
+        self.dest_dir = dest_dir
+        self._on_temp = on_temp
+
+    def create(self, name: str, *, on_conflict: str) -> DirectoryWriter:
+        if on_conflict not in ON_CONFLICT:
+            raise ValueError(f"unknown on_conflict {on_conflict!r}")
+        return DirectoryWriter(self.dest_dir, name, rename=on_conflict == "rename", on_temp=self._on_temp)
+
+
+def copy_to(source: BinaryIO, writer: ExportWriter, cancel: CancelToken = NEVER) -> str:
+    """Cancellation counts only before ``commit``: afterwards the file exists and its name is returned."""
+    try:
+        while chunk := source.read(_CHUNK):
+            cancel.raise_if_cancelled()
+            writer.write(chunk)
+        cancel.raise_if_cancelled()
+    except OSError as exc:
+        writer.abort()
+        raise from_os_error(exc) from None
+    except BaseException:
+        writer.abort()
+        raise
+    return writer.commit()
+
+
 def export_copy(
     source: BinaryIO,
     dest_dir: Path,
@@ -224,31 +312,7 @@ def export_copy(
     on_temp: Callable[[Path], None] | None = None,
 ) -> Path:
     """An independent copy (never a link) published without replacing anything; a failed copy leaves no file."""
-    stem, dot, ext = file_name.rpartition(".")
-    stem = naming.safe_component(stem if dot else file_name, "export")
-    ext = naming.safe_extension(ext) if dot else "bin"
-    temp = dest_dir / f"{EXPORT_PREFIX}{uuid.uuid4().hex}.tmp"
-    try:
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        if on_temp is not None:
-            on_temp(temp)
-        with temp.open("xb") as out:
-            while chunk := source.read(_CHUNK):
-                cancel.raise_if_cancelled()
-                out.write(chunk)
-            out.flush()
-            os.fsync(out.fileno())
-        for attempt in range(1, _MAX_ALLOCATE + 1):
-            target = dest_dir / (f"{stem}.{ext}" if attempt == 1 else f"{stem} ({attempt}).{ext}")
-            try:
-                publish_no_replace(temp, target)
-            except StorageError as exc:
-                if exc.code == TARGET_EXISTS and rename_on_conflict:
-                    continue
-                raise
-            return target
-        raise storage_error(TARGET_EXISTS)
-    except OSError as exc:
-        raise from_os_error(exc) from None
-    finally:
-        temp.unlink(missing_ok=True)
+    target = DirectoryExportTarget(dest_dir, on_temp=on_temp)
+    writer = target.create(file_name, on_conflict="rename" if rename_on_conflict else "fail")
+    name = copy_to(source, writer, cancel)
+    return dest_dir / name

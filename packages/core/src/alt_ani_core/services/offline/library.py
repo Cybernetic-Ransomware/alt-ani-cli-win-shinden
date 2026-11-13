@@ -16,14 +16,16 @@ from alt_ani_core.errors import (
 from alt_ani_core.history.library import SqliteLibraryStore
 from alt_ani_core.history.ownership import DELETE_LOCK_SUFFIX, exclusive, lock_path
 from alt_ani_core.state import ItemStatus, OfflineItem
-from alt_ani_core.storage.api import FileStore
-from alt_ani_core.storage.fs import export_copy
+from alt_ani_core.storage.api import ExportTarget, FileStore
+from alt_ani_core.storage.fs import DirectoryExportTarget, copy_to
 
 
 class ResultKind(StrEnum):
     OK = "ok"
     SKIPPED = "skipped"
     FAILED = "failed"
+    # the operation was cancelled before this item was touched
+    NOT_ATTEMPTED = "not_attempted"
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,11 @@ class ItemResult:
     kind: ResultKind
     code: str | None = None
     path: Path | None = None
+    file_name: str | None = None
+
+
+def _not_attempted(item_ids: list[str]) -> list[ItemResult]:
+    return [ItemResult(i, ResultKind.NOT_ATTEMPTED) for i in item_ids]
 
 
 class LibraryService:
@@ -42,13 +49,17 @@ class LibraryService:
     def delete(self, item_ids: list[str], *, cancel: CancelToken = NEVER) -> list[ItemResult]:
         """One item at a time, so a refused or failing item does not stop the rest."""
         results: list[ItemResult] = []
-        for item_id in item_ids:
+        for index, item_id in enumerate(item_ids):
+            if cancel.cancelled:
+                return results + _not_attempted(item_ids[index:])
             try:
                 (item,) = self._library.mark_deleting([item_id])
             except (StateConflictError, InvalidTransitionError, UnknownRecordError) as exc:
                 results.append(ItemResult(item_id, ResultKind.FAILED, exc.code))
                 continue
             results.append(self.finish_delete(item, cancel=cancel))
+            if results[-1].code == "cancelled":
+                return results + _not_attempted(item_ids[index + 1 :])
         return results
 
     def finish_delete(self, item: OfflineItem, *, cancel: CancelToken = NEVER) -> ItemResult:
@@ -88,17 +99,30 @@ class LibraryService:
         return self._store.digest(item.spec.locator, cancel) == item.spec.sha256
 
     def retry_pending_deletes(self, *, cancel: CancelToken = NEVER) -> list[ItemResult]:
-        return [self.finish_delete(item, cancel=cancel) for item in self._library.items(status=ItemStatus.DELETING)]
+        items = self._library.items(status=ItemStatus.DELETING)
+        results: list[ItemResult] = []
+        for index, item in enumerate(items):
+            if cancel.cancelled:
+                return results + _not_attempted([i.id for i in items[index:]])
+            results.append(self.finish_delete(item, cancel=cancel))
+        return results
 
     def verify(self, item_ids: list[str] | None = None, *, deep: bool = False, cancel: CancelToken = NEVER) -> list[ItemResult]:
         """Existence and size decide availability; ``deep`` also compares the SHA-256, both ways."""
-        items = self._library.items() if item_ids is None else [self._library.get(i) for i in item_ids]
+        ids = [item.id for item in self._library.items()] if item_ids is None else list(item_ids)
         results: list[ItemResult] = []
-        for item in items:
+        for index, item_id in enumerate(ids):
+            if cancel.cancelled:
+                return results + _not_attempted(ids[index:])
             try:
-                results.append(self._verify(item, deep=deep, cancel=cancel))
+                results.append(self._verify(self._library.get(item_id), deep=deep, cancel=cancel))
+            except UnknownRecordError as exc:
+                results.append(ItemResult(item_id, ResultKind.FAILED, exc.code))
             except StorageError as exc:
-                results.append(ItemResult(item.id, ResultKind.FAILED, exc.code))
+                results.append(ItemResult(item_id, ResultKind.FAILED, exc.code))
+            except OperationCancelled:
+                # a digest was interrupted before anything was recorded: the item is unchanged
+                return [*results, ItemResult(item_id, ResultKind.FAILED, "cancelled"), *_not_attempted(ids[index + 1 :])]
         return results
 
     def _verify(self, item: OfflineItem, *, deep: bool, cancel: CancelToken) -> ItemResult:
@@ -122,10 +146,22 @@ class LibraryService:
         return ItemResult(item.id, ResultKind.SKIPPED, item.status.value)
 
     def export(
-        self, item_ids: list[str], dest_dir: Path, *, rename_on_conflict: bool = True, cancel: CancelToken = NEVER
+        self,
+        item_ids: list[str],
+        target: ExportTarget | Path,
+        *,
+        rename_on_conflict: bool = True,
+        on_conflict: str | None = None,
+        cancel: CancelToken = NEVER,
     ) -> list[ItemResult]:
+        """Not idempotent: a repeat makes another copy (``rename``) or fails (``fail``); cancelling spares published files."""
+        conflict = on_conflict or ("rename" if rename_on_conflict else "fail")
+        directory = target if isinstance(target, Path) else None
+        destination = DirectoryExportTarget(target) if isinstance(target, Path) else target
         results: list[ItemResult] = []
-        for item_id in item_ids:
+        for index, item_id in enumerate(item_ids):
+            if cancel.cancelled:
+                return results + _not_attempted(item_ids[index:])
             try:
                 item = self._library.get(item_id)
             except UnknownRecordError as exc:
@@ -137,12 +173,13 @@ class LibraryService:
             name = PurePosixPath(item.spec.locator.key).name or f"{item.id}.bin"
             try:
                 with self._store.open_read(item.spec.locator) as source:
-                    path = export_copy(source, dest_dir, name, cancel=cancel, rename_on_conflict=rename_on_conflict)
+                    published = copy_to(source, destination.create(name, on_conflict=conflict), cancel)
             except StorageError as exc:
                 results.append(ItemResult(item_id, ResultKind.FAILED, exc.code))
                 continue
             except OperationCancelled:
                 results.append(ItemResult(item_id, ResultKind.FAILED, "cancelled"))
-                break
-            results.append(ItemResult(item_id, ResultKind.OK, path=path))
+                return results + _not_attempted(item_ids[index + 1 :])
+            path = directory / published if directory is not None else None
+            results.append(ItemResult(item_id, ResultKind.OK, path=path, file_name=published))
         return results
