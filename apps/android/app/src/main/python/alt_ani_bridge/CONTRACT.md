@@ -10,6 +10,11 @@ Decisions and reasons: [ADR-0006](../../../../../../../docs/adr/0006-mobile-clie
 - Envelope: `{"ok": true, "data": …}` or `{"ok": false, "error": {code, kind, retryable, message, params}}`.
 - Reserved request fields: `engine_id` (every method except `bridge_info` and `runtime_close` by `db_path`), `op_id`
   (optional; unique while running; makes the call cancellable), `contract` (optional; another major is refused).
+- A mutation is stopped by `cancel(op_id)`, a closed handle or a closed session only before its write; once written
+  it reports its own outcome. A read whose episode session closes before the reply gets `session_closed`.
+- A `session_id` passed with a series and an episode (`playback_prepare`, `watch_open_in_browser`,
+  `queue_choose_source` through the job) must belong to that episode — same number, page and series — else
+  `bad_request {field: session_id, problem: other_episode}`.
 - Unknown fields are refused. Absent means the default; `null` means "none/unknown" and is accepted only where noted.
 - Units: `_ms` milliseconds, `_bytes` bytes, times ISO-8601 UTC, heights in pixels, episode numbers finite numbers.
   `retry_after` (v1 XHR errors) is in seconds.
@@ -72,7 +77,7 @@ Decisions and reasons: [ADR-0006](../../../../../../../docs/adr/0006-mobile-clie
 | `close_engine` | `engine_id` | `{cancelled_operations, closed_sessions, delivery_ended}` |
 | `engine_status` | — | `{sessions, running_operations, listener_errors, engine_started, events_dropped}` |
 | `set_access` | `access` | `{dropped_sessions}` (this handle only) |
-| `runtime_close` | `db_path?` (else the handle's runtime), `timeout_ms?` (10000) | `{ended, executor_ended, delivery_threads_alive}` |
+| `runtime_close` | `db_path?` (else the handle's runtime), `timeout_ms?` (10000) | `{ended, executor_ended, delivery_threads_alive, operations_running}`; `ended` only once every operation of the runtime has returned and every push thread, including those of closed handles, has ended |
 
 ### Catalogue (v1)
 

@@ -11,6 +11,7 @@ from alt_ani_core.state import EpisodeKey, OpenedVia
 
 def playback_begin(c: Call) -> Any:
     series, episode = common.series(c.r), common.episode(c.r)
+    c.commit()
     session, state = c.runtime.state.watch.start_playback(series, episode)
     c.runtime.begin_playback(session)
     c.runtime.changed()
@@ -19,12 +20,10 @@ def playback_begin(c: Call) -> Any:
 
 def playback_position(c: Call) -> Any:
     session = common.playback_session(c.r)
-    accepted = c.runtime.state.watch.record_position(
-        session,
-        c.r.integer("seq", minimum=1),
-        c.r.integer("position_ms", minimum=0),
-        c.r.integer("duration_ms", None, minimum=1, nullable=True),
-    )
+    seq, position = c.r.integer("seq", minimum=1), c.r.integer("position_ms", minimum=0)
+    duration = c.r.integer("duration_ms", None, minimum=1, nullable=True)
+    c.commit()
+    accepted = c.runtime.state.watch.record_position(session, seq, position, duration)
     return {"accepted": accepted}
 
 
@@ -32,9 +31,10 @@ def playback_ended(c: Call) -> Any:
     """The only automatic way to mark an episode watched; ends the viewing and its mobile-data consent."""
     session = common.playback_session(c.r)
     watch = c.runtime.state.watch
-    accepted = watch.record_playback_ended(
-        session, c.r.integer("seq", minimum=1), c.r.integer("position_ms", minimum=0), c.r.integer("duration_ms", minimum=1)
-    )
+    seq, position = c.r.integer("seq", minimum=1), c.r.integer("position_ms", minimum=0)
+    duration = c.r.integer("duration_ms", minimum=1)
+    c.commit()
+    accepted = watch.record_playback_ended(session, seq, position, duration)
     c.runtime.end_playback(session.session_id)
     c.runtime.changed()
     return {"accepted": accepted, "watch": dto_state.watch(watch.get(session.key), session.key)}
@@ -42,12 +42,14 @@ def playback_ended(c: Call) -> Any:
 
 def playback_close(c: Call) -> Any:
     session = common.playback_session(c.r)
+    c.commit()
     c.runtime.end_playback(session.session_id)
     return {"closed": True}
 
 
 def playback_allow_cellular(c: Call) -> Any:
     session = common.playback_session(c.r)
+    c.commit()
     if not c.runtime.allow_cellular(session.session_id, session.key):
         raise BridgeError(
             "playback.not_open", "this playback session is not the open viewing", playback_session=session.session_id
@@ -57,7 +59,9 @@ def playback_allow_cellular(c: Call) -> Any:
 
 def watch_set_watched(c: Call) -> Any:
     key = common.key(c.r)
-    state = c.runtime.state.watch.set_watched(key, c.r.flag("watched"), c.r.integer("expected_revision", minimum=0))
+    watched, expected = c.r.flag("watched"), c.r.integer("expected_revision", minimum=0)
+    c.commit()
+    state = c.runtime.state.watch.set_watched(key, watched, expected)
     c.runtime.changed()
     return {"watch": dto_state.watch(state, key)}
 
@@ -96,10 +100,11 @@ def watch_open_in_browser(c: Call) -> Any:
     series, episode = common.series(c.r), common.episode(c.r)
     url, target = episode.url, "episode_page"
     if c.r.has("session_id"):
-        session = c.session(c.r.text("session_id")).session
+        session = c.episode_session(c.r.text("session_id"), series.id, episode).session
         known = session.known_sources.get(c.r.text("online_id")) if c.r.has("online_id") else None
         if known is not None:
             url, target = known.embed_url, "source"
+    c.commit()
     state = c.runtime.state.watch.record_opened(series, episode, OpenedVia.BROWSER)
     c.runtime.changed()
     return {"target": target, "url": url, "watch": dto_state.watch(state, state.key)}

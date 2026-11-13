@@ -107,16 +107,21 @@ def history_downloads(c: Call) -> Any:
 
 
 def history_record_watch(c: Call) -> Any:
-    c.engine.history.record_watch(common.series(c.r), c.r.number("episode"))
+    series, number = common.series(c.r), c.r.number("episode")
+    c.commit()
+    c.engine.history.record_watch(series, number)
     return {}
 
 
 def history_record_download(c: Call) -> Any:
-    c.engine.history.record_download(common.series(c.r), c.r.number("episode"))
+    series, number = common.series(c.r), c.r.number("episode")
+    c.commit()
+    c.engine.history.record_download(series, number)
     return {}
 
 
 def history_clear(c: Call) -> Any:
+    c.commit()
     c.engine.history.clear()
     return {}
 

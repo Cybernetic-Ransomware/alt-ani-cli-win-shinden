@@ -156,6 +156,20 @@ class TestSources:
         )["job"]
         assert chosen["selection_mode"] == "manual" and chosen["source"]["online_id"] == dood_en["online_id"]
 
+    def test_session_of_another_job_is_refused(self, v2):
+        plan = v2.plan(numbers=(1, 2), episodes=[ep(1, EPISODE_URL), ep(2)])["plan"]
+        first, second = v2.data("queue_enqueue", plan=plan)["added"]
+        listed = v2.data("queue_job_sources", job_id=first["job_id"])
+        error = v2.error(
+            "queue_choose_source",
+            job_id=second["job_id"],
+            session_id=listed["session_id"],
+            online_id=listed["sources"][0]["online_id"],
+            expected_revision=second["revision"],
+        )
+        assert (error["code"], error["params"]["problem"]) == ("bad_request", "other_episode")
+        assert v2.job(second["job_id"])["revision"] == second["revision"]
+
     def test_job_continues_after_a_runtime_restart(self, v2, tmp_path):
         from .conftest import make_v2
 

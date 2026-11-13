@@ -105,6 +105,7 @@ class Bridge:
         self._runtimes: dict[Path, Runtime] = {}
         self._operations: dict[str, Operation] = {}
         self._client_ops: dict[str, str] = {}
+        self._operation_ended = threading.Condition(self.lock)
         self._methods: dict[str, Method] = {
             "bridge_info": method(self._bridge_info, needs_engine=False),
             "runtime_close": method(self._runtime_close, "db_path", "timeout_ms", needs_engine=False),
@@ -238,6 +239,8 @@ class Bridge:
         """Under the bridge lock: forgets the handle, cancels its operations and marks its sessions closed."""
         self._engines.pop(entry.engine_id, None)
         entry.runtime.engine_ids.discard(entry.engine_id)
+        if entry.push is not None:
+            entry.runtime.ending_pushes.append(entry.push)
         for session in entry.sessions.values():
             session.closed_by = "close_engine"
         tokens = [self._operations[k].token for k in entry.operations if k in self._operations and k != exclude]
@@ -257,7 +260,7 @@ class Bridge:
                     raise BridgeError("unknown_engine", "no such engine", engine_id=engine_id)
                 cancelled, closed = self._detach(entry)
             entry.engine.close()
-            ended = entry.push.stop(_DELIVERY_JOIN_SEC) if entry.push else True
+            ended = self._stop_push(entry.runtime, entry.push, _DELIVERY_JOIN_SEC) if entry.push else True
             return _ok({"cancelled_operations": cancelled, "closed_sessions": closed, "delivery_ended": ended})
         except (Exception, EngineInterrupt) as exc:
             return _fail(exc)
@@ -299,8 +302,20 @@ class Bridge:
             )
             return runtime.queue
 
+    def _stop_push(self, runtime: Runtime, push: PushAdapter, timeout: float | None) -> bool:
+        """An adapter is forgotten only once its thread has ended, so a later close still sees a stuck listener."""
+        ended = push.stop(timeout)
+        if ended:
+            with self.lock:
+                if push in runtime.ending_pushes:
+                    runtime.ending_pushes.remove(push)
+        return ended
+
+    def _running_on(self, runtime: Runtime, exclude: str | None) -> int:
+        return sum(1 for op in self._operations.values() if op.runtime is runtime and op.key != exclude)
+
     def close_runtime(self, runtime: Runtime, timeout: float | None, exclude: str | None = None) -> dict[str, Any]:
-        """Handles, then the executor, then event threads, then platform objects; repeatable while ``ended`` is false."""
+        """Handles and their operations, then the executor, then event threads, then platform objects; repeatable."""
         deadline = None if timeout is None else time.monotonic() + timeout
 
         def left() -> float | None:
@@ -311,14 +326,17 @@ class Bridge:
             entries = [e for e in self._engines.values() if e.runtime is runtime]
             for entry in entries:
                 self._detach(entry, exclude)
-        alive = 0
         for entry in entries:
             entry.engine.close()
-            if entry.push is not None and not entry.push.stop(left()):
-                alive += 1
+        # a cancelled export or delete may still be using the file store; the runtime is kept until it returns
+        with self.lock:
+            self._operation_ended.wait_for(lambda: self._running_on(runtime, exclude) == 0, left())
+            running = self._running_on(runtime, exclude)
+            pushes = list(runtime.ending_pushes)
+        alive = sum(1 for push in pushes if not self._stop_push(runtime, push, left()))
         executor_ended = runtime.queue.close(left()) if runtime.queue is not None else True
         watcher_ended = runtime.watcher.stop(left()) if executor_ended else False
-        ended = executor_ended and watcher_ended and alive == 0
+        ended = executor_ended and watcher_ended and alive == 0 and running == 0
         if ended:
             if runtime.executor_engine is not None:
                 runtime.executor_engine.close()
@@ -326,7 +344,12 @@ class Bridge:
             with self.lock:
                 if self._runtimes.get(runtime.config.db_path) is runtime:
                     del self._runtimes[runtime.config.db_path]
-        return {"ended": ended, "executor_ended": executor_ended, "delivery_threads_alive": alive}
+        return {
+            "ended": ended,
+            "executor_ended": executor_ended,
+            "delivery_threads_alive": alive,
+            "operations_running": running,
+        }
 
     def _runtime_close(self, c: Call) -> Any:
         timeout = c.r.integer("timeout_ms", 10000, minimum=0, maximum=600000) / 1000
@@ -335,7 +358,7 @@ class Bridge:
             with self.lock:
                 runtime = self._runtimes.get(path)
             if runtime is None:
-                return {"ended": True, "executor_ended": True, "delivery_threads_alive": 0}
+                return {"ended": True, "executor_ended": True, "delivery_threads_alive": 0, "operations_running": 0}
         else:
             runtime = c.entry.runtime
         return self.close_runtime(runtime, timeout, exclude=c.operation.key)
@@ -365,7 +388,7 @@ class Bridge:
         }
 
     def call(self, method_name: str, payload_json: str) -> str:
-        """A result is success only if its episode session is still open when handed back, else ``session_closed``."""
+        """A read whose episode session closed meanwhile reports ``session_closed``; a committed mutation its outcome."""
         operation: Operation | None = None
         try:
             spec = self._methods.get(method_name)
@@ -380,7 +403,13 @@ class Bridge:
                 entry = self.engine_entry(engine_id) if engine_id is not None else None
                 if client_id is not None and client_id in self._client_ops:
                     raise BridgeError("operation_id_in_use", "an operation with this id is still running")
-                operation = Operation(key=uuid.uuid4().hex, engine_id=engine_id, token=CancelToken(), client_id=client_id)
+                operation = Operation(
+                    key=uuid.uuid4().hex,
+                    engine_id=engine_id,
+                    token=CancelToken(),
+                    client_id=client_id,
+                    runtime=entry.runtime if entry is not None else None,
+                )
                 self._operations[operation.key] = operation
                 if entry is not None:
                     entry.operations.add(operation.key)
@@ -416,6 +445,7 @@ class Bridge:
                 operation.session.operations.discard(operation.key)
             for handle in operation.platform_handles:
                 self.platform.release_use(handle)
+            self._operation_ended.notify_all()
 
 
 def _backend(r: Reader) -> XhrBackendName:
@@ -429,7 +459,7 @@ def _backend(r: Reader) -> XhrBackendName:
 
 def _session_closed(operation: Operation) -> BridgeError | None:
     session = operation.session
-    if session is None or session.closed_by is None:
+    if operation.committed or session is None or session.closed_by is None:
         return None
     return BridgeError(
         "session_closed",

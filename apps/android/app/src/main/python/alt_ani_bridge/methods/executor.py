@@ -82,6 +82,7 @@ def executor_set_access(c: Call) -> Any:
     """Only the executor's access; UI handles keep theirs. Applied with the Wi-Fi-only solver rule."""
     access = common.access(c.r) or AccessConfig()
     runtime = c.runtime
+    c.commit()
     with runtime.lock:
         runtime.executor_access = access
         queue = runtime.queue

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from alt_ani_bridge.errors import BridgeError
-from alt_ani_bridge.events import EventSink, Journal, Snapshot, Watcher
+from alt_ani_bridge.events import EventSink, Journal, PushAdapter, Snapshot, Watcher
 from alt_ani_core.config import AccessConfig, XhrBackendName
 from alt_ani_core.history.local import LocalState
 from alt_ani_core.rules.network import CellularConsent
@@ -58,6 +58,8 @@ class Runtime:
         self.closing = False
         self.released = False
         self.engine_ids: set[str] = set()
+        # push adapters of closed handles whose delivery thread has not ended yet; under the bridge lock
+        self.ending_pushes: list[PushAdapter] = []
         self._open_playbacks: dict[str, EpisodeKey] = {}
         self._consents: set[str] = set()
         self._on_release = on_release

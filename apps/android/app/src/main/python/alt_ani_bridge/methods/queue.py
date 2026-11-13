@@ -73,13 +73,12 @@ def queue_enqueue(c: Call) -> Any:
     """Commits a preview's plan as given; the preferences are not read again, so nothing is silently recomputed."""
     plan: Reader = c.r.obj("plan", _PLAN_FIELDS)
     plan.choice("selection", MODES, "episodes")
+    series, episodes, criteria = common.series(plan), common.episodes(plan), common.full_criteria(plan)
+    alternatives, cellular = common.alternatives(plan, None), plan.flag("cellular_allowed", False)
+    basis_seq = plan.integer("basis_seq", minimum=0)
+    c.commit()
     result = c.runtime.state.queue.enqueue(
-        common.series(plan),
-        common.episodes(plan),
-        common.full_criteria(plan),
-        alternatives=common.alternatives(plan, None),
-        cellular_allowed=plan.flag("cellular_allowed", False),
-        basis_seq=plan.integer("basis_seq", minimum=0),
+        series, episodes, criteria, alternatives=alternatives, cellular_allowed=cellular, basis_seq=basis_seq
     )
     c.runtime.changed()
     return {
@@ -109,15 +108,16 @@ def queue_job(c: Call) -> Any:
 def _act(c: Call, name: str) -> Any:
     queue = c.runtime.state.queue
     job_id, expected = c.r.text("job_id"), c.r.integer("expected_revision", minimum=0)
+    c.commit()
     job = getattr(queue, name)(job_id, expected)
     c.runtime.changed()
     return {"job": job_view(c, job)}
 
 
 def queue_allow_cellular(c: Call) -> Any:
-    job = c.runtime.state.queue.allow_cellular(
-        c.r.text("job_id"), c.r.flag("allowed"), c.r.integer("expected_revision", minimum=0)
-    )
+    job_id, allowed, expected = c.r.text("job_id"), c.r.flag("allowed"), c.r.integer("expected_revision", minimum=0)
+    c.commit()
+    job = c.runtime.state.queue.allow_cellular(job_id, allowed, expected)
     c.runtime.changed()
     return {"job": job_view(c, job)}
 
@@ -125,7 +125,7 @@ def queue_allow_cellular(c: Call) -> Any:
 def queue_job_sources(c: Call) -> Any:
     job = c.runtime.state.queue.get(c.r.text("job_id"))
     _series, episode = c.runtime.state.queue.episode_of(job.key)
-    found = c.open_session(episode)
+    found = c.open_session(episode, job.key.series_id)
     partial = job.partial
     return {
         "session_id": found.session_id,
@@ -137,32 +137,35 @@ def queue_job_sources(c: Call) -> Any:
 
 
 def queue_choose_source(c: Call) -> Any:
-    job_id = c.r.text("job_id")
-    found = c.session(c.r.text("session_id"))
+    queue = c.runtime.state.queue
+    job = queue.get(c.r.text("job_id"))
+    _series, episode = queue.episode_of(job.key)
+    found = c.episode_session(c.r.text("session_id"), job.key.series_id, episode)
     online_id = c.r.text("online_id")
     entry = next((e for e in found.session.sources if e.online_id == online_id), None)
     if entry is None:
         raise BridgeError("unknown_source", "no such source in this episode session", online_id=online_id)
-    job = c.runtime.state.queue.choose_source(
-        job_id,
-        source_identity(entry),
-        common.variant(c.r),
-        restart=c.r.flag("restart", False),
-        expected_revision=c.r.integer("expected_revision", minimum=0),
-    )
+    variant, restart = common.variant(c.r), c.r.flag("restart", False)
+    expected = c.r.integer("expected_revision", minimum=0)
+    c.commit()
+    job = queue.choose_source(job.id, source_identity(entry), variant, restart=restart, expected_revision=expected)
     c.runtime.changed()
     return {"job": job_view(c, job)}
 
 
 def queue_retry_interaction(c: Call) -> Any:
     """No grant crosses the bridge: the job gets another attempt with its choice kept and may wait again."""
-    job = c.runtime.state.queue.retry_interaction(c.r.text("job_id"), c.r.integer("expected_revision", minimum=0))
+    job_id, expected = c.r.text("job_id"), c.r.integer("expected_revision", minimum=0)
+    c.commit()
+    job = c.runtime.state.queue.retry_interaction(job_id, expected)
     c.runtime.changed()
     return {"job": job_view(c, job)}
 
 
 def queue_reorder(c: Call) -> Any:
-    revision = c.runtime.state.queue.reorder(c.r.strs("job_ids", "job_ids"), c.r.integer("expected_revision", minimum=0))
+    job_ids, expected = c.r.strs("job_ids", "job_ids"), c.r.integer("expected_revision", minimum=0)
+    c.commit()
+    revision = c.runtime.state.queue.reorder(job_ids, expected)
     c.runtime.changed()
     return {"queue_revision": revision}
 

@@ -175,6 +175,36 @@ class TestBrowserAndNext:
         )
         assert opened["target"] == "source" and opened["url"].startswith("https://host.example/")
 
+    def test_session_of_another_series_is_refused(self, v2, extract_ok):
+        first = prepare(v2, begin(v2))["data"]
+        other_series = {**SERIES, "id": "8", "url": "https://shinden.pl/series/8-other"}
+        other = v2.data("playback_begin", series=other_series, episode=ONLINE_EP)["playback_session"]
+        error = v2.error(
+            "playback_prepare",
+            playback_session=other,
+            series=other_series,
+            episode=ONLINE_EP,
+            session_id=first["session_id"],
+        )
+        assert (error["code"], error["params"]) == ("bad_request", {"field": "session_id", "problem": "other_episode"})
+        opened = v2.error(
+            "watch_open_in_browser",
+            series=other_series,
+            episode=ONLINE_EP,
+            session_id=first["session_id"],
+            online_id=first["source"]["online_id"],
+        )
+        assert opened["params"]["problem"] == "other_episode"
+        assert v2.data("watch_get", series_id="8", numbers=[1])["episodes"][0]["opened_via"] == "player"
+
+    def test_session_of_another_episode_page_is_refused(self, v2, extract_ok):
+        first = prepare(v2, begin(v2))["data"]
+        moved = {**ONLINE_EP, "url": EPISODE_URL + "-other"}
+        error = v2.error(
+            "playback_prepare", playback_session=begin(v2, moved), series=SERIES, episode=moved, session_id=first["session_id"]
+        )
+        assert error["params"]["problem"] == "other_episode"
+
     def test_next_follows_the_known_order(self, v2):
         v2.download(3)
         data = v2.data("episode_next", series_id="7", current=1, episodes=[1, 2, 3])

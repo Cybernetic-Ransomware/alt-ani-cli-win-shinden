@@ -3,6 +3,7 @@
 import json
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -55,13 +56,13 @@ class TestShutdown:
         v2.data("executor_start")
         assert v2.transfer.started.acquire(timeout=5)
         first = v2.data("runtime_close", timeout_ms=50)
-        assert first == {"ended": False, "executor_ended": False, "delivery_threads_alive": 0}
+        assert first == {"ended": False, "executor_ended": False, "delivery_threads_alive": 0, "operations_running": 0}
         db = v2.tmp_path / "history.db"
         assert ExecutorOwnership.held_in_process(db)
         assert second_handle(v2)["error"]["code"] == "runtime.closing"
         v2.transfer.io_done.set()
         again = json.loads(v2.bridge.call("runtime_close", json.dumps({"db_path": str(db), "timeout_ms": 5000})))
-        assert again["data"] == {"ended": True, "executor_ended": True, "delivery_threads_alive": 0}
+        assert again["data"] == {"ended": True, "executor_ended": True, "delivery_threads_alive": 0, "operations_running": 0}
         assert not ExecutorOwnership.held_in_process(db)
         reopened = second_handle(v2, storage={"kind": "fs", "root": str(v2.tmp_path / "library")})
         assert reopened["ok"]
@@ -74,8 +75,6 @@ class TestShutdown:
         assert (status["state"], status["owner"]) == ("running", "self")
 
     def test_push_thread_is_reported_when_stuck(self, v2):
-        import threading
-
         entered, release = threading.Event(), threading.Event()
 
         def listener(_message: str) -> None:
@@ -91,6 +90,52 @@ class TestShutdown:
         release.set()
         db = str(v2.tmp_path / "history.db")
         assert json.loads(v2.bridge.call("runtime_close", json.dumps({"db_path": db})))["data"]["ended"] is True
+
+    def test_close_waits_for_a_running_export(self, v2):
+        from .test_library import MemoryTarget
+
+        (item,) = v2.download(1)
+        gate = threading.Event()
+        target = MemoryTarget(gate)
+        handle = json.loads(v2.bridge.register_platform_object(target))["data"]["handle"]
+        replies: list[dict] = []
+        export = threading.Thread(
+            target=lambda: replies.append(
+                v2.call("library_export", item_ids=[item["item_id"]], target={"kind": "platform", "handle": handle})
+            )
+        )
+        export.start()
+        assert target.parked.wait(5)
+        first = v2.data("runtime_close", timeout_ms=100)
+        assert (first["ended"], first["operations_running"]) == (False, 1)
+        db = str(v2.tmp_path / "history.db")
+        assert second_handle(v2)["error"]["code"] == "runtime.closing"
+        gate.set()
+        export.join(5)
+        assert replies[0]["data"]["interrupted"] == "cancelled" and target.published == {}
+        again = json.loads(v2.bridge.call("runtime_close", json.dumps({"db_path": db})))["data"]
+        assert (again["ended"], again["operations_running"]) == (True, 0)
+
+    def test_a_stuck_listener_is_reported_by_every_close_until_it_ends(self, v2):
+        entered, release = threading.Event(), threading.Event()
+
+        def listener(_message: str) -> None:
+            entered.set()
+            release.wait(10)
+
+        other = V2Client(v2.bridge, v2.transport, None, v2.tmp_path)
+        other.create(listener=listener)
+        other.data("network_set", kind="cellular")
+        assert entered.wait(5)
+        assert other.close()["data"]["delivery_ended"] is False
+        db = json.dumps({"db_path": str(v2.tmp_path / "history.db"), "timeout_ms": 100})
+        for _ in range(2):
+            result = json.loads(v2.bridge.call("runtime_close", db))["data"]
+            assert (result["ended"], result["delivery_threads_alive"]) == (False, 1)
+        release.set()
+        assert json.loads(v2.bridge.call("runtime_close", db.replace('"timeout_ms": 100', '"timeout_ms": 5000')))["data"][
+            "ended"
+        ]
 
 
 class TestPlatformObjects:

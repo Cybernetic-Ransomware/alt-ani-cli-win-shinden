@@ -8,7 +8,7 @@ from typing import Any, Protocol
 from alt_ani_bridge.errors import BridgeError
 from alt_ani_bridge.events import CURRENT_OP, PushAdapter
 from alt_ani_bridge.runtime import Runtime
-from alt_ani_bridge.schema import Reader
+from alt_ani_bridge.schema import InputError, Reader
 from alt_ani_core.cancel import CancelToken
 from alt_ani_core.config import AccessConfig
 from alt_ani_core.models import EpisodeRow
@@ -46,6 +46,8 @@ class SessionEntry:
     session_id: str
     session: EpisodeSession
     episode: EpisodeRow
+    # None for a v1 ``open_episode``, which names no series; set by the first method that does
+    series_id: str | None = None
     operations: set[str] = field(default_factory=set)
     closed_by: str | None = None
     # the playback choice a stream refresh keeps; identities and criteria only, never a URL
@@ -73,8 +75,11 @@ class Operation:
     engine_id: str | None
     token: CancelToken
     client_id: str | None = None
+    runtime: Runtime | None = None
     session: SessionEntry | None = None
     platform_handles: list[str] = field(default_factory=list)
+    # past its commit point a mutation reports its own outcome, even if its session closes before the reply
+    committed: bool = False
 
 
 class BridgeInternals(Protocol):
@@ -128,10 +133,20 @@ class Call:
             found.operations.add(self.operation.key)
         return found
 
-    def open_session(self, episode: EpisodeRow) -> SessionEntry:
+    def episode_session(self, session_id: str, series_id: str, episode: EpisodeRow) -> SessionEntry:
+        """A session of another episode (number, page or series) is refused before any of its sources is used."""
+        found = self.session(session_id)
+        with self.bridge.lock:
+            same = (found.episode.number, found.episode.url) == (episode.number, episode.url)
+            if not same or found.series_id not in (None, series_id):
+                raise InputError("session_id", "other_episode")
+            found.series_id = series_id
+        return found
+
+    def open_session(self, episode: EpisodeRow, series_id: str | None = None) -> SessionEntry:
         entry = self.entry
         session = entry.engine.open_episode(episode, cancel=self.token)
-        found = SessionEntry(session_id=uuid.uuid4().hex, session=session, episode=episode)
+        found = SessionEntry(session_id=uuid.uuid4().hex, session=session, episode=episode, series_id=series_id)
         with self.bridge.lock:
             if entry.runtime.closing or self.bridge.engine_entry(entry.engine_id) is not entry:
                 raise BridgeError("unknown_engine", "the engine was closed while the episode was opening")
@@ -139,6 +154,12 @@ class Call:
             self.operation.session = found
             found.operations.add(self.operation.key)
         return found
+
+    def commit(self) -> None:
+        """The last point where a cancel or a closed handle or session stops a mutation; call it right before the write."""
+        with self.bridge.lock:
+            self.token.raise_if_cancelled()
+            self.operation.committed = True
 
     def drop_sessions(self, reason: str) -> int:
         with self.bridge.lock:

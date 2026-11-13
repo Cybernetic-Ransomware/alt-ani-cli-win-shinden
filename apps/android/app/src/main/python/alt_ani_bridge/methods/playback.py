@@ -53,11 +53,9 @@ def playback_prepare(c: Call) -> Any:
         }
     _gate(c, session)
     if c.r.has("session_id"):
-        found = c.session(c.r.text("session_id"))
-        if found.episode.number != episode.number:
-            raise InputError("session_id", "other_episode")
+        found = c.episode_session(c.r.text("session_id"), series.id, episode)
     else:
-        found = c.open_session(episode)
+        found = c.open_session(episode, series.id)
     online_id = c.r.text("online_id", None)
     result = runtime.playback.online(found.session, criteria, online_id=online_id, cancel=c.token)
     with c.bridge.lock:

@@ -28,6 +28,7 @@ def apply_access(c: Call, entry: EngineEntry, access: AccessConfig, reason: str)
 
 def set_access(c: Call) -> Any:
     access = common.access(c.r) or AccessConfig()
+    c.commit()
     return {"dropped_sessions": apply_access(c, c.entry, access, "set_access")}
 
 
@@ -62,6 +63,7 @@ def preferences_update(c: Call) -> Any:
         changes["auto_alternatives"] = ch.flag("auto_alternatives")
     if ch.has("max_active_downloads"):
         changes["max_active_downloads"] = ch.integer("max_active_downloads", minimum=1, maximum=16)
+    c.commit()
     try:
         prefs = c.runtime.state.preferences.update(expected_revision=expected, **changes)
     except ValueError:
@@ -74,6 +76,7 @@ def network_set(c: Call) -> Any:
     """One network for the runtime: the executor and the watching gate both follow it."""
     runtime = c.runtime
     kind = c.r.enum("kind", NetworkKind)
+    c.commit()
     before = runtime.network.current()
     runtime.network.set(kind)
     closed = 0

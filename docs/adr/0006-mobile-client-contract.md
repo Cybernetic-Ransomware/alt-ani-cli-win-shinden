@@ -43,7 +43,9 @@ One executor per database is guaranteed by the OS lock of ADR-0005 together with
 `history.ownership`: a second `Bridge` instance, another runtime or another process get `executor.busy`. Closing a
 handle or a session, or ending a poll, never stops the executor. `executor_stop` and `runtime_close` take a timeout;
 `ended: false` means some attempt's I/O is still running, ownership is kept, the state is `closing`, `executor_start`
-answers `executor.closing`, and the call may be repeated. `runtime_close` (and `Bridge.shutdown`) closes handles, then
+answers `executor.closing`, and the call may be repeated. `runtime_close` also waits for the runtime's own operations
+(a cancelled export or delete may still be using the file store) and for every push thread, including those of handles
+closed earlier: each close reports them until they end, and only then are the runtime and its platform objects released. `runtime_close` (and `Bridge.shutdown`) closes handles, then
 the executor, then the watcher and push threads, then gives back the platform objects the runtime used; a timeout
 never releases a lock. A platform object in use by a runtime or a running export cannot be released (`platform.in_use`).
 
@@ -65,7 +67,7 @@ destination. There is no idempotency-key table.
 
 | Operation | Where `cancel(op_id)` acts | Result |
 |---|---|---|
-| Short SQLite mutation | before its transaction only | `cancelled` with nothing changed, or `ok` once the transaction ran |
+| Short SQLite mutation | before its transaction only (also a closed handle or session) | `cancelled` with nothing changed, or the write's own outcome once it started, even if its session closes before the reply |
 | `executor_start` | during recovery | `cancelled`; ownership released; recovery steps already done are durable and idempotent |
 | `executor_stop`, `runtime_close` | not cancellable | bounded by `timeout_ms` |
 | `library_delete` | between items and inside a digest | the item in progress stays `deleting` (finished by `library_retry_deletes`); the rest is `not_attempted` |
@@ -99,7 +101,9 @@ its own thread per handle, so a slow or throwing listener blocks or counts only 
 `playback_begin` records the player opening and starts a fenced session in one transaction. `playback_prepare` picks a
 matching local copy first (others are only listed), then checks the network gate, then sources by the criteria
 (`criteria.no_match {audio|subs|quality}`, never a wider language or the default variant past a limit). The bridge keeps
-the choice — source id, `VariantIdentity`, criteria — in the source session, never a URL. `stream_refresh` checks the
+the choice — source id, `VariantIdentity`, criteria — in the source session, never a URL. A source session is bound to
+its episode (number, page and the series of the first method that names one); handing it to another episode in
+`playback_prepare`, `watch_open_in_browser` or `queue_choose_source` is refused as `other_episode`. `stream_refresh` checks the
 network and consent again, resolves the same source afresh and keeps the exact variant, or uses the kept criteria when
 it is gone, or fails with `no_match`. Consent for mobile data covers the open viewing (P3): it survives a source change,
 a refresh and rotation, ends with `playback_ended`, `playback_close` or a `playback_begin`, and lives in the runtime only.
