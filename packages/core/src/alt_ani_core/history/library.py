@@ -47,6 +47,12 @@ class SqliteLibraryStore:
             ).fetchall()
         return [item_of(r) for r in rows]
 
+    def revisions(self) -> dict[str, tuple[ItemStatus, int]]:
+        """A light read for change watchers: each item's status and revision."""
+        with self._db.read() as conn:
+            rows = conn.execute("SELECT id, status, revision FROM offline_item").fetchall()
+        return {r["id"]: (ItemStatus(r["status"]), r["revision"]) for r in rows}
+
     def for_episode(self, key: EpisodeKey) -> list[OfflineItem]:
         with self._db.read() as conn:
             rows = conn.execute(

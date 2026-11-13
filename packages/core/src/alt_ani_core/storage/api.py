@@ -28,8 +28,11 @@ __all__ = [
     "OUTSIDE_ROOT",
     "TARGET_EXISTS",
     "UNAVAILABLE",
+    "ExportTarget",
+    "ExportWriter",
     "FileStat",
     "FileStore",
+    "PlaybackTarget",
     "PublishName",
     "classify_os_error",
     "from_os_error",
@@ -51,6 +54,30 @@ class PublishName:
     series_title: str
     episode_label: str
     extension: str
+
+
+@dataclass(frozen=True)
+class PlaybackTarget:
+    """What a player opens: ``file`` is a local path, ``content_uri`` a platform URI; never a remote URL."""
+
+    kind: str
+    value: str
+
+
+class ExportWriter(Protocol):
+    """One exported file: nothing is visible at the destination until ``commit``; ``abort`` removes what was written."""
+
+    def write(self, chunk: bytes) -> None: ...
+
+    def commit(self) -> str: ...
+
+    def abort(self) -> None: ...
+
+
+class ExportTarget(Protocol):
+    """A destination outside the library, a directory or a platform picker; ``on_conflict`` is ``fail`` or ``rename``."""
+
+    def create(self, name: str, *, on_conflict: str) -> ExportWriter: ...
 
 
 def storage_error(code: str, **params: object) -> StorageError:
@@ -84,6 +111,8 @@ class FileStore(Protocol):
     def remove(self, locator: StorageLocator) -> bool: ...
 
     def open_read(self, locator: StorageLocator) -> BinaryIO: ...
+
+    def playback_target(self, locator: StorageLocator) -> PlaybackTarget: ...
 
     def free_space(self) -> int | None: ...
 

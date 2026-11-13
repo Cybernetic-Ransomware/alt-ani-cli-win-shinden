@@ -26,6 +26,7 @@ from alt_ani_core.state import (
     EpisodeKey,
     ItemStatus,
     JobError,
+    JobSignal,
     JobState,
     NetworkKind,
     OfflineItem,
@@ -102,6 +103,14 @@ def _removal(row: Row) -> PendingRemoval:
     )
 
 
+def _check_revision(job: DownloadJob, expected: int | None) -> None:
+    """Checked in the transaction that writes, so a delayed repeat of an action never lands on a changed job."""
+    if expected is not None and expected != job.revision:
+        raise StateConflictError(f"job {job.id} changed since it was read").coded(
+            "state.conflict", job_id=job.id, expected=expected, found=job.revision
+        )
+
+
 def _locator_in_use(job_id: str, holder: str, status: str) -> StateConflictError:
     return StateConflictError(f"locator of job {job_id} is held by {holder}").coded(
         "state.locator_in_use", job_id=job_id, holder=holder, status=status
@@ -170,16 +179,27 @@ class SqliteDownloadQueue:
             return SkipReason.ALREADY_DOWNLOADED
         return None
 
-    def _plan(self, conn: sqlite3.Connection, keys: Sequence[EpisodeKey]) -> EnqueuePlan:
+    @staticmethod
+    def _max_seq(conn: sqlite3.Connection) -> int:
+        return conn.execute("SELECT COALESCE(MAX(seq), 0) FROM download_job").fetchone()[0]
+
+    def _plan(self, conn: sqlite3.Connection, keys: Sequence[EpisodeKey], basis_seq: int | None = None) -> EnqueuePlan:
         to_add: list[EpisodeKey] = []
         skipped: list[tuple[EpisodeKey, SkipReason]] = []
         for key in dict.fromkeys(keys):
             reason = self._skip_reason(conn, key)
+            if basis_seq is not None:
+                newer = conn.execute(
+                    "SELECT 1 FROM download_job WHERE series_id = ? AND number = ? AND seq > ?",
+                    (key.series_id, key.number, basis_seq),
+                ).fetchone()
+                if newer:
+                    reason = SkipReason.CHANGED_SINCE_PREVIEW
             if reason is None:
                 to_add.append(key)
             else:
                 skipped.append((key, reason))
-        return EnqueuePlan(tuple(to_add), tuple(skipped))
+        return EnqueuePlan(tuple(to_add), tuple(skipped), self._max_seq(conn))
 
     def preview(self, series_id: str, numbers: Sequence[float]) -> EnqueuePlan:
         """Read-only; ``enqueue`` checks again in its own transaction, so a stale preview cannot add a duplicate."""
@@ -197,14 +217,16 @@ class SqliteDownloadQueue:
         source: SourceIdentity | None = None,
         variant: VariantIdentity | None = None,
         cellular_allowed: bool = False,
+        basis_seq: int | None = None,
     ) -> EnqueueResult:
+        """With ``basis_seq`` from a preview, an episode that got any job after that preview is skipped, not re-added."""
         if selection_mode is SelectionMode.MANUAL and source is None:
             raise ValueError("a manual selection needs the chosen source")
         rows = {EpisodeKey(series.id, ep.number): ep for ep in episodes}
         added: list[str] = []
         with self._db.write() as conn:
             now = self._db.now()
-            plan = self._plan(conn, list(rows))
+            plan = self._plan(conn, list(rows), basis_seq)
             next_seq, next_pos = conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) + 1, COALESCE(MAX(queue_pos), 0) + 1 FROM download_job"
             ).fetchone()
@@ -263,6 +285,24 @@ class SqliteDownloadQueue:
             rows = conn.execute(f"SELECT * FROM download_job {where}ORDER BY queue_pos, seq").fetchall()  # nosec B608
         return [_job(r) for r in rows]
 
+    def revisions(self) -> tuple[int, dict[str, JobSignal]]:
+        """A light read for change watchers: the queue revision and each job's signal fields."""
+        with self._db.read() as conn:
+            rows = conn.execute("SELECT id, revision, state, wait_reason, bytes_done, bytes_total FROM download_job").fetchall()
+            revision = self._queue_revision(conn)
+        signals = {
+            r["id"]: JobSignal(
+                job_id=r["id"],
+                revision=r["revision"],
+                state=JobState(r["state"]),
+                wait_reason=WaitReason(r["wait_reason"]) if r["wait_reason"] else None,
+                bytes_done=r["bytes_done"],
+                bytes_total=r["bytes_total"],
+            )
+            for r in rows
+        }
+        return revision, signals
+
     def queue_revision(self) -> int:
         with self._db.read() as conn:
             return self._queue_revision(conn)
@@ -296,9 +336,10 @@ class SqliteDownloadQueue:
         )
         return True
 
-    def _user_change(self, job_id: str, target: StopTarget) -> DownloadJob:
+    def _user_change(self, job_id: str, target: StopTarget, expected_revision: int | None) -> DownloadJob:
         with self._db.write() as conn:
             job = self._row(conn, job_id)
+            _check_revision(job, expected_revision)
             direct = {StopTarget.PAUSED: JobState.PAUSED, StopTarget.CANCELLED: JobState.CANCELLED}
             if job.state is direct.get(target):
                 return job
@@ -318,41 +359,50 @@ class SqliteDownloadQueue:
                     self._abandon(conn, job, job.partial.locator, RemovalReason.CANCELLED)
             return self._row(conn, job_id)
 
-    def pause(self, job_id: str) -> DownloadJob:
+    def pause(self, job_id: str, expected_revision: int | None = None) -> DownloadJob:
         """A running job becomes ``stopping``: the row change alone does not stop its transfer."""
-        return self._user_change(job_id, StopTarget.PAUSED)
+        return self._user_change(job_id, StopTarget.PAUSED, expected_revision)
 
-    def resume(self, job_id: str) -> DownloadJob:
+    def resume(self, job_id: str, expected_revision: int | None = None) -> DownloadJob:
         """Undoes a manual pause only; a network or storage wait is lifted by the scheduler, not by resume."""
-        return self._user_change(job_id, StopTarget.QUEUED)
+        return self._user_change(job_id, StopTarget.QUEUED, expected_revision)
 
-    def cancel(self, job_id: str) -> DownloadJob:
+    def cancel(self, job_id: str, expected_revision: int | None = None) -> DownloadJob:
         """The partial is queued for removal once no attempt runs; an offline item already made is untouched."""
-        return self._user_change(job_id, StopTarget.CANCELLED)
+        return self._user_change(job_id, StopTarget.CANCELLED, expected_revision)
 
-    def retry(self, job_id: str) -> DownloadJob:
+    def retry(self, job_id: str, expected_revision: int | None = None) -> DownloadJob:
         with self._db.write() as conn:
             job = self._row(conn, job_id)
+            _check_revision(job, expected_revision)
             if job.state is not JobState.FAILED:
                 raise invalid(job.id, job.state, "retry")
             self._set(conn, job.id, state=JobState.QUEUED.value, retry_count=0, not_before=None)
             return self._row(conn, job_id)
 
-    def allow_cellular(self, job_id: str, allowed: bool) -> DownloadJob:
+    def allow_cellular(self, job_id: str, allowed: bool, expected_revision: int | None = None) -> DownloadJob:
         """Consent for this job only; other jobs and later episodes do not inherit it."""
         with self._db.write() as conn:
             job = self._row(conn, job_id)
+            _check_revision(job, expected_revision)
             if job.state in (JobState.COMPLETED, JobState.CANCELLED):
                 raise invalid(job.id, job.state, "allow_cellular")
             self._set(conn, job.id, cellular_allowed=int(allowed))
             return self._row(conn, job_id)
 
     def choose_source(
-        self, job_id: str, source: SourceIdentity, variant: VariantIdentity | None = None, *, restart: bool = False
+        self,
+        job_id: str,
+        source: SourceIdentity,
+        variant: VariantIdentity | None = None,
+        *,
+        restart: bool = False,
+        expected_revision: int | None = None,
     ) -> DownloadJob:
         """A user decision; another source or variant always drops the partial, since fragments are never spliced."""
         with self._db.write() as conn:
             job = self._row(conn, job_id)
+            _check_revision(job, expected_revision)
             if job.state in ACTIVE_STATES or job.state in (JobState.COMPLETED, JobState.CANCELLED):
                 raise invalid(job.id, job.state, "choose_source")
             partial = job.partial
@@ -374,6 +424,16 @@ class SqliteDownloadQueue:
             if job.state is JobState.WAITING:
                 columns |= {"state": JobState.QUEUED.value, "wait_reason": None}
             self._set(conn, job.id, **columns)
+            return self._row(conn, job_id)
+
+    def retry_interaction(self, job_id: str, expected_revision: int | None = None) -> DownloadJob:
+        """Lifts an interaction wait without a grant and with a fresh retry budget; the attempt may end waiting again."""
+        with self._db.write() as conn:
+            job = self._row(conn, job_id)
+            _check_revision(job, expected_revision)
+            if job.state is not JobState.WAITING or job.wait_reason is not WaitReason.INTERACTION:
+                raise invalid(job.id, job.state, "retry_interaction")
+            self._set(conn, job.id, state=JobState.QUEUED.value, wait_reason=None, retry_count=0, not_before=None)
             return self._row(conn, job_id)
 
     def hold(self, job_id: str, reason: WaitReason) -> bool:

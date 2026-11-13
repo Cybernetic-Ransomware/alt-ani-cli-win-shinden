@@ -26,6 +26,10 @@ Anything about layout, navigation or visual design not written here is not yet d
 - Progress belongs to the episode, not to the host: it stays available after switching the source or moving to a
   local copy.
 - After an episode ends, "Next episode" is offered — no autoplay. A matching local copy is preferred.
+- "Next" follows the known episode order, offline too. A later episode that has a local copy is offered separately,
+  never as the next episode.
+- A watched episode keeps its real position and status when opened again; starting from the beginning is the user's
+  own action.
 - Leaving for another app or locking the screen pauses the video and saves the position.
 - Rotation keeps playing, stepping back 1–2 seconds. This is player behaviour, not a rule that lowers the position
   stored in the database.
@@ -44,12 +48,16 @@ Anything about layout, navigation or visual design not written here is not yet d
 - Mobile data can be allowed for a single job, or by changing the global setting.
 - While watching, after switching to mobile data the user is asked for consent for the current episode — not for every
   fragment. The consent does not carry over to the next episode nor to download jobs.
+  It covers the current viewing of the episode: it survives a source change and rotation and ends when the viewing
+  ends or another episode starts.
 - Video that is already buffered may play without consent for new transfers. The player buffers ahead.
 - FlareSolverr is optional on Wi-Fi and skipped on mobile data.
 
 ## Downloading and interaction
 
 - One episode, several, a range, or "unwatched" can be added, with a preview list that can be corrected.
+  "Unwatched" means every episode not marked watched, including gaps before a later watched one. Adding commits
+  exactly the corrected preview with the criteria it showed.
 - Episodes already downloaded or already in the queue are skipped. The queue order can be changed.
 - One active download by default.
 - Resuming is first attempted from the same source, refreshing its URL if needed.
@@ -78,7 +86,7 @@ Anything about layout, navigation or visual design not written here is not yet d
 | 0 | Requirements agreed (this document) | no |
 | 1 | Data model and durable state ([ADR-0004](../adr/0004-local-state-model.md)) | no |
 | 2 | Queue execution and offline library logic on the desktop | no |
-| 3 | Complete mobile client contract and bridge extension | no |
+| 3 | Complete mobile client contract and bridge extension ([ADR-0006](../adr/0006-mobile-client-contract.md)) | no |
 | 4 | Reproducible APK build, native dependencies, first playback on Android | yes |
 | 5 | Mobile screens, online watching, handling interactions | yes |
 | 6 | Offline integration with Android mechanisms, closing the MVP | yes |

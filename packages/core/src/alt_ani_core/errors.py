@@ -139,6 +139,18 @@ class ExecutorNotOwnerError(ShindenError):
     """Only the process holding the executor ownership may claim jobs or recover interrupted ones."""
 
 
+class PlaybackBlockedError(ShindenError):
+    """The network does not allow a new stream transfer now: offline, or mobile data without the viewer's consent."""
+
+
+class CriteriaMismatchError(ShindenError):
+    """No source or variant satisfies the criteria; ``params['reason']`` is audio, subs or quality. Nothing was widened."""
+
+
+class InteractionRequiredError(ShindenError):
+    """The source needs an interaction with its host (or Shinden) that this flow cannot complete."""
+
+
 class StorageError(ShindenError):
     """A file operation of the offline library failed; ``code`` tells which condition (no space, access denied, ...)."""
 

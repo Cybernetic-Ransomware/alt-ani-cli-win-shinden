@@ -1,29 +1,63 @@
-"""Registries of engines, episode sessions and running operations behind a JSON-in/JSON-out call interface."""
+"""Registries of runtimes, engine handles, episode sessions and running operations behind ``call(method, json)``."""
 
-import dataclasses
 import json
 import threading
+import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from alt_ani_bridge import dto
+from alt_ani_bridge import contract
+from alt_ani_bridge.context import Call, EngineEntry, LazyTransport, Operation, SessionEntry
 from alt_ani_bridge.errors import BridgeError, describe
+from alt_ani_bridge.events import CURRENT_OP, PushAdapter
+from alt_ani_bridge.methods import (
+    Method,
+    catalogue,
+    common,
+    events,
+    executor,
+    library,
+    method,
+    playback,
+    queue,
+    settings,
+    watch,
+)
+from alt_ani_bridge.methods.settings import effective_access
+from alt_ani_bridge.platform import FILE_STORE, PlatformObjects
+from alt_ani_bridge.runtime import Runtime, RuntimeConfig
+from alt_ani_bridge.schema import InputError, Reader, parse
 from alt_ani_core import diagnostics
 from alt_ani_core.cancel import CancelToken
-from alt_ani_core.config import DEFAULT_ANTIBOT_DELAY_SEC, AccessConfig, EngineConfig
+from alt_ani_core.config import DEFAULT_ANTIBOT_DELAY_SEC, AccessConfig, EngineConfig, XhrBackendName
 from alt_ani_core.errors import EngineInterrupt
-from alt_ani_core.events import EngineEvent
-from alt_ani_core.history.sqlite import SqliteHistory
+from alt_ani_core.history.local import LocalState, open_local_state
 from alt_ani_core.history.store import HistoryStore
-from alt_ani_core.models import FallbackPolicy, PlayerEntry, Purpose, SourceFilter
 from alt_ani_core.services.engine import Engine
-from alt_ani_core.services.episode_session import EpisodeSession
+from alt_ani_core.services.offline import OfflineQueue
+from alt_ani_core.services.offline.sources import EngineSources, SourceProvider
+from alt_ani_core.shinden.xhr import parse_backend
+from alt_ani_core.state import NetworkKind
+from alt_ani_core.storage.api import FileStore
+from alt_ani_core.storage.fs import FsFileStore
 from alt_ani_core.transport.api import Transport
 
 Payload = dict[str, Any]
+
+_CREATE_FIELDS = (
+    "cache_dir",
+    "history_path",
+    "xhr_backend",
+    "antibot_delay_sec",
+    "access",
+    "diagnostics_dir",
+    "storage",
+    "network",
+    "contract",
+)
+_DELIVERY_JOIN_SEC = 2.0
 
 
 def _default_transport() -> Transport:
@@ -34,52 +68,14 @@ def _default_transport() -> Transport:
     return CurlTransport()
 
 
-class _ListenerSink:
-    """A failing host callback must never break an engine operation: its errors are swallowed and counted."""
-
-    def __init__(self, listener: Any) -> None:
-        self._listener = listener
-        self._lock = threading.Lock()
-        self.errors = 0
-
-    def emit(self, event: EngineEvent) -> None:
-        if self._listener is None:
-            return
-        message = json.dumps({"type": type(event).__name__, **dataclasses.asdict(event)})
-        try:
-            deliver = getattr(self._listener, "onEvent", None) or self._listener
-            deliver(message)
-        except Exception:
-            with self._lock:
-                self.errors += 1
-
-
-@dataclass
-class _SessionEntry:
-    """``closed`` and ``operations`` change only under the bridge lock, so closing and finishing an operation never race."""
-
-    session_id: str
-    session: EpisodeSession
-    operations: set[str] = field(default_factory=set)
-    closed_by: str | None = None
-
-
-@dataclass
-class _EngineEntry:
-    engine: Engine
-    sink: _ListenerSink
-    sessions: dict[str, _SessionEntry] = field(default_factory=dict)
-    operations: set[str] = field(default_factory=set)
-
-
-@dataclass
-class _Operation:
-    """Every call is one, with or without a client ``op_id``; it is bound to the episode session it looks up."""
-
-    key: str
-    engine_id: str
-    token: CancelToken
-    session: _SessionEntry | None = None
+def _check_contract(r: Reader) -> None:
+    if not r.has("contract"):
+        return
+    requested = r.text("contract")
+    if requested.split(".", 1)[0] != str(contract.MAJOR):
+        raise BridgeError(
+            "unsupported_contract", "unsupported contract major version", requested=requested, supported=contract.CONTRACT
+        )
 
 
 class Bridge:
@@ -89,298 +85,390 @@ class Bridge:
         self,
         *,
         transport_factory: Callable[[], Transport] = _default_transport,
-        history_factory: Callable[[Path], HistoryStore] = SqliteHistory,
+        history_factory: Callable[[Path], HistoryStore] | None = None,
+        state_factory: Callable[[Path], LocalState] = open_local_state,
+        sources_factory: Callable[[Runtime], SourceProvider] | None = None,
+        executor_options: dict[str, Any] | None = None,
+        watch_interval: float = 0.5,
+        journal_size: int = 2048,
     ) -> None:
         self._transport_factory = transport_factory
         self._history_factory = history_factory
-        self._lock = threading.RLock()
-        self._engines: dict[str, _EngineEntry] = {}
-        self._operations: dict[str, _Operation] = {}
+        self._state_factory = state_factory
+        self._sources_factory = sources_factory
+        self._executor_options = dict(executor_options or {})
+        self._watch_interval = watch_interval
+        self._journal_size = journal_size
+        self.lock = threading.RLock()
+        self.platform = PlatformObjects()
+        self._engines: dict[str, EngineEntry] = {}
+        self._runtimes: dict[Path, Runtime] = {}
+        self._operations: dict[str, Operation] = {}
         self._client_ops: dict[str, str] = {}
-        self._methods: dict[str, Callable[[Payload, _Operation], Any]] = {
-            "set_access": self._set_access,
-            "engine_status": self._engine_status,
-            "search": self._search,
-            "metadata": self._metadata,
-            "metadata_many": self._metadata_many,
-            "episodes": self._episodes,
-            "open_episode": self._open_episode,
-            "select": self._select,
-            "resolve": self._resolve,
-            "probe_hosts": self._probe_hosts,
-            "reload_episode": self._reload_episode,
-            "close_session": self._close_session,
-            "history_watch": self._history_watch,
-            "history_downloads": self._history_downloads,
-            "history_record_watch": self._history_record_watch,
-            "history_record_download": self._history_record_download,
-            "history_clear": self._history_clear,
+        self._operation_ended = threading.Condition(self.lock)
+        self._methods: dict[str, Method] = {
+            "bridge_info": method(self._bridge_info, needs_engine=False),
+            "runtime_close": method(self._runtime_close, "db_path", "timeout_ms", needs_engine=False),
         }
+        for module in (catalogue, settings, watch, playback, queue, library, executor, events):
+            self._methods.update(module.METHODS)
 
-    def create_engine(self, payload_json: str, listener: Any = None) -> str:
-        """``listener`` gets each engine event as a JSON string via ``onEvent`` (or by being called)."""
-        try:
-            payload = _parse(payload_json)
-            config = EngineConfig(
-                cache_dir=Path(payload["cache_dir"]),
-                xhr_backend=payload.get("xhr_backend", "new"),
-                antibot_delay_sec=float(payload.get("antibot_delay_sec", DEFAULT_ANTIBOT_DELAY_SEC)),
-                access=_access(payload.get("access") or {}),
-            )
-            if payload.get("diagnostics_dir"):
-                diagnostics.configure(Path(payload["diagnostics_dir"]))
-            sink = _ListenerSink(listener)
-            engine = Engine(
-                config,
-                transport=self._transport_factory(),
-                history=self._history_factory(Path(payload["history_path"])),
-                events=sink,
-            )
-            engine_id = uuid.uuid4().hex
-            with self._lock:
-                self._engines[engine_id] = _EngineEntry(engine=engine, sink=sink)
-            return _ok({"engine_id": engine_id})
-        except (Exception, EngineInterrupt) as exc:
-            return _fail(exc)
-
-    def close_engine(self, payload_json: str) -> str:
-        """Cancels the engine's running operations, drops its sessions and closes it; later use reports unknown_engine."""
-        try:
-            engine_id = str(_parse(payload_json)["engine_id"])
-            with self._lock:
-                entry = self._engines.pop(engine_id, None)
-                if entry is None:
-                    raise BridgeError("unknown_engine", "no such engine", engine_id=engine_id)
-                for session in entry.sessions.values():
-                    session.closed_by = "close_engine"
-                tokens = [self._operations[key].token for key in entry.operations if key in self._operations]
-                for token in tokens:
-                    token.cancel()
-            entry.engine.close()
-            return _ok({"cancelled_operations": len(tokens), "closed_sessions": len(entry.sessions)})
-        except (Exception, EngineInterrupt) as exc:
-            return _fail(exc)
-
-    def cancel(self, op_id: str) -> bool:
-        """False for an id that is unknown or already finished; the operation itself reports ``cancelled``."""
-        with self._lock:
-            operation = self._operations.get(self._client_ops.get(op_id, ""))
-            if operation is None:
-                return False
-            operation.token.cancel()
-        return True
-
-    def call(self, method: str, payload_json: str) -> str:
-        """A result is success only if its episode session is still open when handed back, else ``session_closed``."""
-        operation: _Operation | None = None
-        client_id: str | None = None
-        try:
-            handler = self._methods.get(method)
-            if handler is None:
-                raise BridgeError("unknown_method", "no such method", method=method)
-            payload = _parse(payload_json)
-            raw_op_id = payload.get("op_id")
-            with self._lock:
-                entry = self._entry(payload)
-                if raw_op_id is not None:
-                    if str(raw_op_id) in self._client_ops:
-                        raise BridgeError("operation_id_in_use", "an operation with this id is still running")
-                    client_id = str(raw_op_id)
-                operation = _Operation(key=uuid.uuid4().hex, engine_id=str(payload["engine_id"]), token=CancelToken())
-                self._operations[operation.key] = operation
-                entry.operations.add(operation.key)
-                if client_id is not None:
-                    self._client_ops[client_id] = operation.key
-            result = handler(payload, operation)
-            # one critical section with unregistering, so a close sees the operation running or not at all
-            with self._lock:
-                closed = _session_closed(operation)
-                self._unregister(operation, client_id)
-            return _fail(closed) if closed is not None else _ok(result)
-        except (Exception, EngineInterrupt) as exc:
-            if operation is not None:
-                with self._lock:
-                    closed = _session_closed(operation)
-                    self._unregister(operation, client_id)
-                return _fail(closed or exc)
-            return _fail(exc)
-        finally:
-            if operation is not None:
-                self._unregister(operation, client_id)
-
-    def _unregister(self, operation: _Operation, client_id: str | None) -> None:
-        with self._lock:
-            self._operations.pop(operation.key, None)
-            if client_id is not None and self._client_ops.get(client_id) == operation.key:
-                del self._client_ops[client_id]
-            if (entry := self._engines.get(operation.engine_id)) is not None:
-                entry.operations.discard(operation.key)
-            if operation.session is not None:
-                operation.session.operations.discard(operation.key)
-
-    def _entry(self, payload: Payload) -> _EngineEntry:
-        engine_id = str(payload["engine_id"])
-        with self._lock:
+    def engine_entry(self, engine_id: str) -> EngineEntry:
+        with self.lock:
             entry = self._engines.get(engine_id)
         if entry is None:
             raise BridgeError("unknown_engine", "no such engine", engine_id=engine_id)
         return entry
 
-    def _session(self, payload: Payload, operation: _Operation) -> EpisodeSession:
-        """Binds ``operation`` to the session in the same critical section that finds it open."""
-        session_id = str(payload["session_id"])
-        with self._lock:
-            found = self._entry(payload).sessions.get(session_id)
-            if found is None:
-                raise BridgeError("unknown_session", "no such episode session", session_id=session_id)
-            operation.session = found
-            found.operations.add(operation.key)
-        return found.session
+    def engine_entries(self) -> list[EngineEntry]:
+        with self.lock:
+            return list(self._engines.values())
 
-    def _close_locked(self, session: _SessionEntry, reason: str) -> int:
+    def close_session_locked(self, session: SessionEntry, reason: str) -> int:
         session.closed_by = reason
         tokens = [self._operations[key].token for key in session.operations if key in self._operations]
         for token in tokens:
             token.cancel()
         return len(tokens)
 
-    def _set_access(self, payload: Payload, _operation: _Operation) -> Any:
-        entry = self._entry(payload)
-        entry.engine.set_access(_access(payload["access"]))
-        # sessions opened under the old access are stale and can never be used again
-        with self._lock:
-            dropped = list(entry.sessions.values())
-            entry.sessions.clear()
-            for session in dropped:
-                self._close_locked(session, "set_access")
-        return {"dropped_sessions": len(dropped)}
+    def register_platform_object(self, obj: Any) -> str:
+        """A host file store or export target; the handle is used in ``storage`` or an export ``target``."""
+        try:
+            handle, kind = self.platform.register(obj)
+            return _ok({"handle": handle, "kind": kind})
+        except (Exception, EngineInterrupt) as exc:
+            return _fail(exc)
 
-    def _engine_status(self, payload: Payload, operation: _Operation) -> Any:
-        entry = self._entry(payload)
-        with self._lock:
-            return {
-                "sessions": len(entry.sessions),
-                "running_operations": len(entry.operations - {operation.key}),
-                "listener_errors": entry.sink.errors,
-            }
+    def release_platform_object(self, handle: str) -> str:
+        try:
+            self.platform.release(str(handle))
+            return _ok({"released": True})
+        except (Exception, EngineInterrupt) as exc:
+            return _fail(exc)
 
-    def _search(self, payload: Payload, operation: _Operation) -> Any:
-        hits = self._entry(payload).engine.search(str(payload["query"]), cancel=operation.token)
-        return {"hits": [dto.series_hit(hit) for hit in hits]}
+    def _storage(self, r: Reader) -> tuple[tuple[str, str] | None, FileStore | None]:
+        s = r.obj("storage", ("kind", "root", "handle"), None)
+        if s is None:
+            return None, None
+        if s.choice("kind", ("fs", "platform")) == "fs":
+            root = Path(s.text("root")).resolve()
+            return ("fs", str(root)), FsFileStore(root)
+        handle = s.text("handle")
+        return ("platform", handle), self.platform.acquire(handle, FILE_STORE, s.field("handle"))
 
-    def _metadata(self, payload: Payload, operation: _Operation) -> Any:
-        engine = self._entry(payload).engine
-        ref = engine.series_from_url(str(payload["url"]))
-        return {"metadata": dto.series_metadata(engine.metadata(ref, cancel=operation.token))}
+    def _runtime_for(self, r: Reader) -> Runtime:
+        """The first handle of a database fixes the runtime's file store, cache and executor access."""
+        db_path = Path(r.text("history_path")).resolve()
+        cache_dir = Path(r.text("cache_dir"))
+        access = common.access(r, required=False)
+        network = r.enum("network", NetworkKind, None)
+        with self.lock:
+            existing = self._runtimes.get(db_path)
+            if existing is not None:
+                if existing.closing:
+                    raise BridgeError("runtime.closing", "the runtime of this database is closing", db_path=str(db_path))
+                config = existing.config
+                storage = r.obj("storage", ("kind", "root", "handle"), None)
+                if storage is not None:
+                    if storage.choice("kind", ("fs", "platform")) == "fs":
+                        wanted = ("fs", str(Path(storage.text("root")).resolve()))
+                    else:
+                        wanted = ("platform", storage.text("handle"))
+                    if wanted != config.storage:
+                        raise BridgeError("runtime.config_conflict", "the runtime uses another file store", field="storage")
+                if cache_dir.resolve() != config.cache_dir.resolve():
+                    raise BridgeError("runtime.config_conflict", "the runtime uses another cache directory", field="cache_dir")
+                if access is not None and access != config.access:
+                    raise BridgeError("runtime.config_conflict", "the runtime uses another executor access", field="access")
+                if network is not None and network is not existing.network.current():
+                    raise BridgeError("runtime.config_conflict", "the runtime is on another network", field="network")
+                return existing
+            storage_key, store = self._storage(r)
+            config = RuntimeConfig(
+                db_path=db_path,
+                cache_dir=cache_dir,
+                storage=storage_key,
+                access=access or AccessConfig(),
+                network=network or NetworkKind.WIFI,
+                xhr_backend=_backend(r),
+                antibot_delay_sec=r.number("antibot_delay_sec", DEFAULT_ANTIBOT_DELAY_SEC, minimum=0),
+            )
+            handle = storage_key[1] if storage_key and storage_key[0] == "platform" else None
+            runtime = Runtime(
+                config,
+                self._state_factory(db_path),
+                store,
+                journal_size=self._journal_size,
+                watch_interval=self._watch_interval,
+                on_release=(lambda: self.platform.release_use(handle)) if handle else (lambda: None),
+            )
+            self._runtimes[db_path] = runtime
+            return runtime
 
-    def _metadata_many(self, payload: Payload, operation: _Operation) -> Any:
-        engine = self._entry(payload).engine
-        refs = [engine.series_from_url(str(url)) for url in payload["urls"]]
-        return {"metadata": [dto.series_metadata(meta) for meta in engine.metadata_many(refs, cancel=operation.token)]}
+    def create_engine(self, payload_json: str, listener: Any = None) -> str:
+        """No HTTP transport is created here; ``listener`` gets each event as JSON on its own delivery thread."""
+        try:
+            r = Reader(parse(payload_json))
+            r.only(_CREATE_FIELDS)
+            _check_contract(r)
+            runtime = self._runtime_for(r)
+            access = common.access(r, required=False) or runtime.config.access
+            config = EngineConfig(
+                cache_dir=Path(r.text("cache_dir")),
+                xhr_backend=_backend(r),
+                antibot_delay_sec=r.number("antibot_delay_sec", DEFAULT_ANTIBOT_DELAY_SEC, minimum=0),
+                access=effective_access(access, runtime.network.current()),
+            )
+            if r.has("diagnostics_dir"):
+                diagnostics.configure(Path(r.text("diagnostics_dir")))
+            transport = LazyTransport(self._transport_factory)
+            history = self._history_factory(runtime.config.db_path) if self._history_factory else runtime.state.history
+            engine = Engine(config, transport=transport, history=history, events=runtime.sink)
+            engine_id = uuid.uuid4().hex
+            entry = EngineEntry(engine_id=engine_id, engine=engine, runtime=runtime, access=access, transport=transport)
+            # a runtime_close may have finished while the engine was being built; a late handle must not outlive it.
+            # The delivery thread starts only once the handle is registered, so every close sees it in ending_pushes.
+            with self.lock:
+                current = self._runtimes.get(runtime.config.db_path) is runtime and not runtime.closing
+                if current:
+                    if listener is not None:
+                        entry.push = PushAdapter(runtime.journal, runtime.watcher, listener)
+                    self._engines[engine_id] = entry
+                    runtime.engine_ids.add(engine_id)
+            if not current:
+                engine.close()
+                raise BridgeError(
+                    "runtime.closing", "the runtime of this database is closing", db_path=str(runtime.config.db_path)
+                )
+            return _ok({"engine_id": engine_id, "contract": contract.CONTRACT})
+        except (Exception, EngineInterrupt) as exc:
+            return _fail(exc)
 
-    def _episodes(self, payload: Payload, operation: _Operation) -> Any:
-        engine = self._entry(payload).engine
-        ref = dto.parse_series_ref(payload["series"]) if "series" in payload else engine.series_from_url(str(payload["url"]))
-        return dto.episode_listing(engine.episodes(ref, cancel=operation.token))
+    def _detach(self, entry: EngineEntry, exclude: str | None = None) -> tuple[int, int]:
+        """Under the bridge lock: forgets the handle, cancels its operations and marks its sessions closed."""
+        self._engines.pop(entry.engine_id, None)
+        entry.runtime.engine_ids.discard(entry.engine_id)
+        if entry.push is not None:
+            entry.runtime.ending_pushes.append(entry.push)
+        for session in entry.sessions.values():
+            session.closed_by = "close_engine"
+        tokens = [self._operations[k].token for k in entry.operations if k in self._operations and k != exclude]
+        for token in tokens:
+            token.cancel()
+        return len(tokens), len(entry.sessions)
 
-    def _open_episode(self, payload: Payload, operation: _Operation) -> Any:
-        entry = self._entry(payload)
-        session = entry.engine.open_episode(dto.parse_episode(payload["episode"]), cancel=operation.token)
-        session_id = uuid.uuid4().hex
-        with self._lock:
-            if self._engines.get(str(payload["engine_id"])) is not entry:
-                raise BridgeError("unknown_engine", "the engine was closed while the episode was opening")
-            entry.sessions[session_id] = _SessionEntry(session_id=session_id, session=session)
-        return {"session_id": session_id, "episode": dto.episode(session.episode), "sources": _sources(session)}
+    def close_engine(self, payload_json: str) -> str:
+        """Cancels the handle's operations, drops its sessions and push listener; the executor and runtime stay."""
+        try:
+            r = Reader(parse(payload_json))
+            r.only(("engine_id", "contract"))
+            engine_id = r.text("engine_id")
+            with self.lock:
+                entry = self._engines.get(engine_id)
+                if entry is None:
+                    raise BridgeError("unknown_engine", "no such engine", engine_id=engine_id)
+                cancelled, closed = self._detach(entry)
+            entry.engine.close()
+            ended = self._stop_push(entry.runtime, entry.push, _DELIVERY_JOIN_SEC) if entry.push else True
+            return _ok({"cancelled_operations": cancelled, "closed_sessions": closed, "delivery_ended": ended})
+        except (Exception, EngineInterrupt) as exc:
+            return _fail(exc)
 
-    def _select(self, payload: Payload, operation: _Operation) -> Any:
-        flt = payload.get("filter") or {}
-        selection = self._session(payload, operation).select(
-            SourceFilter(lang=flt.get("lang"), subs=flt.get("subs"), player_name=flt.get("player_name")),
-            purpose=Purpose(payload.get("purpose", Purpose.WATCH.value)),
-        )
-        return dto.selection(selection)
+    def cancel(self, op_id: str) -> bool:
+        """False for an id that is unknown or already finished; the operation itself reports ``cancelled``."""
+        with self.lock:
+            operation = self._operations.get(self._client_ops.get(op_id, ""))
+            if operation is None:
+                return False
+            operation.token.cancel()
+        return True
 
-    def _resolve(self, payload: Payload, operation: _Operation) -> Any:
-        session = self._session(payload, operation)
-        by_id = {p.online_id: p for p in session.sources}
-        chosen = _player(by_id, payload["online_id"])
-        candidates = [_player(by_id, online_id) for online_id in payload.get("candidate_ids", [])]
-        policy = FallbackPolicy(payload.get("policy", FallbackPolicy.SINGLE.value))
-        if payload.get("rank_by_health"):
-            candidates = session.rank(candidates)
-        resolved = session.resolve(
-            chosen,
-            candidates=candidates,
-            policy=policy,
-            force_fresh=bool(payload.get("force_fresh", False)),
-            cancel=operation.token,
-        )
-        return dto.resolved_stream(resolved, payload.get("quality"))
+    def ensure_queue(self, runtime: Runtime) -> OfflineQueue:
+        """The executor's own engine and transport, independent of every UI handle; created on first start."""
+        with runtime.lock:
+            if runtime.queue is not None:
+                return runtime.queue
+            store = runtime.require_store()
+            if self._sources_factory is not None:
+                sources = self._sources_factory(runtime)
+            else:
+                config = runtime.config
+                engine = Engine(
+                    EngineConfig(
+                        cache_dir=config.cache_dir,
+                        xhr_backend=config.xhr_backend,
+                        antibot_delay_sec=config.antibot_delay_sec,
+                        access=runtime.executor_access,
+                    ),
+                    transport=LazyTransport(self._transport_factory),
+                    history=runtime.state.history,
+                    events=runtime.sink,
+                )
+                runtime.executor_engine = engine
+                sources = EngineSources(engine, runtime.executor_access)
+            runtime.queue = OfflineQueue(
+                runtime.state, store, sources, network=runtime.network, events=runtime.sink, **self._executor_options
+            )
+            return runtime.queue
 
-    def _probe_hosts(self, payload: Payload, operation: _Operation) -> Any:
-        session = self._session(payload, operation)
-        by_id = {p.online_id: p for p in session.sources}
-        candidates = [_player(by_id, online_id) for online_id in payload.get("candidate_ids", list(by_id))]
-        stop = session.probe_hosts(candidates, cancel=operation.token)
+    def _stop_push(self, runtime: Runtime, push: PushAdapter, timeout: float | None) -> bool:
+        """An adapter is forgotten only once its thread has ended, so a later close still sees a stuck listener."""
+        ended = push.stop(timeout)
+        if ended:
+            with self.lock:
+                if push in runtime.ending_pushes:
+                    runtime.ending_pushes.remove(push)
+        return ended
+
+    def _running_on(self, runtime: Runtime, exclude: str | None) -> int:
+        return sum(1 for op in self._operations.values() if op.runtime is runtime and op.key != exclude)
+
+    def close_runtime(self, runtime: Runtime, timeout: float | None, exclude: str | None = None) -> dict[str, Any]:
+        """Handles and their operations, then the executor, then event threads, then platform objects; repeatable."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+
+        def left() -> float | None:
+            return None if deadline is None else max(deadline - time.monotonic(), 0.0)
+
+        with self.lock:
+            runtime.closing = True
+            entries = [e for e in self._engines.values() if e.runtime is runtime]
+            for entry in entries:
+                self._detach(entry, exclude)
+        for entry in entries:
+            entry.engine.close()
+        # a cancelled export or delete may still be using the file store; the runtime is kept until it returns
+        with self.lock:
+            self._operation_ended.wait_for(lambda: self._running_on(runtime, exclude) == 0, left())
+            running = self._running_on(runtime, exclude)
+            pushes = list(runtime.ending_pushes)
+        alive = sum(1 for push in pushes if not self._stop_push(runtime, push, left()))
+        executor_ended = runtime.queue.close(left()) if runtime.queue is not None else True
+        watcher_ended = runtime.watcher.stop(left()) if executor_ended else False
+        ended = executor_ended and watcher_ended and alive == 0 and running == 0
+        if ended:
+            if runtime.executor_engine is not None:
+                runtime.executor_engine.close()
+            runtime.release()
+            with self.lock:
+                if self._runtimes.get(runtime.config.db_path) is runtime:
+                    del self._runtimes[runtime.config.db_path]
         return {
-            "known_sources": [dto.known_source(source) for source in session.known_sources.values()],
-            "stopped": describe(stop) if stop is not None else None,
+            "ended": ended,
+            "executor_ended": executor_ended,
+            "delivery_threads_alive": alive,
+            "operations_running": running,
         }
 
-    def _reload_episode(self, payload: Payload, operation: _Operation) -> Any:
-        session = self._session(payload, operation)
-        session.reload(cancel=operation.token)
-        return {"sources": _sources(session)}
+    def _runtime_close(self, c: Call) -> Any:
+        timeout = c.r.integer("timeout_ms", 10000, minimum=0, maximum=600000) / 1000
+        if c.r.has("db_path"):
+            path = Path(c.r.text("db_path")).resolve()
+            with self.lock:
+                runtime = self._runtimes.get(path)
+            if runtime is None:
+                return {"ended": True, "executor_ended": True, "delivery_threads_alive": 0, "operations_running": 0}
+        else:
+            runtime = c.entry.runtime
+        return self.close_runtime(runtime, timeout, exclude=c.operation.key)
 
-    def _close_session(self, payload: Payload, _operation: _Operation) -> Any:
-        """Operations still running on the session are cancelled and can no longer report success."""
-        entry = self._entry(payload)
-        with self._lock:
-            session = entry.sessions.pop(str(payload["session_id"]), None)
-            if session is None:
-                return {"closed": False, "cancelled_operations": 0}
-            return {"closed": True, "cancelled_operations": self._close_locked(session, "close_session")}
+    def shutdown(self, timeout: float | None = None) -> str:
+        """Closes every runtime; a false ``ended`` means some I/O still runs and the call may be repeated."""
+        try:
+            with self.lock:
+                runtimes = list(self._runtimes.values())
+            results = {str(rt.config.db_path): self.close_runtime(rt, timeout) for rt in runtimes}
+            return _ok({"ended": all(r["ended"] for r in results.values()), "runtimes": results})
+        except (Exception, EngineInterrupt) as exc:
+            return _fail(exc)
 
-    def _history_watch(self, payload: Payload, _operation: _Operation) -> Any:
-        history = self._entry(payload).engine.history
-        return {"entries": [dto.watch_entry(entry) for entry in history.watch_entries()]}
+    def _bridge_info(self, _c: Call) -> Any:
+        return {
+            "contract": contract.CONTRACT,
+            "methods": sorted([*self._methods, "create_engine", "close_engine"]),
+            "capabilities": {
+                "interaction_grants": False,
+                "events_pull": True,
+                "events_push": True,
+                "platform_storage": True,
+                "platform_export": True,
+            },
+            "limits": dict(contract.LIMITS),
+        }
 
-    def _history_downloads(self, payload: Payload, _operation: _Operation) -> Any:
-        history = self._entry(payload).engine.history
-        return {"entries": [dto.download_entry(entry) for entry in history.download_entries()]}
+    def call(self, method_name: str, payload_json: str) -> str:
+        """A read whose episode session closed meanwhile reports ``session_closed``; a committed mutation its outcome."""
+        operation: Operation | None = None
+        try:
+            spec = self._methods.get(method_name)
+            if spec is None:
+                raise BridgeError("unknown_method", "no such method", method=method_name)
+            r = Reader(parse(payload_json))
+            r.only(spec.fields | contract.RESERVED_FIELDS)
+            _check_contract(r)
+            client_id = r.text("op_id", None)
+            engine_id = r.text("engine_id") if spec.needs_engine or r.has("engine_id") else None
+            with self.lock:
+                entry = self.engine_entry(engine_id) if engine_id is not None else None
+                if client_id is not None and client_id in self._client_ops:
+                    raise BridgeError("operation_id_in_use", "an operation with this id is still running")
+                operation = Operation(
+                    key=uuid.uuid4().hex,
+                    engine_id=engine_id,
+                    token=CancelToken(),
+                    client_id=client_id,
+                    runtime=entry.runtime if entry is not None else None,
+                )
+                self._operations[operation.key] = operation
+                if entry is not None:
+                    entry.operations.add(operation.key)
+                if client_id is not None:
+                    self._client_ops[client_id] = operation.key
+            token = CURRENT_OP.set(client_id)
+            try:
+                result = spec.handler(Call(self, r, operation, entry))
+            finally:
+                CURRENT_OP.reset(token)
+            # one critical section with unregistering, so a close sees the operation running or not at all
+            with self.lock:
+                closed = _session_closed(operation)
+                self._unregister(operation)
+            return _fail(closed) if closed is not None else _ok(result)
+        except (Exception, EngineInterrupt) as exc:
+            if operation is not None:
+                with self.lock:
+                    closed = _session_closed(operation)
+                    self._unregister(operation)
+                return _fail(closed or exc)
+            return _fail(exc)
 
-    def _history_record_watch(self, payload: Payload, _operation: _Operation) -> Any:
-        self._entry(payload).engine.history.record_watch(dto.parse_series_ref(payload["series"]), float(payload["episode"]))
-        return {}
-
-    def _history_record_download(self, payload: Payload, _operation: _Operation) -> Any:
-        history = self._entry(payload).engine.history
-        history.record_download(dto.parse_series_ref(payload["series"]), float(payload["episode"]))
-        return {}
-
-    def _history_clear(self, payload: Payload, _operation: _Operation) -> Any:
-        self._entry(payload).engine.history.clear()
-        return {}
-
-
-def _parse(payload_json: str) -> Payload:
-    payload = json.loads(payload_json)
-    if not isinstance(payload, dict):
-        raise ValueError("the payload must be a JSON object")
-    return payload
+    def _unregister(self, operation: Operation) -> None:
+        with self.lock:
+            if self._operations.pop(operation.key, None) is None:
+                return
+            if operation.client_id is not None and self._client_ops.get(operation.client_id) == operation.key:
+                del self._client_ops[operation.client_id]
+            if operation.engine_id is not None and (entry := self._engines.get(operation.engine_id)) is not None:
+                entry.operations.discard(operation.key)
+            if operation.session is not None:
+                operation.session.operations.discard(operation.key)
+            for handle in operation.platform_handles:
+                self.platform.release_use(handle)
+            self._operation_ended.notify_all()
 
 
-def _access(data: Payload) -> AccessConfig:
-    return AccessConfig(
-        flaresolverr_url=data.get("flaresolverr_url") or None,
-        use_flaresolverr=bool(data.get("use_flaresolverr", True)),
-    )
+def _backend(r: Reader) -> XhrBackendName:
+    text = r.text("xhr_backend", "new")
+    try:
+        parse_backend(text)
+    except ValueError:
+        raise InputError("xhr_backend", "unknown_value") from None
+    return cast(XhrBackendName, text)
 
 
-def _session_closed(operation: _Operation) -> BridgeError | None:
+def _session_closed(operation: Operation) -> BridgeError | None:
     session = operation.session
-    if session is None or session.closed_by is None:
+    if operation.committed or session is None or session.closed_by is None:
         return None
     return BridgeError(
         "session_closed",
@@ -388,17 +476,6 @@ def _session_closed(operation: _Operation) -> BridgeError | None:
         session_id=session.session_id,
         closed_by=session.closed_by,
     )
-
-
-def _player(by_id: dict[str, PlayerEntry], online_id: object) -> PlayerEntry:
-    player = by_id.get(str(online_id))
-    if player is None:
-        raise BridgeError("unknown_source", "no such source in this episode session", online_id=str(online_id))
-    return player
-
-
-def _sources(session: EpisodeSession) -> list[dict[str, Any]]:
-    return [dto.player(p) for p in session.sources]
 
 
 def _ok(data: Any) -> str:

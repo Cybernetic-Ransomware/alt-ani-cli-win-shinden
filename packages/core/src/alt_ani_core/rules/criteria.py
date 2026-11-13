@@ -1,5 +1,6 @@
 """Download and playback criteria: explicit matching that never weakens a criterion to find something."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
 from alt_ani_core.models import PlayerEntry, Stream, StreamVariant
@@ -7,6 +8,7 @@ from alt_ani_core.rules.pin import player_fingerprint
 from alt_ani_core.state import (
     ANY,
     DownloadCriteria,
+    OfflineItemSpec,
     PartialTransfer,
     Preferences,
     QualityCriterion,
@@ -46,6 +48,28 @@ def subs_match(entry: PlayerEntry, wanted: str) -> bool:
 
 def match_source(entry: PlayerEntry, criteria: DownloadCriteria) -> bool:
     return audio_matches(entry, criteria.audio) and subs_match(entry, criteria.subs)
+
+
+def no_match_reason(entries: Sequence[PlayerEntry], criteria: DownloadCriteria) -> NoMatch | None:
+    """Why no source fits: audio is checked first, subtitles only among sources with the wanted audio."""
+    audio = [e for e in entries if audio_matches(e, criteria.audio)]
+    if not audio:
+        return NoMatch("audio")
+    if not any(subs_match(e, criteria.subs) for e in audio):
+        return NoMatch("subs")
+    return None
+
+
+def _spec_language(value: str | None, wanted: str) -> bool:
+    return wanted == ANY or (value is not None and normalize_language(value) == wanted)
+
+
+def item_matches(spec: OfflineItemSpec, criteria: DownloadCriteria) -> bool:
+    """A local copy fits by what it actually holds; an unknown language or height never satisfies a criterion."""
+    if not (_spec_language(spec.audio, criteria.audio) and _spec_language(spec.subs, criteria.subs)):
+        return False
+    limit = criteria.quality.max_height
+    return limit is None or (spec.height is not None and spec.height <= limit)
 
 
 def _known_height(variant: StreamVariant) -> int | None:

@@ -83,14 +83,26 @@ class EngineSources:
         self._base = base_access
         self._lock = threading.Lock()
         self._applied: bool | None = None
+        self._network: NetworkKind | None = None
 
     def network_changed(self, network: NetworkKind) -> None:
-        use = flaresolverr_allowed(self._base.use_flaresolverr, network)
         with self._lock:
+            self._network = network
+            use = flaresolverr_allowed(self._base.use_flaresolverr, network)
             if use == self._applied:
                 return
             self._applied = use
-        self._engine.set_access(dataclasses.replace(self._base, use_flaresolverr=use))
+            access = dataclasses.replace(self._base, use_flaresolverr=use)
+        self._engine.set_access(access)
+
+    def set_base_access(self, access: AccessConfig) -> None:
+        """A new configured access; the network rule is applied again, and sessions opened before become stale."""
+        with self._lock:
+            self._base = access
+            network = self._network
+            self._applied = None if network is None else flaresolverr_allowed(access.use_flaresolverr, network)
+            effective = access if network is None else dataclasses.replace(access, use_flaresolverr=self._applied)
+        self._engine.set_access(effective)
 
     def open(self, episode: EpisodeRow, *, grant: InteractionGrant | None, cancel: CancelToken) -> EpisodeSources:
         # a grant would be injected into the engine's session here; that needs the stage-5 interaction flow
