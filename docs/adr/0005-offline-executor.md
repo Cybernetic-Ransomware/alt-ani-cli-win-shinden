@@ -111,7 +111,8 @@ strong ETag is not detected.
 `FileStore` is a protocol without Android dependencies: work areas are local directories (the transfer writes there);
 published files are opaque locators; `publish` puts the file exactly at the target or raises `storage.target_exists`.
 A backend that cannot publish without possibly replacing a file fails `check_root` with `storage.no_atomic_publish` and
-is not used.
+is not used. `playback_target(locator)` tells a player what to open (`file` path or a platform `content_uri`), never a
+remote URL.
 
 `FsFileStore(root)`: partials in `root/.work/<job>/<partial>/` (created only by the executor), published files in
 `root/<Series> [<id>]/<Series> - ep<N>.<ext>` with keys as relative POSIX paths, names reduced to a safe character set
@@ -148,6 +149,16 @@ SHA-256 of an available copy too and marks a mismatch missing. A failed removal 
 file that no longer is the recorded copy is left in place and reported. Exports are streamed copies (never links) into
 a temporary file, fsynced, then published without replacing anything (numbered on conflict, or refused). Watch state
 is never touched. Bulk operations report each item.
+
+Stage 3 additions ([ADR-0006](0006-mobile-client-contract.md)): exports go through `ExportTarget.create(name,
+on_conflict) -> ExportWriter(write, commit, abort)`, with `DirectoryExportTarget` for paths; a cancel before `commit`
+aborts and leaves no file, a file already committed is reported. `delete`, `verify` and `retry_pending_deletes` stop
+between items when cancelled and report the rest as `not_attempted`; recovery re-checks cancellation after each library
+step. User actions take an optional `expected_revision`, checked in the writing transaction; `preview` reports
+`basis_seq` and `enqueue(basis_seq=…)` skips episodes that got a job after it (`changed_since_preview`).
+`OfflineQueue.retry_interaction` lifts an interaction wait without a grant, `OfflineQueue.status()` reports
+`stopped|running|closing` with stuck jobs, and `EngineSources.set_base_access` replaces the executor's configured access
+under the Wi-Fi-only solver rule.
 
 ### Schema 3
 

@@ -74,6 +74,9 @@ Kotlin threads. An `asyncio` engine would have meant rewriting every extractor w
   operation, `BEGIN IMMEDIATE`, `foreign_keys=ON` on every connection). `last_ep` is a resume cursor reported by the
   application, not proof of watching; real playback progress would be a later schema version.
   Schema 2 adds it, together with the download queue and the offline library: [ADR-0004](0004-local-state-model.md).
+- **Android bridge** (`alt_ani_bridge`, loaded by Chaquopy from source): a JSON facade over the engine's public
+  services and rules only; it validates input, maps DTOs and errors and owns handles and events, while every domain
+  rule stays in the engine. Contract 2 and its reasons: [ADR-0006](0006-mobile-client-contract.md).
 
 ### Concurrency, cancellation, staleness
 
