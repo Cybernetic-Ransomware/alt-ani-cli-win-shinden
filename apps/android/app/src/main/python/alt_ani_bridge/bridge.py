@@ -226,18 +226,17 @@ class Bridge:
             engine = Engine(config, transport=transport, history=history, events=runtime.sink)
             engine_id = uuid.uuid4().hex
             entry = EngineEntry(engine_id=engine_id, engine=engine, runtime=runtime, access=access, transport=transport)
-            if listener is not None:
-                entry.push = PushAdapter(runtime.journal, runtime.watcher, listener)
-            # a runtime_close may have finished while the engine was being built; a late handle must not outlive it
+            # a runtime_close may have finished while the engine was being built; a late handle must not outlive it.
+            # The delivery thread starts only once the handle is registered, so every close sees it in ending_pushes.
             with self.lock:
                 current = self._runtimes.get(runtime.config.db_path) is runtime and not runtime.closing
                 if current:
+                    if listener is not None:
+                        entry.push = PushAdapter(runtime.journal, runtime.watcher, listener)
                     self._engines[engine_id] = entry
                     runtime.engine_ids.add(engine_id)
             if not current:
                 engine.close()
-                if entry.push is not None:
-                    entry.push.stop(_DELIVERY_JOIN_SEC)
                 raise BridgeError(
                     "runtime.closing", "the runtime of this database is closing", db_path=str(runtime.config.db_path)
                 )

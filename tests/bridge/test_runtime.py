@@ -74,6 +74,33 @@ class TestShutdown:
         status = json.loads(v2.bridge.call("executor_status", json.dumps({"engine_id": joined})))["data"]
         assert (status["state"], status["owner"]) == ("running", "self")
 
+    def test_registered_push_is_reported_until_its_callback_returns(self, tmp_path, monkeypatch):
+        from alt_ani_bridge import bridge as bridge_module
+
+        pushes, real_push = [], bridge_module.PushAdapter
+        entered, release = threading.Event(), threading.Event()
+
+        def recorded_push(*args, **kwargs):
+            pushes.append(real_push(*args, **kwargs))
+            return pushes[-1]
+
+        def listener(_message: str) -> None:
+            entered.set()
+            release.wait(10)
+
+        monkeypatch.setattr(bridge_module, "PushAdapter", recorded_push)
+        client = make_v2(tmp_path)
+        assert client.create(listener, storage={"kind": "fs", "root": str(tmp_path / "library")})["ok"]
+        client.data("network_set", kind="cellular")
+        assert entered.wait(5)
+        db = json.dumps({"db_path": str(tmp_path / "history.db"), "timeout_ms": 100})
+        closed = json.loads(client.bridge.call("runtime_close", db))["data"]
+        assert (closed["ended"], closed["delivery_threads_alive"]) == (False, 1)
+        assert pushes[0].thread.is_alive()
+        release.set()
+        assert json.loads(client.bridge.call("runtime_close", db.replace("100", "5000")))["data"]["ended"]
+        assert not pushes[0].thread.is_alive()
+
     def test_push_thread_is_reported_when_stuck(self, v2):
         entered, release = threading.Event(), threading.Event()
 
@@ -137,10 +164,18 @@ class TestShutdown:
             "ended"
         ]
 
-    def test_handle_built_during_close_is_refused_and_cleaned_up(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("blocking_listener", [False, True])
+    def test_handle_built_during_close_is_refused_and_cleaned_up(self, tmp_path, monkeypatch, blocking_listener):
         from alt_ani_bridge import bridge as bridge_module
 
         entered, release = threading.Event(), threading.Event()
+        delivered, unblock = threading.Event(), threading.Event()
+
+        def listener(_message: str) -> None:
+            delivered.set()
+            if blocking_listener:
+                unblock.wait(10)
+
         engines, pushes = [], []
         real_engine, real_push = bridge_module.Engine, bridge_module.PushAdapter
 
@@ -160,7 +195,7 @@ class TestShutdown:
         client = make_v2(tmp_path)
         storage = {"kind": "fs", "root": str(tmp_path / "library")}
         replies: list[dict] = []
-        creator = threading.Thread(target=lambda: replies.append(client.create(storage=storage)))
+        creator = threading.Thread(target=lambda: replies.append(client.create(listener, storage=storage)))
         creator.start()
         assert entered.wait(5)
         db = str(tmp_path / "history.db")
@@ -172,7 +207,8 @@ class TestShutdown:
         assert reply["error"]["code"] == "runtime.closing"
         assert client.bridge.engine_entries() == []
         assert engines[0].closed
-        assert not pushes[0].thread.is_alive()
+        # the delivery thread starts only for a registered handle, so a refused one never reaches its listener
+        assert pushes == [] and not delivered.is_set()
         assert client.create(storage=storage)["ok"]
         shut = json.loads(client.bridge.shutdown(10))
         assert shut["ok"] and shut["data"]["ended"], shut
