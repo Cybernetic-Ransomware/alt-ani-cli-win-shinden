@@ -3,7 +3,7 @@
 import sqlite3
 import uuid
 
-from alt_ani_core.errors import UnknownRecordError
+from alt_ani_core.errors import StateConflictError, UnknownRecordError
 from alt_ani_core.history.codec import Row, key_of
 from alt_ani_core.history.database import Database, upsert_episode
 from alt_ani_core.models import EpisodeRow, SeriesRef
@@ -90,18 +90,39 @@ class SqliteWatchStore:
             )
             return self._existing(conn, key)
 
+    @staticmethod
+    def _new_session(conn: sqlite3.Connection, session: PlaybackSession) -> None:
+        key = session.key
+        conn.execute(
+            """INSERT INTO watch_state (series_id, number, playback_session_id, playback_seq) VALUES (?, ?, ?, 0)
+               ON CONFLICT(series_id, number) DO UPDATE SET
+                 playback_session_id = excluded.playback_session_id, playback_seq = 0, revision = revision + 1""",
+            (key.series_id, key.number, session.session_id),
+        )
+
     def begin_playback(self, key: EpisodeKey) -> PlaybackSession:
         """Supersedes every earlier session of the episode; their later writes are refused."""
         session = PlaybackSession(key, uuid.uuid4().hex)
         with self._db.write() as conn:
             self._require_episode(conn, key)
-            conn.execute(
-                """INSERT INTO watch_state (series_id, number, playback_session_id, playback_seq) VALUES (?, ?, ?, 0)
-                   ON CONFLICT(series_id, number) DO UPDATE SET
-                     playback_session_id = excluded.playback_session_id, playback_seq = 0, revision = revision + 1""",
-                (key.series_id, key.number, session.session_id),
-            )
+            self._new_session(conn, session)
         return session
+
+    def start_playback(self, series: SeriesRef, episode: EpisodeRow) -> tuple[PlaybackSession, WatchState]:
+        """Opening in the player and a new session in one transaction, so no write can fall between them."""
+        key = EpisodeKey(series.id, episode.number)
+        session = PlaybackSession(key, uuid.uuid4().hex)
+        with self._db.write() as conn:
+            now = self._db.now()
+            upsert_episode(conn, series, episode, now)
+            conn.execute(
+                """INSERT INTO watch_state (series_id, number, last_opened_at, opened_via) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(series_id, number) DO UPDATE SET
+                     last_opened_at = excluded.last_opened_at, opened_via = excluded.opened_via""",
+                (key.series_id, key.number, now, OpenedVia.PLAYER.value),
+            )
+            self._new_session(conn, session)
+            return session, self._existing(conn, key)
 
     def record_position(self, session: PlaybackSession, seq: int, position_ms: int, duration_ms: int | None = None) -> bool:
         """False for a superseded session or a write older than one already kept; the value itself is never compared."""
@@ -136,10 +157,17 @@ class SqliteWatchStore:
     def _where(session: PlaybackSession) -> tuple[str, float, str]:
         return session.key.series_id, session.key.number, session.session_id
 
-    def set_watched(self, key: EpisodeKey, watched: bool) -> WatchState:
-        """Manual change; leaves the position and the last opening as they are."""
+    def set_watched(self, key: EpisodeKey, watched: bool, expected_revision: int | None = None) -> WatchState:
+        """Manual change; leaves the position and the last opening as they are. No row yet is revision 0."""
         with self._db.write() as conn:
             self._require_episode(conn, key)
+            if expected_revision is not None:
+                current = self._get(conn, key)
+                found = 0 if current is None else current.revision
+                if found != expected_revision:
+                    raise StateConflictError("the watch state changed since it was read").coded(
+                        "state.conflict", series_id=key.series_id, number=key.number, expected=expected_revision, found=found
+                    )
             now = self._db.now()
             conn.execute(
                 """INSERT INTO watch_state (series_id, number, watched, watched_source, watched_at)

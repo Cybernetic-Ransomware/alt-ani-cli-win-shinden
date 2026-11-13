@@ -1,7 +1,7 @@
 """Download job state machine; the store applies it inside its transactions, the executor follows its answers."""
 
 from alt_ani_core.errors import InvalidTransitionError
-from alt_ani_core.state import JobState, StopTarget
+from alt_ani_core.state import ACTIVE_STATES, TERMINAL_STATES, DownloadJob, JobAction, JobState, StopTarget, WaitReason
 
 TRANSITIONS: dict[JobState, frozenset[JobState]] = {
     JobState.QUEUED: frozenset({JobState.RUNNING, JobState.PAUSED, JobState.WAITING, JobState.CANCELLED}),
@@ -41,3 +41,25 @@ def merge_stop(current: StopTarget, requested: StopTarget) -> StopTarget | None:
     if requested is StopTarget.QUEUED:
         return StopTarget.QUEUED if current is StopTarget.PAUSED else None
     return StopTarget.WAITING if current in (StopTarget.WAITING, StopTarget.QUEUED) else None
+
+
+def available_actions(job: DownloadJob) -> frozenset[JobAction]:
+    """What a user action would change now; mirrors the store's checks, so an offered action is never refused for state."""
+    state, stop = job.state, job.stop_target
+    actions: set[JobAction] = set()
+    stopping_open = state is JobState.STOPPING and stop is not StopTarget.CANCELLED
+    if state in (JobState.QUEUED, JobState.WAITING, JobState.RUNNING) or (stopping_open and stop is not StopTarget.PAUSED):
+        actions.add(JobAction.PAUSE)
+    if state is JobState.PAUSED or (state is JobState.STOPPING and stop is StopTarget.PAUSED):
+        actions.add(JobAction.RESUME)
+    if state in (JobState.QUEUED, JobState.PAUSED, JobState.WAITING, JobState.FAILED, JobState.RUNNING) or stopping_open:
+        actions.add(JobAction.CANCEL)
+    if state is JobState.FAILED:
+        actions.add(JobAction.RETRY)
+    if state not in TERMINAL_STATES:
+        actions.add(JobAction.ALLOW_CELLULAR)
+    if state not in ACTIVE_STATES and state not in TERMINAL_STATES:
+        actions.add(JobAction.CHOOSE_SOURCE)
+    if state is JobState.WAITING and job.wait_reason is WaitReason.INTERACTION:
+        actions.add(JobAction.RETRY_INTERACTION)
+    return frozenset(actions)

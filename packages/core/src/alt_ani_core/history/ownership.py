@@ -91,6 +91,12 @@ class ExecutorOwnership:
             _held[resolved] = owner
             return owner
 
+    @staticmethod
+    def held_in_process(db_path: Path) -> bool:
+        """Reads this process's registry only and takes no lock; another process's ownership is not visible here."""
+        with _registry_lock:
+            return db_path.resolve() in _held
+
     @property
     def db_path(self) -> Path:
         return self._db_path

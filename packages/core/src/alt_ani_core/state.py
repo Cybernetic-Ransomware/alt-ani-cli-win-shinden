@@ -263,12 +263,39 @@ class Recovery:
 class SkipReason(StrEnum):
     ALREADY_QUEUED = "already_queued"
     ALREADY_DOWNLOADED = "already_downloaded"
+    # a job for the episode was added after the preview the caller confirmed (possibly cancelled since)
+    CHANGED_SINCE_PREVIEW = "changed_since_preview"
+
+
+class JobAction(StrEnum):
+    PAUSE = "pause"
+    RESUME = "resume"
+    CANCEL = "cancel"
+    RETRY = "retry"
+    ALLOW_CELLULAR = "allow_cellular"
+    CHOOSE_SOURCE = "choose_source"
+    RETRY_INTERACTION = "retry_interaction"
 
 
 @dataclass(frozen=True)
 class EnqueuePlan:
+    """``basis_seq`` is the newest job sequence the preview saw; ``enqueue`` uses it to detect later changes."""
+
     to_add: tuple[EpisodeKey, ...]
     skipped: tuple[tuple[EpisodeKey, SkipReason], ...]
+    basis_seq: int = 0
+
+
+@dataclass(frozen=True)
+class JobSignal:
+    """The fields a change watcher compares; ``revision`` grows with every write of the job, progress included."""
+
+    job_id: str
+    revision: int
+    state: JobState
+    wait_reason: WaitReason | None
+    bytes_done: int | None
+    bytes_total: int | None
 
 
 @dataclass(frozen=True)
