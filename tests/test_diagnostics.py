@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from alt_ani_cli import diagnostics
+from alt_ani_core import diagnostics
 
 
 @pytest.fixture(autouse=True)
@@ -22,8 +22,7 @@ def _reset_diagnostics_logger():
 @pytest.mark.unit
 class TestConfigure:
     def test_creates_session_log_under_diag_dir(self, tmp_path):
-        with patch("alt_ani_cli.diagnostics.DIAG_DIR", tmp_path):
-            path = diagnostics.configure()
+        path = diagnostics.configure(tmp_path)
         assert path.exists()
         assert path.parent == tmp_path
         assert path.name.startswith("session_")
@@ -33,10 +32,9 @@ class TestConfigure:
 @pytest.mark.unit
 class TestConfigureIdempotent:
     def test_second_configure_stops_writing_to_first_file(self, tmp_path):
-        with patch("alt_ani_cli.diagnostics.DIAG_DIR", tmp_path):
-            first = diagnostics.configure()
-            second = diagnostics.configure()
-            diagnostics.series_selected("123", "Test Series")
+        first = diagnostics.configure(tmp_path)
+        second = diagnostics.configure(tmp_path)
+        diagnostics.series_selected("123", "Test Series")
 
         assert first != second
         assert "series_selected" not in first.read_text(encoding="utf-8")
@@ -51,8 +49,8 @@ class TestPruning:
             f.write_text("stale", encoding="utf-8")
             os.utime(f, (i, i))
 
-        with patch("alt_ani_cli.diagnostics.DIAG_DIR", tmp_path), patch("alt_ani_cli.diagnostics._MAX_SESSIONS", 3):
-            path = diagnostics.configure()
+        with patch("alt_ani_core.diagnostics._MAX_SESSIONS", 3):
+            path = diagnostics.configure(tmp_path)
 
         remaining = {p.name for p in tmp_path.glob("session_*.log")}
         assert remaining == {"session_old_3.log", "session_old_4.log", path.name}
@@ -62,16 +60,16 @@ class TestPruning:
 class TestHostOfUrl:
     def test_strips_userinfo_port_path_query(self):
         url = "https://user:token@evilcdn.example.com:8443/path?token=abc123"
-        assert diagnostics._host_of_url(url) == "evilcdn.example.com"
+        assert diagnostics.host_of_url(url) == "evilcdn.example.com"
 
     def test_strips_www_prefix(self):
-        assert diagnostics._host_of_url("https://www.mp4upload.com/embed-xyz.html") == "mp4upload.com"
+        assert diagnostics.host_of_url("https://www.mp4upload.com/embed-xyz.html") == "mp4upload.com"
 
     def test_falls_back_to_unknown_host_for_garbage_input(self):
-        assert diagnostics._host_of_url("not a url") == "unknown-host"
+        assert diagnostics.host_of_url("not a url") == "unknown-host"
 
     def test_falls_back_to_unknown_host_when_hostname_missing(self):
-        assert diagnostics._host_of_url("/relative/path") == "unknown-host"
+        assert diagnostics.host_of_url("/relative/path") == "unknown-host"
 
 
 @pytest.mark.unit
@@ -116,12 +114,11 @@ class TestSafeValueRoundTrip:
 class TestEventEmission:
     @pytest.fixture
     def log_path(self, tmp_path):
-        with patch("alt_ani_cli.diagnostics.DIAG_DIR", tmp_path):
-            return diagnostics.configure()
+        return diagnostics.configure(tmp_path)
 
     def test_resolve_result_failure_records_host_and_exception_class_without_full_url(self, log_path):
         secret_url = "https://evilcdn.example.com/embed/abc?token=SUPERSECRETTOKEN123"
-        diagnostics.resolve_result(diagnostics._host_of_url(secret_url), False, "NoStreamError", 1.23)
+        diagnostics.resolve_result(diagnostics.host_of_url(secret_url), False, "NoStreamError", 1.23)
 
         content = log_path.read_text(encoding="utf-8")
         assert "host=evilcdn.example.com" in content
@@ -156,6 +153,33 @@ class TestEventEmission:
         assert "fallback_category=network_error" in content
         assert "fallback_http_status" not in content
 
+    def test_resolve_result_records_xhr_fields(self, log_path):
+        diagnostics.resolve_result(
+            None,
+            False,
+            "ShindenXhrError",
+            0.2,
+            layer="shinden_api",
+            category="parser_drift",
+            http_status=200,
+            stage="player_load",
+            reason="wait_above_limit",
+            xhr_outcome="api_protocol_error",
+        )
+
+        content = log_path.read_text(encoding="utf-8")
+        for token in (
+            "layer=shinden_api",
+            "category=parser_drift",
+            "http_status=200",
+            "stage=player_load",
+            "reason=wait_above_limit",
+            "xhr_outcome=api_protocol_error",
+        ):
+            assert token in content
+        assert "api_code" not in content
+        assert "retry_after" not in content
+
     def test_resolve_result_omits_diagnostic_fields_when_not_given(self, log_path):
         diagnostics.resolve_result("mp4upload.com", True, None, 0.5)
 
@@ -175,6 +199,12 @@ class TestEventEmission:
         assert str(mpv_log) in content
         assert "https://" not in content
 
+    def test_download_result_records_host_and_exception_class_only(self, log_path):
+        diagnostics.download_result("vidara.to", ok=False, exc="DownloadFailedError")
+
+        content = log_path.read_text(encoding="utf-8")
+        assert "event=download_result host=vidara.to ok=False exc=DownloadFailedError" in content
+
     def test_session_start_records_environment_without_urls(self, log_path):
         diagnostics.session_start("1.2.3", "3.14.0", "Windows-11-10.0.26200")
 
@@ -183,18 +213,167 @@ class TestEventEmission:
         assert "python=3.14.0" in content
         assert "https://" not in content
 
-    def test_all_public_events_can_be_emitted_without_raising(self, log_path):
+    def test_session_start_without_mode_omits_field(self, log_path):
         diagnostics.session_start("1.0.0", "3.14.0", "Windows")
+
+        content = log_path.read_text(encoding="utf-8")
+        assert "mode=" not in content
+
+    @pytest.mark.parametrize("mode", ["interactive", "noninteractive"])
+    def test_session_start_records_mode(self, log_path, mode):
+        diagnostics.session_start("1.0.0", "3.14.0", "Windows", mode=mode)
+
+        content = log_path.read_text(encoding="utf-8")
+        assert f"mode={mode}" in content
+
+    def test_host_health_records_states_and_context_without_urls(self, log_path):
+        secret_url = "https://evilcdn.example.com/embed/abc?token=SUPERSECRETTOKEN123"
+        diagnostics.host_health(
+            host=diagnostics.host_of_url(secret_url),
+            from_state="degraded",
+            to_state="unavailable",
+            signal="transient",
+            online_id="123",
+            category="timeout",
+            http_status=None,
+            resolver="vidara",
+            evidence_expired=False,
+        )
+
+        content = log_path.read_text(encoding="utf-8")
+        assert "host=evilcdn.example.com" in content
+        assert "from_state=degraded" in content
+        assert "to_state=unavailable" in content
+        assert "signal=transient" in content
+        assert "online_id=123" in content
+        assert "category=timeout" in content
+        assert "resolver=vidara" in content
+        assert "evidence_expired=False" in content
+        assert "http_status=" not in content
+        assert secret_url not in content
+        assert "SUPERSECRETTOKEN123" not in content
+        assert "http://" not in content
+        assert "https://" not in content
+
+    def test_host_health_bool_and_apostrophe_values_round_trip(self, log_path):
+        diagnostics.host_health(
+            host="h.com",
+            from_state="healthy",
+            to_state="degraded",
+            signal="soft",
+            online_id="1",
+            category="parser_drift",
+            http_status=None,
+            resolver="Bob's Resolver",
+            evidence_expired=True,
+        )
+
+        line = log_path.read_text(encoding="utf-8").splitlines()[0]
+        assert "evidence_expired=True" in line
+        _date, _time, rest = line.split(" ", 2)
+        (resolver_token,) = [t for t in shlex.split(rest) if t.startswith("resolver=")]
+        assert resolver_token.partition("=")[2] == "Bob's Resolver"
+
+    @pytest.mark.parametrize("action", ["deferred", "retry", "dropped"])
+    def test_health_defer_action_values_round_trip(self, log_path, action):
+        diagnostics.health_defer(
+            action=action,
+            host="vidawra.cc",
+            online_id="123",
+            player="vidara",
+            state="unavailable",
+            category="timeout",
+            http_status=None,
+        )
+
+        content = log_path.read_text(encoding="utf-8")
+        assert f"action={action}" in content
+
+    def test_health_defer_records_context_without_urls(self, log_path):
+        diagnostics.health_defer(
+            action="deferred",
+            host="vidawra.cc",
+            online_id="123",
+            player="vidara",
+            state="unavailable",
+            category="timeout",
+            http_status=None,
+        )
+
+        content = log_path.read_text(encoding="utf-8")
+        assert "host=vidawra.cc" in content
+        assert "online_id=123" in content
+        assert "player=vidara" in content
+        assert "state=unavailable" in content
+        assert "category=timeout" in content
+        assert "http_status=" not in content
+        assert "https://" not in content
+
+    def test_health_defer_omits_none_http_status(self, log_path):
+        diagnostics.health_defer(
+            action="retry", host="h.com", online_id="1", player="p", state="degraded", category="timeout", http_status=None
+        )
+
+        content = log_path.read_text(encoding="utf-8")
+        assert "http_status=" not in content
+
+    def test_health_reorder_records_number_before_after_states_without_urls(self, log_path):
+        diagnostics.health_reorder(number=3.0, before="1,2,3", after="2,1,3", states="healthy,unknown,unavailable")
+
+        content = log_path.read_text(encoding="utf-8")
+        assert "number=3.0" in content
+        assert "before=1,2,3" in content
+        assert "after=2,1,3" in content
+        assert "states=healthy,unknown,unavailable" in content
+        assert "http://" not in content
+        assert "https://" not in content
+
+    def test_health_reorder_comma_lists_round_trip_through_shlex(self, log_path):
+        diagnostics.health_reorder(number=1.0, before="a1,b1,c1", after="c1,a1,b1", states="healthy,unknown,degraded")
+
+        line = log_path.read_text(encoding="utf-8").splitlines()[0]
+        _date, _time, rest = line.split(" ", 2)
+        tokens = shlex.split(rest)
+        (before_token,) = [t for t in tokens if t.startswith("before=")]
+        (after_token,) = [t for t in tokens if t.startswith("after=")]
+        (states_token,) = [t for t in tokens if t.startswith("states=")]
+        assert before_token == "before=a1,b1,c1"
+        assert after_token == "after=c1,a1,b1"
+        assert states_token == "states=healthy,unknown,degraded"
+
+    def test_all_public_events_can_be_emitted_without_raising(self, log_path):
+        diagnostics.session_start("1.0.0", "3.14.0", "Windows", mode="interactive")
         diagnostics.series_selected("s1", "Test Series")
         diagnostics.episode_selected(1.0, "Episode One")
         diagnostics.player_selected("p1", "mp4upload", "mp4upload.com")
         diagnostics.resolve_result("mp4upload.com", True, None, 0.5)
+        diagnostics.host_health(
+            host="mp4upload.com",
+            from_state="healthy",
+            to_state="degraded",
+            signal="soft",
+            online_id="p1",
+            category="parser_drift",
+            http_status=None,
+            resolver="mp4upload",
+            evidence_expired=False,
+        )
+        diagnostics.health_defer(
+            action="deferred",
+            host="mp4upload.com",
+            online_id="p1",
+            player="mp4upload",
+            state="degraded",
+            category="parser_drift",
+            http_status=None,
+        )
+        diagnostics.health_reorder(number=1.0, before="p1,p2", after="p2,p1", states="healthy,unknown")
         diagnostics.playback_result("mpv", 0, 10.0, True, None)
         diagnostics.history_update("s1", 1.0)
         diagnostics.session_end("ok", None)
 
         lines = log_path.read_text(encoding="utf-8").splitlines()
-        assert len(lines) == 8
+        assert len(lines) == 11
 
 
 @pytest.mark.unit

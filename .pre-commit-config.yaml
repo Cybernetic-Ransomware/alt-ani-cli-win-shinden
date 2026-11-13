@@ -9,7 +9,7 @@ repos:
         name: uv lock check
         entry: uv lock --check
         language: system
-        files: ^(pyproject\.toml|uv\.lock)$
+        files: (^|/)(pyproject\.toml|uv\.lock)$
         pass_filenames: false
 
       - id: ruff-check
@@ -17,14 +17,22 @@ repos:
         entry: uv run ruff check
         language: system
         types: [python]
-        files: ^src/
+        files: ^(apps|packages)/
 
       - id: ty-check
         name: ty type checker
-        entry: uv run ty check src/
+        entry: uv run ty check apps packages/core/src
         language: system
         types: [python]
-        files: ^src/
+        files: ^(apps|packages)/
+        pass_filenames: false
+
+      - id: import-contracts
+        name: import-linter contracts
+        entry: uv run lint-imports
+        language: system
+        types: [python]
+        files: ^(apps|packages)/
         pass_filenames: false
 
       - id: codespell
@@ -38,4 +46,4 @@ repos:
         entry: uv run bandit -c pyproject.toml -r
         language: system
         types: [python]
-        files: ^src/
+        files: ^(apps|packages)/

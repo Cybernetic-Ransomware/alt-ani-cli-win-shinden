@@ -1,0 +1,216 @@
+cli:
+  description: "Oglądaj anime z shinden.pl bezpośrednio w terminalu."
+  epilog: |
+    Przyklady:
+      alt-ani-cli fate strange fake            interaktywne wyszukiwanie
+      alt-ani-cli -S 1 -e 1-5 fate strange    odcinki 1-5, pierwszy wynik
+      alt-ani-cli -S 1 -e -1 soul eater        ostatni odcinek
+      alt-ani-cli --url https://shinden.pl/series/65137-fate-strange-fake -e 3
+      alt-ani-cli -c                           kontynuuj z historii
+      alt-ani-cli -d -e 3 soul eater           pobierz odcinek 3
+      alt-ani-cli --lang pl -e 1 vinland saga  tylko polskie audio
+      alt-ani-cli --lang jp --subs pl -S 1 -e 1 berserk
+
+    Filtrowanie jezyka: --lang pl (dubbing PL), --lang jp --subs pl (sub PL)
+    Zakres odcinkow:    "5" (jeden), "1-5" (zakres), "-1" (ostatni), "1 5 7" (lista)
+  help:
+    query: "Tytuł do wyszukania na shinden.pl (pomijany gdy --url lub -c)."
+    url: "Bezpośredni URL serii (https://shinden.pl/series/...)."
+    resume: "Kontynuuj oglądanie z historii (z -d: kontynuuj pobieranie)."
+    download: "Pobierz odcinek zamiast odtwarzać."
+    delete_history: "Wyczyść historię i wyjdź."
+    episode: 'Numer odcinka lub zakres: "5", "1-5", "-1" (ostatni).'
+    quality: 'Preferowana jakość: "best", "worst", "1080p", "720p" … (domyślnie: menu interaktywne lub "best").'
+    select_nth: "Automatycznie wybierz N-ty wynik wyszukiwania (1-bazowy)."
+    vlc: "Użyj vlc.exe zamiast mpv.exe."
+    no_detach: "Uruchom player na pierwszym planie (blokuje terminal)."
+    debug: "Wypisz bezpośrednie linki wideo, nie uruchamiaj playera."
+    player_name: 'Filtruj po nazwie playera: "CDA", "Mp4upload", "Sibnet" …'
+    lang: "Filtruj po języku audio (lang_audio)."
+    subs: "Filtruj po języku napisów (lang_subs)."
+    cookies_file: "Plik ciasteczek w formacie Netscape (eksportuj np. rozszerzeniem 'Get cookies.txt')."
+    cookies_browser: "Czytaj ciasteczka z przeglądarki (wymagane dla treści 18+ na CDA itp.)."
+    allow_fallback: "Gdy filtry --lang/--subs/--player-name nic nie dopasują, użyj pełnej listy playerów zamiast kończyć błędem."
+    show_sources: "Pokaż realny host każdego playera na liście (tryb interaktywny; kosztowne — ~7 s na player przez antibota shinden)."
+  errors:
+    missing_input: "Podaj tytuł do wyszukania, URL (--url) lub użyj -c."
+
+progress:
+  searching: "Szukam: {query}"
+  no_results: "Brak wyników dla: {query}"
+  select_nth_invalid: "--select-nth {n}: jest tylko {count} wyników."
+  fetching_episodes: "Pobieram listę odcinków: {title}"
+  no_episodes: "Brak dostępnych odcinków."
+  episodes_incomplete: "Lista odcinków jest niepełna (pobrano {fetched}/{total} stron) — brakuje najstarszych odcinków; wznawianie nie wskaże pozycji automatycznie."
+  episodes_incomplete_range: "Lista odcinków jest niepełna — pomijam --episode {range}, wybierz odcinki ręcznie."
+  episode: "Odcinek {number:g}: {title}"
+  no_players: "Brak playerów dla odcinka {number:g} — pomijam."
+  filter_fallback: "Filtry ({filters}) nie pasują do żadnego playera — używam pełnej listy."
+  extractor_fallback: "Ekstraktor dla {host} zawiódł ({exc}) — próbuję yt-dlp."
+  jwplayer_fallback: "Nieznany host {host}: próba jwplayer nieudana ({exc}) — próbuję yt-dlp."
+  no_episodes_picked: "Nie wybrano żadnych odcinków."
+  range_not_found: "Nie znaleziono odcinków dla zakresu: {range}"
+  range_unrecognized: "Nie rozpoznano formatu zakresu odcinków: {range} — ignoruję."
+  watched_all: "Obejrzałeś już wszystkie odcinki ({title})."
+  player_failed_long: "Player {player} (ep {number:g}) nie zadziałał: {exc}"
+  player_failed_short: "Player {player} nie zadziałał — wybierz inny:"
+  no_player_worked: "Żaden player nie zadziałał dla odcinka {number:g} — pomijam."
+  download_failed: "Pobieranie z playera {player} nie powiodło się."
+  pin_no_match: "Przypiętego źródła nie ma w odcinku {number:g}."
+  host_deferred: "Host {host} jest chwilowo niedostępny w tej sesji — odkładam próbę."
+  host_last_resort: "Pozostałe źródła zawiodły — próbuję odłożonego hosta {host}."
+  host_dropped: "Host {host} nadal jest niedostępny po próbie last-resort — pomijam kolejnego playera na tym hoście."
+  history_empty: "Historia jest pusta."
+  download_history_empty: "Historia pobierania jest pusta."
+  downloaded_all: "Wszystkie dostępne odcinki są już pobrane ({title})."
+  history_cleared: "Historia wyczyszczona."
+  interrupted: "Przerwano przez użytkownika."
+  http_error: "Błąd HTTP {status} — {url}"
+  cloudflare_hint: "Shinden jest chroniony przez Cloudflare. Uruchom FlareSolverr i ustaw ALT_ANI_CLI_FLARESOLVERR_URL=http://localhost:8191"
+  flaresolverr_unreachable: "FlareSolverr skonfigurowany ({url}), ale niedostępny — żądania mogą być blokowane przez Cloudflare."
+  shinden_error: "Błąd shinden: {exc}"
+  embed: "Embed: {url}"
+  clearance_requested: "Rozwiązuję wyzwanie Cloudflare przez FlareSolverr (ok. 20-30 s)…"
+  env_invalid: "Nieprawidłowe ustawienie środowiska: {exc}"
+  history_import_corrupt: "Nie udało się odczytać starej historii ({path}) — plik pozostał bez zmian, historia zaczyna od zera."
+  history_import_skipped: "Stara historia: pominięto {count} nieprawidłowych wpisów ({path})."
+  history_import_unavailable: "Nie udało się teraz odczytać starej historii ({path}) — spróbuję ponownie przy następnym uruchomieniu."
+  spinner_api: "Czekam na API shinden ({label}) …"
+  prefetch_sources: "Pobieram źródła playerów ({count}) …"
+  prefetch_stopped: "Przerwano pobieranie źródeł playerów: {reason}"
+  xhr_fallback_api4: "Strona odcinka {number:g} nie ma poprawnego kontekstu nowego API playerów ({reason}) — ten odcinek używa zapasowego api4."
+  players_reload: "Wczytuję ponownie listę playerów odcinka {number:g} …"
+  players_reload_limit: "Lista playerów odcinka {number:g} znów się zmieniła — nie wczytuję jej ponownie automatycznie. Wybierz player ręcznie albo wróć (ESC) i wybierz odcinek jeszcze raz."
+  network_error: "Błąd sieci: {exc}"
+  playing: "Odtwarzam w {kind}: {title}"
+  playing_failed: "Player {kind} zakończył się kodem {rc}: {title}"
+  playing_unconfirmed: "Player {kind} zakończył się natychmiast (rc=0, {secs:.1f}s) — nie mogę potwierdzić, czy {title} faktycznie się odtworzyło."
+  mpv_log_hint: "Log mpv (verbose): {path}"
+  diagnostics_log_hint: "Log diagnostyczny sesji: {path}"
+
+download:
+  starting: "Pobieranie: {title} ep{ep_label} → {dir}"
+  saved: "Zapisano: {path}"
+  legacy_part_moved: "Niedokończone pobieranie ze starszej wersji (ffmpeg) przeniesiono do: {path} — pobieranie zacznie się od nowa."
+  kept_existing: "Pominięto — zostawiam istniejący plik: {path}"
+  batch_cancelled: "Anulowano pobieranie zaznaczonych odcinków."
+
+menu:
+  start_mode:
+    question: "Co chcesz zrobić?"
+    options:
+      search: "Szukaj nowego anime"
+      resume_watch: "Kontynuuj oglądanie ({count} pozycji)"
+      resume_download: "Kontynuuj pobieranie ({count} pozycji)"
+      url: "Wklej URL serii"
+      quit: "Wyjdź"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  Ctrl+O = wersja  |  ESC = wyjście"
+    fallback_prompt: "Wybór [1-{n}, Enter=wyjście]: "
+    fallback_invalid: "  Wpisz liczbę 1–{n}."
+    version_header: "O programie"
+    version_body: "alt-ani-cli {version}"
+  search_query:
+    message: "Czego szukasz?"
+    invalid: "Wpisz tytuł anime."
+    instruction: "Enter = szukaj  |  ESC = wstecz"
+    fallback_prompt: "Czego szukasz [Enter=wstecz]: "
+  url:
+    message: "URL serii (https://shinden.pl/series/...):"
+    invalid: "Podaj prawidłowy URL z shinden.pl."
+    instruction: "Enter = potwierdź  |  ESC = wstecz"
+    fallback_prompt: "URL serii (https://shinden.pl/series/...) [Enter=wstecz]: "
+    fallback_invalid: "  Podaj prawidłowy URL z shinden.pl."
+  series:
+    default_prompt: "Wybierz serię"
+    instruction: "Wpisz = filtruj  |  Ctrl+S = sortuj  |  Ctrl+O = opis  |  Ctrl+Q = tagi  |  Ctrl+R = powiązane  |  Enter = wybierz serię  |  ESC = wróć do wyszukiwania"
+    loading_metadata: "Pobieram metadane serii…"
+    label_with_date: "{title}  [{type}]  ({date})  (id:{id})"
+    label_without_date: "{title}  [{type}]  (id:{id})"
+    desc_header: "Opis — {title}"
+    tags_header: "Tagi — {title}"
+    related_header: "Powiązane anime — {title}"
+    related_empty: "Brak powiązanych anime."
+    desc_empty: "Brak opisu."
+    tags_empty: "Brak tagów."
+    press_any_key: "Naciśnij Enter aby wrócić do listy."
+    related_pick_prompt: "Wybierz powiązane anime do podmiany"
+    related_label: "{title}  [{relation}]"
+    related_instruction: "↑↓ = nawiguj  |  Enter = podmień na liście  |  ESC = anuluj"
+    metadata_fetch_failed: "Nie udało się pobrać metadanych dla: {titles}"
+  history_resume:
+    default_prompt: "Kontynuuj oglądanie"
+    label: "{title}  — ostatni ep {last_ep:g}"
+    instruction: "Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz"
+  download_resume:
+    default_prompt: "Kontynuuj pobieranie"
+    label: "{title}  — pobrano {count} odc."
+    instruction: "Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz"
+  episodes:
+    default_prompt: "Wybierz odcinek"
+    label_unwatched: "  {number:g}.  {title}"
+    label_watched: "✓ {number:g}.  {title}"
+    label_downloaded: "↓ {number:g}.  {title}"
+    instruction_single: "Wpisz aby filtrować  |  Enter = wybierz  |  ESC = wstecz"
+    instruction_multi: "Wpisz aby filtrować  |  Spacja = zaznacz/odznacz  |  Ctrl+R = wszystkie  |  Enter = potwierdź  |  ESC = wstecz"
+    invalid_multi: "Zaznacz co najmniej jeden odcinek — użyj Spacji."
+    prompt_with_title: "Wybierz odcinek ({title})"
+  player:
+    default_prompt: "Wybierz player"
+    label_ok: "  {player}{res}  {audio}{subs}{origin}"
+    label_failed: "✗ {player}{res}  {audio}{subs}{origin}"
+    origin_author: "  — {author}"
+    origin_author_host: "  — {author} / {host}"
+    origin_host: "  — {host}"
+    resolved_host: "  @ {host}"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  Ctrl+O = źródło  |  ESC = wstecz"
+    prompt_with_episode: "Player — ep {label}"
+    source_header: "Źródło — {player}"
+    source_author: "Autor:  {author}"
+    source_url: "Źródło: {url}"
+    source_embed: "Embed:  {url}"
+    source_empty: "Brak informacji o źródle."
+  quality:
+    default_prompt: "Wybierz jakość"
+    label_best: "best  (najwyższa dostępna — {top})"
+    label_worst: "worst  (najniższa dostępna — {bottom})"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
+  action:
+    message: "Co zrobić z tym odcinkiem?"
+    options:
+      play: "Oglądaj w mpv/vlc"
+      download: "Pobierz na dysk"
+      download_pin: "Pobierz i używaj tego źródła dla kolejnych odcinków"
+      debug: "Pokaż linki (debug)"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
+    fallback_prompt: "Akcja [1-3, Enter=wstecz]: "
+    fallback_invalid: "  Wpisz liczbę 1–{n}."
+  pin_fallback:
+    message: "Ten player różni się od przypiętego źródła. Co zrobić?"
+    options:
+      keep: "Pobierz ten odcinek i zachowaj przypięte źródło"
+      repin: "Pobierz i używaj tego źródła dla kolejnych odcinków"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
+    fallback_invalid: "  Wpisz liczbę 1–2."
+  existing_file:
+    header: "Plik już istnieje:
+{path}"
+    message: "Co zrobić z istniejącym plikiem?"
+    options:
+      skip: "Pomiń (zostaw istniejący plik)"
+      overwrite: "Pobierz ponownie i zastąp"
+      overwrite_remaining: "Pobierz ponownie i zastępuj istniejące pliki także dla pozostałych zaznaczonych odcinków"
+      cancel: "Anuluj pobieranie zaznaczonych odcinków"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = anuluj"
+    fallback_invalid: "  Wpisz liczbę 1–{n}."
+  confirm:
+    option_yes: "Tak"
+    option_no: "Nie"
+    instruction: "↑↓ = nawigacja  |  Enter = wybierz  |  ESC = wstecz"
+    fallback_invalid: "  Wpisz liczbę 1–2."
+  filter_confirm:
+    question: "Żaden player nie pasuje do filtrów ({filters}). Użyć pełnej listy?"
+  fallback:
+    select_prompt: "{prompt} [1-{n}, Enter=wstecz]: "
+    invalid_number: "  Wpisz liczbę 1–{n}."
+    invalid_numbers: "  Wpisz poprawne numery 1–{n}."
+    multi_hint: '  (wpisz numery oddzielone spacją, np. "1 3 5", lub zakres "2-4")'

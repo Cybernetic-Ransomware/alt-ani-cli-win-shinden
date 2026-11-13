@@ -2,8 +2,8 @@
 
 import pytest
 
-from alt_ani_cli.errors import ShindenError
-from alt_ani_cli.shinden.utils import _AGE_GATE_HINTS, _check_age_gate, _normalize_title
+from alt_ani_core.errors import ShindenError
+from alt_ani_core.shinden.utils import _AGE_GATE_HINTS, _check_age_gate, _normalize_title
 
 
 @pytest.mark.unit

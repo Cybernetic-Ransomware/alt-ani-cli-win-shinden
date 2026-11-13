@@ -4,8 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from alt_ani_cli.models import PlayerSource
-from alt_ani_cli.shinden.models import EpisodeRow, PlayerEntry, RelatedSeries, SeriesHit, SeriesRef
+from alt_ani_cli.content import CONTENT
 from alt_ani_cli.ui.menus import (
     _anchor_choice_window,
     _origin_similar,
@@ -17,32 +16,37 @@ from alt_ani_cli.ui.menus import (
     pick_related,
     select_action,
     select_episodes,
+    select_existing_download_action,
+    select_pin_fallback_action,
     select_player_once,
     select_quality,
+    select_series_from_download_history,
     select_series_from_history,
     select_series_once,
     select_start_mode,
 )
+from alt_ani_core.models import EpisodeRow, PlayerEntry, PlayerSource, RelatedSeries, SeriesHit, SeriesRef
+from alt_ani_core.testing import make_stream
 
 
 @pytest.mark.unit
 class TestSelectQuality:
     def test_empty_returns_best(self):
-        assert select_quality({}) == "best"
+        assert select_quality([]) == "best"
 
     def test_fallback_picks_best(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value="1"):
-            assert select_quality({"1080p": "u1", "720p": "u2"}) == "best"
+            assert select_quality(["1080p", "720p"]) == "best"
 
     def test_fallback_picks_1080p(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value="2"):
-            assert select_quality({"1080p": "u1", "720p": "u2"}) == "1080p"
+            assert select_quality(["1080p", "720p"]) == "1080p"
 
     def test_fallback_picks_worst(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
-        qualities = {"1080p": "u1", "720p": "u2"}
+        qualities = ("1080p", "720p")
         last_idx = str(len(qualities) + 2)
         with patch("builtins.input", return_value=last_idx):
             assert select_quality(qualities) == "worst"
@@ -54,14 +58,40 @@ class TestSelectQuality:
             patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
             patch("builtins.input", return_value="1"),
         ):
-            select_quality({"480p": "u3", "1080p": "u1", "720p": "u2"})
+            select_quality(["480p", "1080p", "720p"])
         resolution_lines = [line for line in printed if any(r in line for r in ("1080p", "720p", "480p"))]
         assert resolution_lines[0].find("1080p") < resolution_lines[1].find("720p") or "1080p" in resolution_lines[0]
 
     def test_empty_enter_returns_none(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value=""):
-            assert select_quality({"1080p": "u1"}) is None
+            assert select_quality(["1080p"]) is None
+
+    def test_accepts_stream_labels_and_picks_by_sorted_position(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        labels = make_stream(
+            "https://cdn.example/480.m3u8",
+            qualities={"480p": "https://cdn.example/480.m3u8", "1080p": "https://cdn.example/1080.m3u8"},
+            ext="m3u8",
+        ).labels
+        with patch("builtins.input", return_value="3"):
+            assert select_quality(labels) == "480p"
+
+
+def _start_mode_options(monkeypatch, **counts) -> tuple[list[str], str | None]:
+    monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+    printed: list[str] = []
+    with (
+        patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+        patch("builtins.input", return_value="1"),
+    ):
+        choice = select_start_mode(**counts)
+    return printed, choice
+
+
+_SM_OPTS = CONTENT["menu"]["start_mode"]["options"]
+_WATCH_PREFIX = _SM_OPTS["resume_watch"].split("(")[0].strip()
+_DOWNLOAD_PREFIX = _SM_OPTS["resume_download"].split("(")[0].strip()
 
 
 @pytest.mark.unit
@@ -69,22 +99,48 @@ class TestSelectStartMode:
     def test_search_is_first_option(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value="1"):
-            assert select_start_mode(has_history=False) == "search"
+            assert select_start_mode() == "search"
 
-    def test_resume_returns_resume(self, monkeypatch):
+    def test_resume_watch_returns_resume_watch(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value="2"):
-            assert select_start_mode(has_history=True, history_count=3) == "resume"
+            assert select_start_mode(watch_count=3) == "resume_watch"
+
+    def test_resume_download_returns_resume_download(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        with patch("builtins.input", return_value="3"):
+            assert select_start_mode(watch_count=3, download_count=2) == "resume_download"
 
     def test_quit_without_history(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value="3"):
-            assert select_start_mode(has_history=False) == "quit"
+            assert select_start_mode() == "quit"
 
     def test_empty_enter_returns_none(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value=""):
-            assert select_start_mode(has_history=False) is None
+            assert select_start_mode() is None
+
+    def test_no_history_shows_no_continue_options(self, monkeypatch):
+        printed, _ = _start_mode_options(monkeypatch)
+        assert len(printed) == 3
+        assert not any(_WATCH_PREFIX in line or _DOWNLOAD_PREFIX in line for line in printed)
+
+    def test_watch_only_shows_only_continue_watching(self, monkeypatch):
+        printed, _ = _start_mode_options(monkeypatch, watch_count=22)
+        assert any(_WATCH_PREFIX in line and "22" in line for line in printed)
+        assert not any(_DOWNLOAD_PREFIX in line for line in printed)
+
+    def test_download_only_shows_only_continue_downloading(self, monkeypatch):
+        printed, _ = _start_mode_options(monkeypatch, download_count=3)
+        assert any(_DOWNLOAD_PREFIX in line and "3" in line for line in printed)
+        assert not any(_WATCH_PREFIX in line for line in printed)
+
+    def test_both_histories_show_both_options(self, monkeypatch):
+        printed, _ = _start_mode_options(monkeypatch, watch_count=22, download_count=3)
+        assert any(_WATCH_PREFIX in line for line in printed)
+        assert any(_DOWNLOAD_PREFIX in line for line in printed)
+        assert len(printed) == 5
 
 
 @pytest.mark.unit
@@ -108,6 +164,42 @@ class TestSelectAction:
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value=""):
             assert select_action() is None
+
+    def test_pin_option_hidden_by_default(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        printed: list[str] = []
+        with (
+            patch("builtins.input", return_value="1"),
+            patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+        ):
+            select_action()
+        assert not any(_AC_OPTS["download_pin"] in line for line in printed)
+
+    @pytest.mark.parametrize(("answer", "expected"), [("1", "play"), ("2", "download"), ("3", "download_pin"), ("4", "debug")])
+    def test_offer_pin_adds_option_after_download(self, monkeypatch, answer, expected):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        printed: list[str] = []
+        with (
+            patch("builtins.input", return_value=answer),
+            patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+        ):
+            assert select_action(offer_pin=True) == expected
+        assert printed[2] == f"  3. {_AC_OPTS['download_pin']}"
+
+
+@pytest.mark.unit
+class TestSelectPinFallbackAction:
+    @pytest.mark.parametrize(("answer", "expected"), [("1", "keep"), ("2", "repin"), ("", None)])
+    def test_fallback_maps_options(self, monkeypatch, answer, expected):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        printed: list[str] = []
+        with (
+            patch("builtins.input", return_value=answer),
+            patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+        ):
+            assert select_pin_fallback_action() == expected
+        opts = CONTENT["menu"]["pin_fallback"]["options"]
+        assert printed[:2] == [f"  1. {opts['keep']}", f"  2. {opts['repin']}"]
 
 
 @pytest.mark.unit
@@ -137,6 +229,20 @@ class TestSelectEpisodes:
             result = select_episodes(episodes, multi=True, default_index=2)
         assert result == [episodes[2]]
         assert mock_cb.call_args.kwargs["default"] == 2
+
+    def test_downloaded_marker_differs_from_watched(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        episodes = [EpisodeRow(number=n, title=f"Ep {n}", url=f"http://x/{n}") for n in (1, 2, 3)]
+        printed: list[str] = []
+        with (
+            patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+            patch("builtins.input", return_value="3"),
+        ):
+            select_episodes(episodes, watched_numbers={1.0}, downloaded_numbers={2.0})
+        _ep = CONTENT["menu"]["episodes"]
+        assert any(_ep["label_watched"].format(number=1, title="Ep 1") in line for line in printed)
+        assert any(_ep["label_downloaded"].format(number=2, title="Ep 2") in line for line in printed)
+        assert any(_ep["label_unwatched"].format(number=3, title="Ep 3") in line for line in printed)
 
 
 @pytest.fixture
@@ -257,6 +363,30 @@ class TestSelectSeriesOnce:
 
 
 @pytest.mark.unit
+class TestSelectSeriesFromDownloadHistory:
+    _REF = SeriesRef(id="1", slug="tongari", title="Tongari Boushi no Atelier", url="https://shinden.pl/series/1-tongari")
+
+    def test_label_shows_downloaded_count_not_last_ep(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        entries = [(self._REF, frozenset({1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0}))]
+        printed: list[str] = []
+        with (
+            patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+            patch("builtins.input", return_value="1"),
+        ):
+            result = select_series_from_download_history(entries)
+        assert result == entries[0]
+        expected = CONTENT["menu"]["download_resume"]["label"].format(title=self._REF.title, count=7)
+        assert any(expected in line for line in printed)
+        assert not any("ostatni ep" in line for line in printed)
+
+    def test_empty_enter_returns_none(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+        with patch("builtins.input", return_value=""):
+            assert select_series_from_download_history([(self._REF, frozenset({1.0}))]) is None
+
+
+@pytest.mark.unit
 class TestPickRelated:
     def test_empty_returns_none(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
@@ -265,13 +395,19 @@ class TestPickRelated:
 
     def test_fallback_picks_item(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
-        items = (RelatedSeries(id="10", slug="sequel", title="Sequel Anime", url="https://shinden.pl/series/10-sequel", relation="Sequel"),)
+        items = (
+            RelatedSeries(
+                id="10", slug="sequel", title="Sequel Anime", url="https://shinden.pl/series/10-sequel", relation="Sequel"
+            ),
+        )
         with patch("builtins.input", return_value="1"):
             assert pick_related(items) == items[0]
 
     def test_fallback_empty_enter_returns_none(self, monkeypatch):
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
-        items = (RelatedSeries(id="10", slug="sequel", title="Sequel", url="https://shinden.pl/series/10-sequel", relation="Sequel"),)
+        items = (
+            RelatedSeries(id="10", slug="sequel", title="Sequel", url="https://shinden.pl/series/10-sequel", relation="Sequel"),
+        )
         with patch("builtins.input", return_value=""):
             assert pick_related(items) is None
 
@@ -385,8 +521,12 @@ class TestSelectPlayerOnce:
 class TestFormatPlayerSource:
     def test_full_info(self):
         p = PlayerEntry(
-            online_id="p1", player="CDA", lang_audio="jp", lang_subs="pl",
-            subs_author="Mioro-Subs", source="https://miorosubs.com/",
+            online_id="p1",
+            player="CDA",
+            lang_audio="jp",
+            lang_subs="pl",
+            subs_author="Mioro-Subs",
+            source="https://miorosubs.com/",
         )
         resolved = PlayerSource(online_id="p1", host="ebd.cda.pl", embed_url="https://ebd.cda.pl/620x395/xyz")
         title, body = format_player_source(p, resolved)
@@ -394,6 +534,19 @@ class TestFormatPlayerSource:
         assert "Mioro-Subs" in body
         assert "https://miorosubs.com/" in body
         assert "https://ebd.cda.pl/620x395/xyz" in body
+
+    def test_query_values_redacted_for_display_only(self):
+        source = "https://subs.example/release?id=7&token=SRC_SECRET"
+        embed_url = "https://player.example/e/abc123?sig=EMBED_SECRET"
+        p = PlayerEntry(online_id="p1", player="CDA", lang_audio="jp", lang_subs="pl", subs_author="Mioro-Subs", source=source)
+        resolved = PlayerSource(online_id="p1", host="player.example", embed_url=embed_url)
+        title, body = format_player_source(p, resolved)
+        assert "SRC_SECRET" not in body and "EMBED_SECRET" not in body and "=7" not in body
+        assert "Mioro-Subs" in body
+        assert "subs.example/release?id=<redacted>&token=<redacted>" in body
+        assert "player.example/e/abc123?sig=<redacted>" in body
+        assert "Źródło:" in body and "Embed:" in body
+        assert p.source == source and resolved.embed_url == embed_url
 
     def test_no_info_renders_empty_message(self):
         title, body = format_player_source(_PLAYER, None)
@@ -417,3 +570,68 @@ class TestConfirm:
         monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
         with patch("builtins.input", return_value=""):
             assert confirm("Kontynuować?") is None
+
+
+_AC_OPTS = CONTENT["menu"]["action"]["options"]
+_EF = CONTENT["menu"]["existing_file"]
+_EXISTING = r"C:\dl\Show - ep4.mp4"
+
+
+def _existing_prompt(answer: str, *, has_remaining: bool) -> tuple[str, list[str], list[str]]:
+    printed: list[str] = []
+    with (
+        patch("builtins.input", return_value=answer),
+        patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))),
+        patch("alt_ani_cli.ui.progress.warn") as warn,
+    ):
+        choice = select_existing_download_action(_EXISTING, has_remaining=has_remaining)
+    return choice, printed, [c.args[0] for c in warn.call_args_list]
+
+
+@pytest.mark.unit
+class TestSelectExistingDownloadAction:
+    @pytest.fixture(autouse=True)
+    def _fallback(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+
+    def test_single_episode_offers_skip_overwrite_cancel(self):
+        _, printed, _ = _existing_prompt("1", has_remaining=False)
+        opts = _EF["options"]
+        assert printed == [f"  1. {opts['skip']}", f"  2. {opts['overwrite']}", f"  3. {opts['cancel']}"]
+
+    def test_batch_with_remaining_adds_overwrite_remaining(self):
+        _, printed, _ = _existing_prompt("1", has_remaining=True)
+        opts = _EF["options"]
+        assert printed == [
+            f"  1. {opts['skip']}",
+            f"  2. {opts['overwrite']}",
+            f"  3. {opts['overwrite_remaining']}",
+            f"  4. {opts['cancel']}",
+        ]
+
+    @pytest.mark.parametrize(
+        ("answer", "expected"), [("1", "skip"), ("2", "overwrite"), ("3", "overwrite_remaining"), ("4", "cancel")]
+    )
+    def test_batch_fallback_maps_every_option(self, answer, expected):
+        assert _existing_prompt(answer, has_remaining=True)[0] == expected
+
+    @pytest.mark.parametrize(("answer", "expected"), [("1", "skip"), ("2", "overwrite"), ("3", "cancel")])
+    def test_single_fallback_maps_every_option(self, answer, expected):
+        assert _existing_prompt(answer, has_remaining=False)[0] == expected
+
+    @pytest.mark.parametrize("has_remaining", [False, True])
+    def test_empty_enter_or_esc_means_cancel(self, has_remaining):
+        assert _existing_prompt("", has_remaining=has_remaining)[0] == "cancel"
+
+    def test_header_shows_exact_path(self):
+        _, _, warned = _existing_prompt("1", has_remaining=False)
+        assert warned == [_EF["header"].format(path=_EXISTING)]
+
+    def test_inquirer_esc_means_cancel(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", True)
+        with (
+            patch("InquirerPy.inquirer.select", return_value=MagicMock()),
+            patch("alt_ani_cli.ui.menus._ask", return_value=None),
+            patch("alt_ani_cli.ui.progress.warn"),
+        ):
+            assert select_existing_download_action(_EXISTING, has_remaining=True) == "cancel"

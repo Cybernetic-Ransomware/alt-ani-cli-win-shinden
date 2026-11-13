@@ -1,0 +1,754 @@
+"""Interactive menus — InquirerPy with fallback to numbered prompt.
+
+InquirerPy (prompt_toolkit) fails in git-bash with TERM=xterm-256color on
+Windows because it tries to use the Win32 console API via xterm emulation.
+In that environment we fall back to a simple numbered list + input().
+
+All functions return None when the user presses ESC (InquirerPy) or an empty
+Enter (numbered fallback), signalling "go back".
+"""
+
+import re
+from collections.abc import Sequence
+from contextlib import suppress
+from typing import Literal
+from urllib.parse import urlparse
+
+from alt_ani_cli.content import CONTENT
+from alt_ani_cli.ui import progress
+from alt_ani_core.models import EpisodeRow, PlayerEntry, PlayerSource, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_core.redaction import redact_text
+
+_RES_RE = re.compile(r"(\d+)")
+_M = CONTENT["menu"]
+_FB = _M["fallback"]
+_EMPTY_META = SeriesMetadata(None, None, "", (), ())
+
+
+def _lang_tag(lang: str) -> str:
+    return lang.upper() if lang else ""
+
+
+def _can_use_inquirer() -> bool:
+    """Return True only when prompt_toolkit can open a real console output."""
+    import sys
+
+    if not sys.stdout.isatty():
+        return False
+    # git-bash sets TERM=xterm-256color but the Win32 console API is not
+    # available → prompt_toolkit raises NoConsoleScreenBufferError.
+    # Detect by trying to import and create a dummy output.
+    try:
+        from prompt_toolkit.output.defaults import create_output
+
+        create_output()
+        return True
+    except Exception:
+        return False
+
+
+_USE_INQUIRER: bool | None = None
+
+
+def _use_inquirer() -> bool:
+    global _USE_INQUIRER
+    if _USE_INQUIRER is None:
+        _USE_INQUIRER = _can_use_inquirer()
+    return _USE_INQUIRER
+
+
+# kb_maps / kb_func_lookup setters MERGE with BaseSimplePrompt._kb_maps, so
+# the base "skip" binding (c-c when raise_keyboard_interrupt=False) is always
+# active unless we explicitly clear it.  With mandatory=True, _handle_skip
+# never exits the prompt — it only renders "Mandatory prompt" in the footer,
+# making Ctrl+C a visible no-op.
+#
+# Fix: set "skip": [] to remove all skip bindings, and route both ESC and
+# Ctrl+C through "interrupt" instead.  _handle_interrupt always calls
+# event.app.exit(INQUIRERPY_KEYBOARD_INTERRUPT), which execute() converts to
+# a KeyboardInterrupt; _ask() catches that and returns None (= go back).
+# No "Mandatory prompt" flash, no double-exit crash on CPython 3.14 + Windows.
+#
+# _keybinding_factory() runs inside __init__, so keybindings= must be set at
+# construction time — mutating kb_maps after the fact has no effect.
+_BACK_KB: dict = {"interrupt": [{"key": "escape"}, {"key": "c-c"}], "skip": []}
+
+
+def _ask(prompt_obj):
+    """Execute an InquirerPy prompt; return None on ESC or Ctrl-C."""
+    try:
+        return prompt_obj.execute()
+    except KeyboardInterrupt:
+        return None
+
+
+def _run_simple_picker(
+    items: list,
+    label_fn,
+    *,
+    prompt: str,
+    instruction: str,
+    mode: Literal["fuzzy", "select"] = "fuzzy",
+    max_height: str = "40%",
+):
+    """One-shot picker: numbered fallback + InquirerPy fuzzy or select.
+
+    Returns the selected item, or None on ESC / empty Enter.
+    """
+    if not _use_inquirer():
+        return _numbered_pick(items, label_fn, prompt)
+    from InquirerPy import inquirer
+    from InquirerPy.base.control import Choice
+
+    choices = [Choice(value=i, name=label_fn(it)) for i, it in enumerate(items)]
+    if mode == "fuzzy":
+        idx = _ask(
+            inquirer.fuzzy(
+                message=f"{prompt}:",
+                choices=choices,
+                max_height=max_height,
+                long_instruction=instruction,
+                raise_keyboard_interrupt=False,
+                keybindings=_BACK_KB,
+            )
+        )
+    else:
+        idx = _ask(
+            inquirer.select(
+                message=f"{prompt}:",
+                choices=choices,
+                long_instruction=instruction,
+                raise_keyboard_interrupt=False,
+                keybindings=_BACK_KB,
+            )
+        )
+    return None if idx is None else items[idx]
+
+
+def _run_keyed_picker(
+    options: list[tuple[str, str]],
+    *,
+    prompt: str,
+    instruction: str,
+    fallback_invalid: str,
+    signal_keys: dict[str, str] | None = None,
+):
+    """One-shot key-value picker where values are string keys (not list indices).
+
+    options: [(key, display_label), ...]
+    signal_keys maps extra prompt_toolkit keybindings to returned key strings
+    (e.g. {"c-o": "version"}); ignored in the numbered fallback.
+    Returns the selected key string, or None on ESC / empty Enter.
+    """
+    if not _use_inquirer():
+        for i, (_, label) in enumerate(options, 1):
+            print(f"  {i}. {label}")
+        keys = [k for k, _ in options]
+        while True:
+            try:
+                raw = input(_FB["select_prompt"].format(prompt=prompt, n=len(keys))).strip()
+                if not raw:
+                    return None
+                idx = int(raw) - 1
+                if 0 <= idx < len(keys):
+                    return keys[idx]
+            except ValueError, KeyboardInterrupt:
+                pass
+            print(fallback_invalid)
+    from InquirerPy import inquirer
+    from InquirerPy.base.control import Choice
+
+    choices = [Choice(value=key, name=label) for key, label in options]
+    prompt_obj = inquirer.select(
+        message=f"{prompt}:",
+        choices=choices,
+        long_instruction=instruction,
+        raise_keyboard_interrupt=False,
+        keybindings=_BACK_KB,
+    )
+
+    signal: dict = {"sig": None}
+    for kb_key, sig_value in (signal_keys or {}).items():
+
+        @prompt_obj._kb.add(kb_key, eager=True)
+        def _(event, _sig=sig_value):
+            signal["sig"] = _sig
+            event.app.exit(result=None)
+
+    result = _ask(prompt_obj)
+    if signal["sig"] is not None:
+        return signal["sig"]
+    return result
+
+
+def confirm(message: str) -> bool | None:
+    """Yes/No prompt. Returns True/False, or None on ESC / empty Enter."""
+    _c = _M["confirm"]
+    key = _run_keyed_picker(
+        [("yes", _c["option_yes"]), ("no", _c["option_no"])],
+        prompt=message,
+        instruction=_c["instruction"],
+        fallback_invalid=_c["fallback_invalid"],
+    )
+    return None if key is None else key == "yes"
+
+
+def _numbered_pick(items: list, label_fn, prompt: str):
+    """Single-pick numbered menu; returns None when user presses empty Enter."""
+    for i, item in enumerate(items, 1):
+        print(f"  {i}. {label_fn(item)}")
+    while True:
+        try:
+            raw = input(_FB["select_prompt"].format(prompt=prompt, n=len(items))).strip()
+            if not raw:
+                return None
+            idx = int(raw) - 1
+            if 0 <= idx < len(items):
+                return items[idx]
+        except ValueError, KeyboardInterrupt:
+            pass
+        print(_FB["invalid_number"].format(n=len(items)))
+
+
+def _numbered_pick_multi(items: list, label_fn, prompt: str) -> list | None:
+    """Multi-pick numbered menu; returns None when user presses empty Enter."""
+    for i, item in enumerate(items, 1):
+        print(f"  {i}. {label_fn(item)}")
+    print(_FB["multi_hint"])
+    while True:
+        try:
+            raw = input(_FB["select_prompt"].format(prompt=prompt, n=len(items))).strip()
+            if not raw:
+                return None
+            indices: set[int] = set()
+            for token in raw.split():
+                if "-" in token:
+                    a, _, b = token.partition("-")
+                    lo, hi = int(a) - 1, int(b) - 1
+                    indices.update(range(lo, hi + 1))
+                else:
+                    indices.add(int(token) - 1)
+            valid = sorted(i for i in indices if 0 <= i < len(items))
+            if valid:
+                return [items[i] for i in valid]
+        except ValueError, KeyboardInterrupt:
+            pass
+        print(_FB["invalid_numbers"].format(n=len(items)))
+
+
+def _series_label(h: SeriesHit, meta: SeriesMetadata | None) -> str:
+    t = h.series_type or "?"
+    _s = _M["series"]
+    if meta and meta.air_date:
+        return _s["label_with_date"].format(title=h.title, type=t, date=meta.air_date, id=h.id)
+    return _s["label_without_date"].format(title=h.title, type=t, id=h.id)
+
+
+def _register_series_kbs(prompt_obj, signal: dict) -> None:
+    def _idx() -> int:
+        try:
+            return prompt_obj.content_control.selection["value"]
+        except Exception:
+            return 0
+
+    # eager=True is required: the fuzzy prompt's BufferControl has emacs bindings
+    # (e.g. c-r = reverse-i-search) at control level, which beat _kb-level bindings
+    # when KeyProcessor picks matches[-1].  eager overrides the control-level handler.
+    @prompt_obj._kb.add("c-s", eager=True)
+    def _(event):
+        signal["sig"] = ("sort", _idx())
+        event.app.exit(result=None)
+
+    @prompt_obj._kb.add("c-o", eager=True)
+    def _(event):
+        signal["sig"] = ("desc", _idx())
+        event.app.exit(result=None)
+
+    @prompt_obj._kb.add("c-q", eager=True)
+    def _(event):
+        signal["sig"] = ("tags", _idx())
+        event.app.exit(result=None)
+
+    @prompt_obj._kb.add("c-r", eager=True)
+    def _(event):
+        signal["sig"] = ("related", _idx())
+        event.app.exit(result=None)
+
+
+def show_modal_text(title: str, body: str) -> None:
+    """Render a blocking modal panel (description or tags) and wait for Enter."""
+    progress.rule(title)
+    progress.output(body)
+    progress.output(f"\n[dim]{_M['series']['press_any_key']}[/dim]")
+    with suppress(EOFError, KeyboardInterrupt):
+        input()
+
+
+def pick_related(items: tuple[RelatedSeries, ...]) -> RelatedSeries | None:
+    """Prompt the user to pick a related series (or return None if empty / ESC)."""
+    _s = _M["series"]
+    if not items:
+        progress.warn(_s["related_empty"])
+        with suppress(EOFError, KeyboardInterrupt):
+            input(_s["press_any_key"] + " ")
+        return None
+
+    def _label(r: RelatedSeries) -> str:
+        return _s["related_label"].format(title=r.title, relation=r.relation)
+
+    if not _use_inquirer():
+        return _numbered_pick(list(items), _label, _s["related_pick_prompt"])
+
+    from InquirerPy import inquirer
+    from InquirerPy.base.control import Choice
+
+    choices = [Choice(value=i, name=_label(r)) for i, r in enumerate(items)]
+    idx = _ask(
+        inquirer.select(
+            message=f"{_s['related_pick_prompt']}:",
+            choices=choices,
+            long_instruction=_s["related_instruction"],
+            raise_keyboard_interrupt=False,
+            keybindings=_BACK_KB,
+        )
+    )
+    return None if idx is None else items[idx]
+
+
+def select_series_once(
+    hits: list[SeriesHit],
+    metadata: dict[str, SeriesMetadata] | None = None,
+    *,
+    prompt: str = _M["series"]["default_prompt"],
+) -> tuple:
+    """Render the series picker once and return a signal tuple.
+
+    Return values:
+      ("pick",    SeriesHit)   — user confirmed a selection
+      ("back",    None)        — ESC or Ctrl-C
+      ("sort",    cursor_idx)  — Ctrl+S: caller should toggle sort order
+      ("desc",    cursor_idx)  — Ctrl+O: caller should show description modal
+      ("tags",    cursor_idx)  — Ctrl+Q: caller should show tags modal
+      ("related", cursor_idx)  — Ctrl+R: caller should show related picker
+
+    cursor_idx is an index into the *hits* list that was passed in.
+    The fallback numbered menu only produces ("pick", ...) or ("back", None).
+    """
+    _meta: dict[str, SeriesMetadata] = dict(metadata or {})
+
+    if not _use_inquirer():
+        hit = _numbered_pick(hits, lambda h: _series_label(h, _meta.get(h.id)), prompt)
+        return ("back", None) if hit is None else ("pick", hit)
+
+    from InquirerPy import inquirer
+    from InquirerPy.base.control import Choice
+
+    choices = [Choice(value=i, name=_series_label(h, _meta.get(h.id))) for i, h in enumerate(hits)]
+    signal: dict = {"sig": None}
+    prompt_obj = inquirer.fuzzy(
+        message=f"{prompt}:",
+        choices=choices,
+        max_height="40%",
+        long_instruction=_M["series"]["instruction"],
+        raise_keyboard_interrupt=False,
+        keybindings=_BACK_KB,
+    )
+    _register_series_kbs(prompt_obj, signal)
+    try:
+        result = prompt_obj.execute()
+    except KeyboardInterrupt:
+        return ("back", None)
+
+    if signal["sig"] is not None:
+        action, idx = signal["sig"]
+        return (action, idx if idx is not None else 0)
+
+    return ("back", None) if result is None else ("pick", hits[result])
+
+
+def select_series_from_history(
+    entries: list[tuple[SeriesRef, float]],
+    prompt: str = _M["history_resume"]["default_prompt"],
+) -> tuple[SeriesRef, float] | None:
+    _hr = _M["history_resume"]
+    return _run_simple_picker(
+        entries,
+        lambda e: _hr["label"].format(title=e[0].title, last_ep=e[1]),
+        prompt=prompt,
+        instruction=_hr["instruction"],
+    )
+
+
+def select_series_from_download_history(
+    entries: list[tuple[SeriesRef, frozenset[float]]],
+    prompt: str = _M["download_resume"]["default_prompt"],
+) -> tuple[SeriesRef, frozenset[float]] | None:
+    _dr = _M["download_resume"]
+    return _run_simple_picker(
+        entries,
+        lambda e: _dr["label"].format(title=e[0].title, count=len(e[1])),
+        prompt=prompt,
+        instruction=_dr["instruction"],
+    )
+
+
+_EP_WINDOW_MAX_ROWS = 15
+
+
+def _anchor_choice_window(prompt_obj, start: int, total: int) -> None:
+    """Start the viewport at `start` (bottom-anchored); moving the cursor above it
+    grows the view one row at a time up to _EP_WINDOW_MAX_ROWS, then it slides."""
+    from prompt_toolkit.layout.dimension import Dimension
+
+    control = prompt_obj.content_control
+    for window in prompt_obj.application.layout.find_all_windows():
+        if window.content is control:
+            break
+    else:
+        return
+
+    window.vertical_scroll = start
+    top = start
+
+    def _height() -> Dimension:
+        nonlocal top
+        top = min(top, control.selected_choice_index)
+        rows = min(_EP_WINDOW_MAX_ROWS, total - top)
+        return Dimension(preferred=rows, max=rows)
+
+    window.height = _height
+
+
+def select_episodes(
+    episodes: list[EpisodeRow],
+    prompt: str = _M["episodes"]["default_prompt"],
+    multi: bool = False,
+    watched_numbers: set[float] | None = None,
+    default_index: int | None = None,
+    downloaded_numbers: set[float] | None = None,
+) -> list[EpisodeRow] | None:
+    _watched = watched_numbers or set()
+    _downloaded = downloaded_numbers or set()
+    _ep = _M["episodes"]
+
+    def _label(ep: EpisodeRow) -> str:
+        if ep.number in _watched:
+            tmpl = _ep["label_watched"]
+        elif ep.number in _downloaded:
+            tmpl = _ep["label_downloaded"]
+        else:
+            tmpl = _ep["label_unwatched"]
+        return tmpl.format(number=ep.number, title=ep.title)
+
+    if not _use_inquirer():
+        if multi:
+            return _numbered_pick_multi(episodes, _label, prompt)
+        picked = _numbered_pick(episodes, _label, prompt)
+        return None if picked is None else [picked]
+
+    from InquirerPy import inquirer
+    from InquirerPy.base.control import Choice
+
+    choices = [Choice(value=i, name=_label(ep)) for i, ep in enumerate(episodes)]
+
+    if multi:
+        _name_map = {i: _label(ep) for i, ep in enumerate(episodes)}
+        prompt_obj = inquirer.checkbox(
+            message=f"{prompt}:",
+            choices=choices,
+            default=default_index,
+            validate=lambda result: len(result) > 0,
+            invalid_message=_ep["invalid_multi"],
+            long_instruction=_ep["instruction_multi"],
+            transformer=lambda result: ", ".join(_name_map.get(r, str(r)) for r in result),
+            mandatory=False,
+            raise_keyboard_interrupt=False,
+            keybindings=_BACK_KB,
+        )
+        if default_index is not None and default_index > 0:
+            _anchor_choice_window(prompt_obj, default_index, len(episodes))
+        indices = _ask(prompt_obj)
+        return None if indices is None else [episodes[i] for i in indices]
+
+    ep = _run_simple_picker(
+        episodes,
+        _label,
+        prompt=prompt,
+        instruction=_ep["instruction_single"],
+        max_height="60%",
+    )
+    return None if ep is None else [ep]
+
+
+_MAX_SOURCE_TEXT = 30
+
+
+def _source_host(source: str) -> str | None:
+    """Shorten a source URL to its registrable domain; non-URL text is truncated."""
+    host = urlparse(source).hostname
+    if host:
+        host = host.removeprefix("www.")
+        parts = host.split(".")
+        return ".".join(parts[-2:]) if len(parts) > 2 else host
+    text = source.strip()
+    if not text:
+        return None
+    return text if len(text) <= _MAX_SOURCE_TEXT else text[: _MAX_SOURCE_TEXT - 1] + "…"
+
+
+def _norm_token(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _origin_similar(author: str, host: str) -> bool:
+    """True when the author name and the source host are variants of the same name."""
+    a = _norm_token(author)
+    h = _norm_token(host.rsplit(".", 1)[0])
+    return bool(a) and bool(h) and (a in h or h in a)
+
+
+def _player_origin(p: PlayerEntry, resolved_host: str | None = None) -> str:
+    _pl = _M["player"]
+    author = p.subs_author or ""
+    host = _source_host(p.source) if p.source else None
+    if author and host and not _origin_similar(author, host):
+        origin = _pl["origin_author_host"].format(author=author, host=host)
+    elif author:
+        origin = _pl["origin_author"].format(author=author)
+    elif host:
+        origin = _pl["origin_host"].format(host=host)
+    else:
+        origin = ""
+    if resolved_host:
+        origin += _pl["resolved_host"].format(host=resolved_host)
+    return origin
+
+
+def _player_label(p: PlayerEntry, failed: set[str], sources: dict[str, PlayerSource] | None) -> str:
+    _pl = _M["player"]
+    audio = _lang_tag(p.lang_audio)
+    subs = f"+{_lang_tag(p.lang_subs)}" if p.lang_subs else ""
+    res = f" [{p.max_res}]" if p.max_res else ""
+    src = sources.get(p.online_id) if sources else None
+    origin = _player_origin(p, src.host if src else None)
+    tmpl = _pl["label_failed"] if p.online_id in failed else _pl["label_ok"]
+    return tmpl.format(player=p.player, res=res, audio=audio, subs=subs, origin=origin)
+
+
+def format_player_source(p: PlayerEntry, resolved: PlayerSource | None) -> tuple[str, str]:
+    """Build (title, body) for the source modal shown on Ctrl+O in the player picker."""
+    _pl = _M["player"]
+    lines = []
+    if p.subs_author:
+        lines.append(_pl["source_author"].format(author=p.subs_author))
+    if p.source:
+        lines.append(_pl["source_url"].format(url=redact_text(p.source)))
+    if resolved:
+        lines.append(_pl["source_embed"].format(url=redact_text(resolved.embed_url)))
+    body = "\n".join(lines) or _pl["source_empty"]
+    return _pl["source_header"].format(player=p.player), body
+
+
+def select_player_once(
+    players: list[PlayerEntry],
+    prompt: str = _M["player"]["default_prompt"],
+    failed: set[str] | None = None,
+    sources: dict[str, PlayerSource] | None = None,
+) -> tuple:
+    """Render the player picker once and return a signal tuple.
+
+    Return values:
+      ("pick",   PlayerEntry) — user confirmed a selection
+      ("back",   None)        — ESC or Ctrl-C
+      ("source", cursor_idx)  — Ctrl+O: caller should show the source modal
+
+    cursor_idx is an index into the *players* list that was passed in.
+    The fallback numbered menu only produces ("pick", ...) or ("back", None).
+    """
+    _failed = failed or set()
+    _pl = _M["player"]
+
+    def _label(p: PlayerEntry) -> str:
+        return _player_label(p, _failed, sources)
+
+    if not _use_inquirer():
+        picked = _numbered_pick(players, _label, prompt)
+        return ("back", None) if picked is None else ("pick", picked)
+
+    from InquirerPy import inquirer
+    from InquirerPy.base.control import Choice
+
+    choices = [Choice(value=i, name=_label(p)) for i, p in enumerate(players)]
+    signal: dict = {"sig": None}
+    prompt_obj = inquirer.select(
+        message=f"{prompt}:",
+        choices=choices,
+        long_instruction=_pl["instruction"],
+        raise_keyboard_interrupt=False,
+        keybindings=_BACK_KB,
+    )
+
+    def _idx() -> int:
+        try:
+            return prompt_obj.content_control.selection["value"]
+        except Exception:
+            return 0
+
+    @prompt_obj._kb.add("c-o", eager=True)
+    def _(event):
+        signal["sig"] = ("source", _idx())
+        event.app.exit(result=None)
+
+    try:
+        result = prompt_obj.execute()
+    except KeyboardInterrupt:
+        return ("back", None)
+
+    if signal["sig"] is not None:
+        return signal["sig"]
+    return ("back", None) if result is None else ("pick", players[result])
+
+
+def select_start_mode(
+    watch_count: int = 0, download_count: int = 0
+) -> Literal["search", "resume_watch", "resume_download", "url", "quit", "version"] | None:
+    _sm = _M["start_mode"]
+    _opts = _sm["options"]
+
+    options_plain: list[tuple[str, str]] = [("search", _opts["search"])]
+    if watch_count:
+        options_plain.append(("resume_watch", _opts["resume_watch"].format(count=watch_count)))
+    if download_count:
+        options_plain.append(("resume_download", _opts["resume_download"].format(count=download_count)))
+    options_plain.append(("url", _opts["url"]))
+    options_plain.append(("quit", _opts["quit"]))
+
+    return _run_keyed_picker(  # type: ignore[return-value]
+        options_plain,
+        prompt=_sm["question"],
+        instruction=_sm["instruction"],
+        fallback_invalid=_sm["fallback_invalid"].format(n=len(options_plain)),
+        signal_keys={"c-o": "version"},
+    )
+
+
+def prompt_search_query() -> str | None:
+    _sq = _M["search_query"]
+
+    if not _use_inquirer():
+        while True:
+            raw = input(_sq["fallback_prompt"]).strip()
+            if not raw:
+                return None
+            return raw
+
+    from InquirerPy import inquirer
+
+    result = _ask(
+        inquirer.text(
+            message=_sq["message"],
+            validate=lambda s: bool(s.strip()),
+            invalid_message=_sq["invalid"],
+            long_instruction=_sq["instruction"],
+            raise_keyboard_interrupt=False,
+            keybindings=_BACK_KB,
+        )
+    )
+    return result.strip() if result is not None else None
+
+
+def prompt_url() -> str | None:
+    _u = _M["url"]
+
+    def _valid(s: str) -> bool:
+        try:
+            return urlparse(s.strip()).netloc.endswith("shinden.pl")
+        except Exception:
+            return False
+
+    if not _use_inquirer():
+        while True:
+            raw = input(_u["fallback_prompt"]).strip()
+            if not raw:
+                return None
+            if _valid(raw):
+                return raw
+            print(_u["fallback_invalid"])
+
+    from InquirerPy import inquirer
+
+    result = _ask(
+        inquirer.text(
+            message=_u["message"],
+            validate=_valid,
+            invalid_message=_u["invalid"],
+            long_instruction=_u["instruction"],
+            raise_keyboard_interrupt=False,
+            keybindings=_BACK_KB,
+        )
+    )
+    return result.strip() if result is not None else None
+
+
+def select_quality(labels: Sequence[str], prompt: str = _M["quality"]["default_prompt"]) -> str | None:
+    if not labels:
+        return "best"
+
+    _q = _M["quality"]
+
+    def _height(key: str) -> float:
+        m = _RES_RE.search(key)
+        return float(m.group(1)) if m else 0.0
+
+    sorted_keys = sorted(labels, key=_height, reverse=True)
+    all_options = ["best"] + sorted_keys + ["worst"]
+
+    def _label(opt: str) -> str:
+        if opt == "best":
+            return _q["label_best"].format(top=sorted_keys[0])
+        if opt == "worst":
+            return _q["label_worst"].format(bottom=sorted_keys[-1])
+        return opt
+
+    return _run_simple_picker(all_options, _label, prompt=prompt, instruction=_q["instruction"], mode="select")
+
+
+def select_action(*, offer_pin: bool = False) -> Literal["play", "download", "download_pin", "debug"] | None:
+    """offer_pin adds "download and keep using this source" — only meaningful when later episodes remain."""
+    _ac = _M["action"]
+    _ac_opts = _ac["options"]
+    keys = ["play", "download", "download_pin", "debug"] if offer_pin else ["play", "download", "debug"]
+    return _run_keyed_picker(  # type: ignore[return-value]
+        [(k, _ac_opts[k]) for k in keys],
+        prompt=_ac["message"],
+        instruction=_ac["instruction"],
+        fallback_invalid=_ac["fallback_invalid"].format(n=len(keys)),
+    )
+
+
+def select_pin_fallback_action() -> Literal["keep", "repin"] | None:
+    _pf = _M["pin_fallback"]
+    _opts = _pf["options"]
+    return _run_keyed_picker(  # type: ignore[return-value]
+        [("keep", _opts["keep"]), ("repin", _opts["repin"])],
+        prompt=_pf["message"],
+        instruction=_pf["instruction"],
+        fallback_invalid=_pf["fallback_invalid"],
+    )
+
+
+def select_existing_download_action(
+    path: str, *, has_remaining: bool
+) -> Literal["skip", "overwrite", "overwrite_remaining", "cancel"]:
+    """Ask what to do with an already downloaded file; ESC / empty Enter means cancel."""
+    _ef = _M["existing_file"]
+    _opts = _ef["options"]
+    keys = ["skip", "overwrite", "overwrite_remaining", "cancel"] if has_remaining else ["skip", "overwrite", "cancel"]
+    progress.warn(_ef["header"].format(path=path))
+    choice = _run_keyed_picker(
+        [(k, _opts[k]) for k in keys],
+        prompt=_ef["message"],
+        instruction=_ef["instruction"],
+        fallback_invalid=_ef["fallback_invalid"].format(n=len(keys)),
+    )
+    return choice or "cancel"

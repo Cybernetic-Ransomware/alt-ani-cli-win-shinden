@@ -1,10 +1,11 @@
 """Find CDN domain and HLS token pattern in Byse bundle."""
+
 import re
 import sys
-sys.path.insert(0, "src")
 
 from curl_cffi import requests as cffi_requests
-from alt_ani_cli.config import USER_AGENT
+
+from alt_ani_core.config import USER_AGENT
 
 embed_url = sys.argv[1]
 base = embed_url.split("/e/")[0]
@@ -22,7 +23,10 @@ print("--- External domains in bundle ---")
 domains = re.findall(r'["\`]((?:https?://)?(?:[a-z0-9-]+\.)+(?:com|io|net|tv|stream|cdn|media|video)[a-z0-9/-]*)["\`]', js)
 freq: dict[str, int] = {}
 for d in domains:
-    if any(skip in d for skip in ["mozilla","w3c","example","schema","jquery","google","github","webpack","react","eslint"]):
+    if any(
+        skip in d
+        for skip in ["mozilla", "w3c", "example", "schema", "jquery", "google", "github", "webpack", "react", "eslint"]
+    ):
         continue
     freq[d] = freq.get(d, 0) + 1
 
@@ -32,18 +36,18 @@ for d, c in sorted(freq.items(), key=lambda x: -x[1])[:30]:
 # Find HLS/manifest patterns
 print("\n--- HLS/manifest/token patterns ---")
 for pat in [
-    r'\.m3u8',
-    r'master\.(?:m3u8|mpd)',
-    r'playlist',
-    r'manifest',
-    r'hls\.',
-    r'videoToken',
-    r'accessToken',
-    r'signed',
-    r'cdn\.',
+    r"\.m3u8",
+    r"master\.(?:m3u8|mpd)",
+    r"playlist",
+    r"manifest",
+    r"hls\.",
+    r"videoToken",
+    r"accessToken",
+    r"signed",
+    r"cdn\.",
 ]:
     positions = [m.start() for m in re.finditer(pat, js, re.IGNORECASE)]
     if positions:
         pos = positions[0]
-        snippet = js[max(0,pos-100):pos+150].replace("\n"," ")
+        snippet = js[max(0, pos - 100) : pos + 150].replace("\n", " ")
         print(f"\n  [{pat}] ({len(positions)} hits): ...{snippet}...")
