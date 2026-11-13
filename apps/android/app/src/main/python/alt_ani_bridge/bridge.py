@@ -228,9 +228,19 @@ class Bridge:
             entry = EngineEntry(engine_id=engine_id, engine=engine, runtime=runtime, access=access, transport=transport)
             if listener is not None:
                 entry.push = PushAdapter(runtime.journal, runtime.watcher, listener)
+            # a runtime_close may have finished while the engine was being built; a late handle must not outlive it
             with self.lock:
-                self._engines[engine_id] = entry
-                runtime.engine_ids.add(engine_id)
+                current = self._runtimes.get(runtime.config.db_path) is runtime and not runtime.closing
+                if current:
+                    self._engines[engine_id] = entry
+                    runtime.engine_ids.add(engine_id)
+            if not current:
+                engine.close()
+                if entry.push is not None:
+                    entry.push.stop(_DELIVERY_JOIN_SEC)
+                raise BridgeError(
+                    "runtime.closing", "the runtime of this database is closing", db_path=str(runtime.config.db_path)
+                )
             return _ok({"engine_id": engine_id, "contract": contract.CONTRACT})
         except (Exception, EngineInterrupt) as exc:
             return _fail(exc)

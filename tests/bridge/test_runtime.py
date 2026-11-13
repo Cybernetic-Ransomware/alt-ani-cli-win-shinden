@@ -137,6 +137,46 @@ class TestShutdown:
             "ended"
         ]
 
+    def test_handle_built_during_close_is_refused_and_cleaned_up(self, tmp_path, monkeypatch):
+        from alt_ani_bridge import bridge as bridge_module
+
+        entered, release = threading.Event(), threading.Event()
+        engines, pushes = [], []
+        real_engine, real_push = bridge_module.Engine, bridge_module.PushAdapter
+
+        def stalled_engine(*args, **kwargs):
+            engine = real_engine(*args, **kwargs)
+            engines.append(engine)
+            entered.set()
+            assert release.wait(5)
+            return engine
+
+        def recorded_push(*args, **kwargs):
+            pushes.append(real_push(*args, **kwargs))
+            return pushes[-1]
+
+        monkeypatch.setattr(bridge_module, "Engine", stalled_engine)
+        monkeypatch.setattr(bridge_module, "PushAdapter", recorded_push)
+        client = make_v2(tmp_path)
+        storage = {"kind": "fs", "root": str(tmp_path / "library")}
+        replies: list[dict] = []
+        creator = threading.Thread(target=lambda: replies.append(client.create(storage=storage)))
+        creator.start()
+        assert entered.wait(5)
+        db = str(tmp_path / "history.db")
+        closed = json.loads(client.bridge.call("runtime_close", json.dumps({"db_path": db, "timeout_ms": 5000})))
+        assert closed["data"]["ended"]
+        release.set()
+        creator.join(5)
+        (reply,) = replies
+        assert reply["error"]["code"] == "runtime.closing"
+        assert client.bridge.engine_entries() == []
+        assert engines[0].closed
+        assert not pushes[0].thread.is_alive()
+        assert client.create(storage=storage)["ok"]
+        shut = json.loads(client.bridge.shutdown(10))
+        assert shut["ok"] and shut["data"]["ended"], shut
+
 
 class TestPlatformObjects:
     def test_platform_store_is_held_until_its_runtime_closes(self, tmp_path):
