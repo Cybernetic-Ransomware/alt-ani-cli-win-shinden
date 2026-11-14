@@ -9,6 +9,7 @@ import java.io.File
 import org.json.JSONObject
 import pl.altani.spike.bridge.BridgeRuntime
 import pl.altani.spike.bridge.ChaquopyEndpoint
+import pl.altani.spike.controlled.ControlledEnvironment
 
 /** Owns the process's [BridgeRuntime]; nothing is closed on the way out, the state is durable in SQLite. */
 class AltAniApplication : Application() {
@@ -24,6 +25,11 @@ class AltAniApplication : Application() {
                     .put("network", currentNetwork())
             },
         )
+    }
+
+    /** Debug builds only: the technical screen's controlled playback, separate from [bridge] and its database. */
+    val controlledBridge: BridgeRuntime? by lazy {
+        if (BuildConfig.DEBUG) ControlledEnvironment.runtime(this, "app") else null
     }
 
     override fun onCreate() {

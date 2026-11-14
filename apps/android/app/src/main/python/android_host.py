@@ -8,9 +8,14 @@ from alt_ani_core import dom
 from alt_ani_core.dom import stdlib_backend
 
 
-def create_bridge() -> Bridge:
+def create_bridge(controlled_base: str | None = None) -> Bridge:
     # selectolax has no Android wheel; the stdlib backend passes the same parser tests
     dom.set_backend(stdlib_backend.parse)
+    if controlled_base is not None:
+        # debug builds only: a release has no controlled_host, so the import fails there
+        import controlled_host
+
+        return controlled_host.create_bridge(controlled_base)
     # without curl_cffi (emulator flavor) the first remote request fails with transport_unavailable
     return Bridge()
 
