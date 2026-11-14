@@ -23,6 +23,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.0.1-spike"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     flavorDimensions += "target"
@@ -123,4 +124,14 @@ dependencies {
     implementation(libs.media3.exoplayer.dash)
     implementation(libs.media3.datasource)
     implementation(libs.media3.ui)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.org.json)
+    testImplementation(libs.coroutines.test)
+
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.coroutines.test)
 }

@@ -5,8 +5,9 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
-        android:name="com.chaquo.python.android.PyApplication"
+        android:name=".AltAniApplication"
         android:label="alt-ani spike"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"

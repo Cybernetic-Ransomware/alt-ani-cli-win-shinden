@@ -74,7 +74,7 @@ extra-paths = ["apps/cli/src", "packages/core/src", "apps/android/app/src/main/p
 skip = "./.git,./.github,./tests/*,./temp/*,./tools/*,*apps/android/build,*apps/android/app/build,*apps/android/.gradle"
 builtin = "clear"
 quiet-level = 3
-ignore-words-list = "daty,serie,autor"
+ignore-words-list = "daty,serie,autor,optin"
 
 [tool.bandit]
 skips = ["B404", "B603"]
