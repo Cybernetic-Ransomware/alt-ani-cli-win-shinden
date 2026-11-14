@@ -27,8 +27,13 @@ class PlaybackController(
     private val uiScope: CoroutineScope,
     private val log: (String) -> Unit,
     private val periodicMs: Long = 10_000,
+    val gate: TransferGate = TransferGate(),
+    private val hold: TransferHold = BlockingHold(gate),
+    // false only for the T9 trial, which drives the gate itself and measures Media3 without the controller's help
+    private val manageGate: Boolean = true,
+    stuckBufferingTimeoutMs: Int? = null,
 ) {
-    enum class Phase { IDLE, PREPARING, PLAYING, PAUSED, BUFFERING, REFRESHING, ENDED, STOPPED }
+    enum class Phase { IDLE, PREPARING, PLAYING, PAUSED, BUFFERING, WAITING_CONSENT, REFRESHING, ENDED, STOPPED }
 
     data class State(
         val phase: Phase = Phase.IDLE,
@@ -38,6 +43,7 @@ class PlaybackController(
         val variantChanges: Int = 0,
         val error: String? = null,
         val pauses: Int = 0,
+        val consentRequired: Boolean = false,
     )
 
     data class Rewind(val fromMs: Long, val toMs: Long)
@@ -56,17 +62,32 @@ class PlaybackController(
     val player: ExoPlayer = ExoPlayer.Builder(context)
         .setLoadControl(
             // the rotation rewind is served from memory, so playback does not stall for it
-            DefaultLoadControl.Builder().setBackBuffer(BACK_BUFFER_MS, true).build(),
+            hold.loadControl(DefaultLoadControl.Builder().setBackBuffer(BACK_BUFFER_MS, true).build()),
         )
+        .apply { stuckBufferingTimeoutMs?.let { setStuckBufferingDetectionTimeoutMs(it) } }
         .build()
         .also { it.addListener(Listener()) }
 
     private var session: JSONObject? = null
     private var source: PlaybackSource? = null
     private var reporter: PositionReporter? = null
-    private var gate = RefreshGate()
+    private var refreshGate = RefreshGate()
     private var ticker: Job? = null
     private var internalSeek = false
+    private var consented = false
+
+    // paused by the controller once the buffer ran out behind a closed gate, so the gate's opening resumes it
+    private var heldByGate = false
+    private var pendingRefresh: Pair<PlaybackSource.Online, Long>? = null
+
+    init {
+        if (manageGate) {
+            uiScope.launch { bridge.events.events.collect(::onEvent) }
+            // a resync may have skipped the consent notice; the network kind is enough to set the gate again
+            uiScope.launch { bridge.events.resync.collect { syncNetwork() } }
+            bridge.events.start()
+        }
+    }
 
     fun start(series: JSONObject, episode: JSONObject, criteria: JSONObject? = null): Job =
         uiScope.launch {
@@ -101,12 +122,27 @@ class PlaybackController(
 
     /** Home, another app or the screen lock; never a configuration change. Coming back does not resume. */
     fun onBackground() {
+        heldByGate = false
         if (player.playWhenReady) player.pause()
     }
 
     fun resume() {
+        heldByGate = false
         if (source != null) player.play()
     }
+
+    /** Mobile data for this viewing only; the bridge ends it with the viewing. */
+    fun allowCellular(): Job =
+        uiScope.launch {
+            val playbackSession = session ?: return@launch
+            val result = bridge.call("playback_allow_cellular", JSONObject().put("playback_session", playbackSession), mutation = true)
+            if (result is BridgeResult.Ok && session === playbackSession) {
+                consented = true
+                openGate()
+            } else if (result is BridgeResult.Failure) {
+                log("mobile data not allowed: ${result.code}")
+            }
+        }
 
     fun seekTo(positionMs: Long) = player.seekTo(positionMs)
 
@@ -125,7 +161,7 @@ class PlaybackController(
         if (chosen is PlaybackSource.Online) {
             _state.update { it.copy(variant = chosen.variant.label) }
         }
-        player.setMediaSource(MediaSources.create(context, chosen))
+        player.setMediaSource(MediaSources.create(context, chosen, hold))
         seekInternally(positionMs)
         player.prepare()
         player.playWhenReady = true
@@ -142,11 +178,17 @@ class PlaybackController(
 
     private fun refresh(online: PlaybackSource.Online, positionMs: Long) {
         val playbackSession = session ?: return
+        if (!gate.isOpen) {
+            // the contract allows no refresh without consent; the refresh gate stays busy until it runs
+            pendingRefresh = online to positionMs
+            _state.update { it.copy(phase = Phase.WAITING_CONSENT) }
+            return
+        }
         _state.update { it.copy(phase = Phase.REFRESHING, refreshes = it.refreshes + 1) }
         uiScope.launch {
             val args = JSONObject().put("session_id", online.sessionId).put("playback_session", playbackSession)
             val result = bridge.call("stream_refresh", args)
-            gate.finished()
+            refreshGate.finished()
             if (result !is BridgeResult.Ok) return@launch stop(result)
             val fresh = PlaybackSource.parse(result.data) as PlaybackSource.Online
             if (fresh.variantChanged) {
@@ -170,6 +212,60 @@ class PlaybackController(
         log("playback stopped: $code")
     }
 
+    private fun onEvent(event: JSONObject) {
+        val data = event.optJSONObject("data") ?: return
+        when (event.optString("type")) {
+            "playback.consent_required" -> {
+                val id = data.optJSONObject("playback_session")?.optString("id")
+                if (id != null && id == session?.optString("id") && !consented) closeGate()
+            }
+            "network.changed" -> applyNetwork(data.optString("kind"))
+        }
+    }
+
+    private suspend fun syncNetwork() {
+        val reply = bridge.call("network_get")
+        if (reply is BridgeResult.Ok) applyNetwork(reply.data.optString("kind"))
+    }
+
+    private fun applyNetwork(kind: String) {
+        when (kind) {
+            "wifi" -> openGate()
+            "cellular" -> if (!consented) closeGate()
+            "offline" -> closeGate()
+        }
+    }
+
+    private fun closeGate() {
+        if (session == null || !gate.isOpen) return
+        gate.close()
+        _state.update { it.copy(consentRequired = true) }
+        log("player transfers held")
+        if (player.playbackState == Player.STATE_BUFFERING) holdForConsent()
+    }
+
+    private fun openGate() {
+        if (gate.isOpen) return
+        gate.open()
+        _state.update { it.copy(consentRequired = false) }
+        log("player transfers resumed")
+        if (heldByGate) {
+            heldByGate = false
+            player.play()
+        }
+        pendingRefresh?.let { (online, position) ->
+            pendingRefresh = null
+            refresh(online, position)
+        }
+    }
+
+    /** Media3 fails a player that buffers without progress for long; pausing it while waiting for consent avoids that. */
+    private fun holdForConsent() {
+        if (!manageGate || gate.isOpen || !player.playWhenReady || source !is PlaybackSource.Online) return
+        heldByGate = true
+        player.pause()
+    }
+
     private fun stopSession() {
         ticker?.cancel()
         reporter?.let { current ->
@@ -179,7 +275,14 @@ class PlaybackController(
         reporter = null
         session = null
         source = null
-        gate = RefreshGate()
+        consented = false
+        heldByGate = false
+        pendingRefresh = null
+        if (manageGate) {
+            gate.open()
+            _state.update { it.copy(consentRequired = false) }
+        }
+        refreshGate = RefreshGate()
         lastRewind = null
         player.stop()
         player.clearMediaItems()
@@ -209,14 +312,21 @@ class PlaybackController(
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST && source != null) {
-                _state.update { it.copy(phase = Phase.PAUSED, pauses = it.pauses + 1) }
+                if (heldByGate) {
+                    _state.update { it.copy(phase = Phase.WAITING_CONSENT) }
+                } else {
+                    _state.update { it.copy(phase = Phase.PAUSED, pauses = it.pauses + 1) }
+                }
                 reporter?.explicit(player.currentPosition, duration())
             }
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             when (playbackState) {
-                Player.STATE_BUFFERING -> if (state.value.phase == Phase.PLAYING) _state.update { it.copy(phase = Phase.BUFFERING) }
+                Player.STATE_BUFFERING -> {
+                    if (state.value.phase == Phase.PLAYING) _state.update { it.copy(phase = Phase.BUFFERING) }
+                    holdForConsent()
+                }
                 Player.STATE_ENDED -> {
                     val end = duration() ?: player.currentPosition
                     reporter?.ended(end, end)
@@ -240,7 +350,7 @@ class PlaybackController(
                 stop("player:${error.errorCodeName}")
                 return
             }
-            when (gate.request()) {
+            when (refreshGate.request()) {
                 RefreshGate.Decision.START -> {
                     log("url expired (http $code) at ${position}ms, refreshing")
                     reporter?.explicit(position, duration())

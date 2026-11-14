@@ -23,6 +23,11 @@ _ISLAND = '<div class="ep-players__island" data-sh-module="episode-players">'
 _KINDS = {"progressive": "video.mp4", "hls": "hls/index.m3u8", "dash": "dash/manifest.mpd"}
 _TYPES = {".mp4": "video/mp4", ".m3u8": "application/vnd.apple.mpegurl", ".ts": "video/mp2t", ".mpd": "application/dash+xml"}
 _SEGMENTS = (".ts", ".m4s")
+_LIVE_PLAYLIST = "hls/index.m3u8"
+_LIVE_START_SEGMENTS = 3
+_SEGMENT_SEC = 2
+_SEGMENT_COUNT = 15
+_CHUNK = 1024
 
 
 @dataclass
@@ -36,6 +41,11 @@ class Scenario:
     refresh_ttl_sec: float | None = None
     segment_delay_ms: int = 0
     require_headers: bool = True
+    live: bool = False
+    throttle_bps: int | None = None
+    fail_files: dict[str, int] = field(default_factory=dict)
+    redirect_files: list[str] = field(default_factory=list)
+    redirect_delay_ms: int = 0
 
 
 class State:
@@ -45,24 +55,57 @@ class State:
         self.scenario = Scenario()
         self.resolves = 0
         self.requests: list[dict[str, Any]] = []
+        self.failures: dict[str, int] = {}
+        self.live_started: float | None = None
 
     def reset(self, scenario: Scenario) -> None:
         with self.lock:
             self.scenario = scenario
             self.resolves = 0
             self.requests = []
+            self.failures = {}
+            self.live_started = None
 
     def record(self, entry: dict[str, Any]) -> None:
         with self.lock:
             entry["seq"] = len(self.requests) + 1
             self.requests.append(entry)
 
+    def update(self, entry: dict[str, Any], **fields: Any) -> None:
+        with self.lock:
+            entry.update(fields)
+
+    def inject_failure(self, name: str) -> bool:
+        """The first ``fail_files[name]`` requests for a file get a 503."""
+        with self.lock:
+            used = self.failures.get(name, 0)
+            if used >= self.scenario.fail_files.get(name, 0):
+                return False
+            self.failures[name] = used + 1
+            return True
+
+    def live_playlist(self) -> bytes:
+        """An EVENT playlist that gains a segment every two seconds after its first request, then ends."""
+        with self.lock:
+            if self.live_started is None:
+                self.live_started = time.monotonic()
+            elapsed = time.monotonic() - self.live_started
+        count = min(_SEGMENT_COUNT, _LIVE_START_SEGMENTS + int(elapsed // _SEGMENT_SEC))
+        lines = ["#EXTM3U", "#EXT-X-VERSION:3", f"#EXT-X-TARGETDURATION:{_SEGMENT_SEC}", "#EXT-X-MEDIA-SEQUENCE:0"]
+        lines.append("#EXT-X-PLAYLIST-TYPE:EVENT")
+        for index in range(count):
+            lines += [f"#EXTINF:{_SEGMENT_SEC}.000000,", f"seg_{index:03d}.ts"]
+        if count == _SEGMENT_COUNT:
+            lines.append("#EXT-X-ENDLIST")
+        return ("\n".join(lines) + "\n").encode()
+
     def sign(self, exp: int) -> str:
         return hmac.new(self.secret, str(exp).encode(), hashlib.sha256).hexdigest()[:16]
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
-            return {"scenario": asdict(self.scenario), "resolves": self.resolves, "requests": list(self.requests)}
+            requests = [dict(entry) for entry in self.requests]
+            return {"scenario": asdict(self.scenario), "resolves": self.resolves, "requests": requests}
 
 
 def episode_page() -> str:
@@ -140,11 +183,20 @@ class Handler(BaseHTTPRequestHandler):
     def _media(self, path: str) -> None:
         state = self.server.state
         _, _, exp_text, sig, *rest = path.split("/")
-        name = "/".join(rest)
+        redirected = rest[:1] == ["r"]
+        name = "/".join(rest[1:] if redirected else rest)
         with state.lock:
             scenario = state.scenario
         missing = [h for h in REQUIRED_HEADERS if not self._header_ok(h)] if scenario.require_headers else []
-        entry: dict[str, Any] = {"file": name, "missing": missing, "range": self.headers.get("Range"), "at": time.time()}
+        entry: dict[str, Any] = {
+            "file": name,
+            "missing": missing,
+            "range": self.headers.get("Range"),
+            "at": time.time(),
+            "probe": self.headers.get("X-Probe-Seq"),
+            "conn": self.client_address[1],
+            "redirected": redirected,
+        }
         target = (MEDIA / name).resolve()
         if not exp_text.isdigit() or not hmac.compare_digest(sig, state.sign(int(exp_text))):
             status = 403
@@ -157,24 +209,39 @@ class Handler(BaseHTTPRequestHandler):
             entry["reason"] = "headers"
         elif MEDIA not in target.parents or not target.is_file():
             status = 404
+        elif state.inject_failure(name):
+            status = 503
+            entry["reason"] = "injected"
+        elif name in scenario.redirect_files and not redirected:
+            status = 302
         else:
             status = 200
         entry["status"] = status
         state.record(entry)
+        if status == 302:
+            # held back so a test can close its transfer gate while this request is still being answered
+            time.sleep(scenario.redirect_delay_ms / 1000)
+            self._send(302, b"", extra={"Location": f"/m/{exp_text}/{sig}/r/{name}"})
+            state.update(entry, done_at=time.time())
+            return
         if status != 200:
             self._send(status, b"")
             return
         if target.suffix in _SEGMENTS and scenario.segment_delay_ms:
             time.sleep(scenario.segment_delay_ms / 1000)
-        body = target.read_bytes()
+        live = scenario.live and name == _LIVE_PLAYLIST
+        body = state.live_playlist() if live else target.read_bytes()
+        throttle = scenario.throttle_bps if target.suffix in _SEGMENTS else None
         requested = self.headers.get("Range")
         content_type = _TYPES.get(target.suffix, "video/mp4")
         if requested and requested.startswith("bytes="):
             first, _, last = requested.removeprefix("bytes=").partition("-")
             start, end = int(first or 0), int(last) if last else len(body) - 1
-            self._send(206, body[start : end + 1], content_type, {"Content-Range": f"bytes {start}-{end}/{len(body)}"})
+            extra = {"Content-Range": f"bytes {start}-{end}/{len(body)}"}
+            sent = self._send(206, body[start : end + 1], content_type, extra, throttle)
         else:
-            self._send(200, body, content_type, {"Accept-Ranges": "bytes"})
+            sent = self._send(200, body, content_type, {"Accept-Ranges": "bytes"}, throttle)
+        state.update(entry, done_at=time.time(), sent=sent, size=len(body), aborted=sent is None)
 
     def _header_ok(self, name: str) -> bool:
         value = self.headers.get(name)
@@ -182,14 +249,33 @@ class Handler(BaseHTTPRequestHandler):
             return value is not None and value.startswith(REQUIRED_HEADERS["Referer"])
         return value == REQUIRED_HEADERS[name]
 
-    def _send(self, status: int, body: bytes, content_type: str = "text/plain", extra: dict[str, str] | None = None) -> None:
+    def _send(
+        self,
+        status: int,
+        body: bytes,
+        content_type: str = "text/plain",
+        extra: dict[str, str] | None = None,
+        throttle_bps: int | None = None,
+    ) -> int | None:
+        """The number of body bytes written, or None when the client went away first."""
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         for key, value in (extra or {}).items():
             self.send_header(key, value)
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            if not throttle_bps:
+                self.wfile.write(body)
+                return len(body)
+            for offset in range(0, len(body), _CHUNK):
+                self.wfile.write(body[offset : offset + _CHUNK])
+                self.wfile.flush()
+                time.sleep(_CHUNK / throttle_bps)
+        except BrokenPipeError, ConnectionResetError, ConnectionAbortedError:
+            self.close_connection = True
+            return None
+        return len(body)
 
 
 class Server(ThreadingHTTPServer):

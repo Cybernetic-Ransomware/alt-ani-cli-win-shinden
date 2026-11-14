@@ -116,8 +116,33 @@ a refresh and rotation, ends with `playback_ended`, `playback_close` or a `playb
 
 The bridge cannot stop requests Media3 makes with a URL it already has. After `network_set(cellular)` it emits
 `playback.consent_required` for each open viewing without consent; the client must then stop new player transfers,
-let the buffer play and not refresh until `playback_allow_cellular`. Whether Media3 can be held like that is checked
-in stage 5.
+let the buffer play and not refresh until `playback_allow_cellular`.
+
+The hold was chosen by trial T9 in stage 4 (`TransferGateTrialTest`, emulator x86_64, Media3 1.11.1, two runs, same
+results). A probe numbered every `open()`, sent the number as `X-Probe-Seq` and stamped the gate under the gate's own
+lock; the controlled server logged each request. Candidates: K1 `LoadControl` refusing to load, K2 `open()` failing with
+a retry policy that polls, K3 `open()` waiting on the gate, and K1 with K3.
+
+- K1 lets the playlist refresh, the first playlist and segment of a prepare, a retry planned before the close and an
+  `open()` that reaches the check after the close through. With an empty buffer Media3 fails it after 4 s
+  (`StuckPlayerException`, buffering and not loading), and so it fails K1 with K3 as well.
+- K2 and K3 sent no request that started after the close in any case. K2 needs `getMinimumLoadableRetryCount` set to
+  unlimited for every load, because the gate's failures count towards the same error count. It also resumes only on its
+  next poll (0.3–1.2 s). K3 resumes when the gate opens (0.1–1.1 s, the time to play again). A seek or `release()`
+  interrupts the waiting loader thread (`InterruptedIOException`; release took under 25 ms).
+
+Decision: K3 (`GatedDataSource`, network sources only; local files and `content://` are never held). The guarantee: no
+HTTP request whose `open()` reaches the gate check after the close is sent until the gate opens. These requests still
+go through and are the limit of the guarantee:
+- a request that passed the check just before the close;
+- a redirect followed inside an `open()` that started before the close, because `HttpURLConnection` follows it;
+- a transfer already under way, which is finished, not cut off.
+
+Media3 also fails a player that buffers without progress for 10 minutes. No hold can prevent that, so when the buffer
+runs out behind a closed gate the controller pauses the player and resumes it when the gate opens. The gate closes on
+`playback.consent_required`. It also closes on `network.changed` to offline, and to cellular without consent. It opens
+after `playback_allow_cellular` or on Wi-Fi. After every events resync the client reads `network_get` again, so a
+skipped notice cannot leave the gate open. A refresh needed while the gate is closed waits until it opens.
 
 ### Platform boundary and secrets
 
@@ -158,7 +183,7 @@ newer decision; a slow UI never slows the engine.
 Harder: every mutation needs the revision the client last read; signals require the snapshot-plus-cursor procedure;
 the watcher costs one light read per interval while someone listens; export repeats need a client-side check.
 
-Assumptions for stages 4–6, not verified here: Chaquopy callbacks from Python threads and a blocking `events_next` on
-a Kotlin thread; Kotlin objects as `FileStore`/`ExportTarget` and the cost of `write(bytes)` over JNI for SAF;
-`content_uri` and headers in Media3; holding Media3 loading until consent; network classification; `flock` in the
-app directory; background work; a transport without `curl_cffi`.
+Assumptions for stages 4–6, not verified here (`content_uri`, headers and the consent hold in Media3 were verified on
+the emulator in stage 4): Chaquopy callbacks from Python threads and a blocking `events_next` on a Kotlin thread; Kotlin
+objects as `FileStore`/`ExportTarget` and the cost of `write(bytes)` over JNI for SAF; network classification; `flock`
+in the app directory; background work; a transport without `curl_cffi`.

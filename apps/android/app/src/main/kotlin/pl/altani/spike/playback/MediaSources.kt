@@ -38,21 +38,21 @@ class ExpiredUrlPolicy : DefaultLoadErrorHandlingPolicy() {
 
 @UnstableApi
 object MediaSources {
-    fun create(context: Context, source: PlaybackSource): MediaSource =
+    fun create(context: Context, source: PlaybackSource, hold: TransferHold = TransferHold.None): MediaSource =
         when (source) {
-            is PlaybackSource.Online -> online(context, source.variant)
+            is PlaybackSource.Online -> online(context, source.variant, hold)
             is PlaybackSource.Local -> local(context, source)
         }
 
-    private fun online(context: Context, variant: Variant): MediaSource {
+    private fun online(context: Context, variant: Variant, hold: TransferHold): MediaSource {
         // one factory per variant: its headers go on every request, playlists and segments included
         val http = DefaultHttpDataSource.Factory()
             .setDefaultRequestProperties(variant.headers.filterKeys { !it.equals("User-Agent", ignoreCase = true) })
             .setAllowCrossProtocolRedirects(false)
         variant.headers.entries.firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }?.let { http.setUserAgent(it.value) }
         val item = MediaItem.Builder().setUri(variant.url).setMimeType(mimeOf(variant)).build()
-        return DefaultMediaSourceFactory(DefaultDataSource.Factory(context, http))
-            .setLoadErrorHandlingPolicy(ExpiredUrlPolicy())
+        return DefaultMediaSourceFactory(DefaultDataSource.Factory(context, hold.upstream(http)))
+            .setLoadErrorHandlingPolicy(hold.errorPolicy(ExpiredUrlPolicy()))
             .createMediaSource(item)
     }
 

@@ -60,6 +60,9 @@ fun TechScreen(model: TechViewModel, playback: PlaybackViewModel) {
                     "variant_changes=${state.variantChanges}" + (state.error?.let { " error=$it" } ?: ""),
                 style = MaterialTheme.typography.bodySmall,
             )
+            if (state.consentRequired) {
+                Button(onClick = { controller.allowCellular() }) { Text("Allow mobile data for this episode") }
+            }
             AndroidView(
                 factory = { PlayerView(it).apply { player = controller.player } },
                 onRelease = { it.player = null },
