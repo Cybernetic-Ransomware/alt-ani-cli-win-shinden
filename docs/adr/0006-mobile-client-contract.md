@@ -78,6 +78,12 @@ destination. There is no idempotency-key table.
 
 Batches always answer `ok: true` with one result per item, plus `interrupted` and `not_attempted` when cancelled.
 
+Contract 2.1 (additive) closes the gap before registration: a `cancel(op_id)` that finds no running operation is
+remembered for a bounded time and number of ids, and the call that later arrives with that `op_id` ends `cancelled`
+without running. A Kotlin caller can therefore cancel as soon as it has chosen the `op_id`, without knowing whether
+its call has reached the bridge yet, and never has to repeat a cancel. A lost reply after the commit point is still
+an unknown outcome: the client reads the state before retrying.
+
 ### Events are refresh signals
 
 An event says an entity has a newer state; intermediate states may be skipped. Entity events come only from the
