@@ -1,0 +1,6 @@
+# cffi 2.1.1 comes from apps/android/wheels/; hashes wait for that wheel, as pip's hash mode needs one for every line.
+yt-dlp==2026.10.26
+certifi==2026.10.23
+curl-cffi==0.17.0
+cffi==2.1.1
+pycparser==3.11

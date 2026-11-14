@@ -71,14 +71,14 @@ exclude = ["tests/*", "tools/*"]
 extra-paths = ["apps/cli/src", "packages/core/src", "apps/android/app/src/main/python"]
 
 [tool.codespell]
-skip = "./.git,./.github,./tests/*,./temp/*,./tools/*"
+skip = "./.git,./.github,./tests/*,./temp/*,./tools/*,*apps/android/build,*apps/android/app/build,*apps/android/.gradle"
 builtin = "clear"
 quiet-level = 3
 ignore-words-list = "daty,serie,autor"
 
 [tool.bandit]
 skips = ["B404", "B603"]
-exclude_dirs = ["tests", "tools", ".venv"]
+exclude_dirs = ["tests", "tools", ".venv", "*apps/android/build/*", "*apps/android/app/build/*", "*apps/android/.gradle/*"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
