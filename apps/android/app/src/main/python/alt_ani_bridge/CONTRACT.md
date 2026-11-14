@@ -1,4 +1,4 @@
-# Bridge contract 2.0 — reference
+# Bridge contract 2.1 — reference
 
 Decisions and reasons: [ADR-0006](../../../../../../../docs/adr/0006-mobile-client-contract.md).
 
@@ -10,6 +10,10 @@ Decisions and reasons: [ADR-0006](../../../../../../../docs/adr/0006-mobile-clie
 - Envelope: `{"ok": true, "data": …}` or `{"ok": false, "error": {code, kind, retryable, message, params}}`.
 - Reserved request fields: `engine_id` (every method except `bridge_info` and `runtime_close` by `db_path`), `op_id`
   (optional; unique while running; makes the call cancellable), `contract` (optional; another major is refused).
+- `cancel(op_id)` is true for a running operation. Any other id is remembered (`limits.early_cancels` ids, oldest
+  dropped first, each for `limits.early_cancel_ttl_ms`): the next call with that `op_id` ends `cancelled` before its
+  handler runs and spends it. This covers a cancel that overtakes its own call; an `op_id` once passed to `cancel` is
+  not reused by the client. Since 2.1 (`capabilities.cancel_before_start`).
 - A mutation is stopped by `cancel(op_id)`, a closed handle or a closed session only before its write; once written
   it reports its own outcome. A read whose episode session closes before the reply gets `session_closed`.
 - A `session_id` passed with a series and an episode (`playback_prepare`, `watch_open_in_browser`,
@@ -19,7 +23,7 @@ Decisions and reasons: [ADR-0006](../../../../../../../docs/adr/0006-mobile-clie
 - Units: `_ms` milliseconds, `_bytes` bytes, times ISO-8601 UTC, heights in pixels, episode numbers finite numbers.
   `retry_after` (v1 XHR errors) is in seconds.
 - Limits (`bridge_info.limits`): request 1 MiB, string 4096 characters, generic list 5000, `item_ids` 1000, episodes
-  5000, `job_ids` 10000, `events_next.max` 500, `wait_ms` 30000. Exceeding one: `bad_request {field, problem:
+  5000, `job_ids` 10000, `events_next.max` 500, `wait_ms` 30000, `early_cancels` 256, `early_cancel_ttl_ms` 60000. Exceeding one: `bad_request {field, problem:
   too_large, limit}`.
 
 ## Errors
@@ -72,7 +76,7 @@ Decisions and reasons: [ADR-0006](../../../../../../../docs/adr/0006-mobile-clie
 
 | method | request | response |
 |---|---|---|
-| `bridge_info` | — | `{contract, methods, capabilities{interaction_grants:false, events_pull, events_push, platform_storage, platform_export}, limits}` |
+| `bridge_info` | — | `{contract, methods, capabilities{interaction_grants:false, events_pull, events_push, platform_storage, platform_export, cancel_before_start}, limits}` |
 | `create_engine` | `cache_dir, history_path, xhr_backend?, antibot_delay_sec?, access?{flaresolverr_url, use_flaresolverr}, diagnostics_dir?, storage?{kind:fs,root}\|{kind:platform,handle}, network?` | `{engine_id, contract}` |
 | `close_engine` | `engine_id` | `{cancelled_operations, closed_sessions, delivery_ended}` |
 | `engine_status` | — | `{sessions, running_operations, listener_errors, engine_started, events_dropped}` |

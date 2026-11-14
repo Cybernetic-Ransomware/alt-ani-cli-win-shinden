@@ -4,6 +4,7 @@ import json
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -32,7 +33,7 @@ from alt_ani_bridge.schema import InputError, Reader, parse
 from alt_ani_core import diagnostics
 from alt_ani_core.cancel import CancelToken
 from alt_ani_core.config import DEFAULT_ANTIBOT_DELAY_SEC, AccessConfig, EngineConfig, XhrBackendName
-from alt_ani_core.errors import EngineInterrupt
+from alt_ani_core.errors import EngineInterrupt, OperationCancelled
 from alt_ani_core.history.local import LocalState, open_local_state
 from alt_ani_core.history.store import HistoryStore
 from alt_ani_core.services.engine import Engine
@@ -105,6 +106,8 @@ class Bridge:
         self._runtimes: dict[Path, Runtime] = {}
         self._operations: dict[str, Operation] = {}
         self._client_ops: dict[str, str] = {}
+        # op_id -> expiry: a cancel that came before its call registered; the call ends ``cancelled`` without running
+        self._early_cancels: OrderedDict[str, float] = OrderedDict()
         self._operation_ended = threading.Condition(self.lock)
         self._methods: dict[str, Method] = {
             "bridge_info": method(self._bridge_info, needs_engine=False),
@@ -275,13 +278,27 @@ class Bridge:
             return _fail(exc)
 
     def cancel(self, op_id: str) -> bool:
-        """False for an id that is unknown or already finished; the operation itself reports ``cancelled``."""
+        """True for a running operation; any other id is remembered so a call not registered yet ends ``cancelled``."""
         with self.lock:
             operation = self._operations.get(self._client_ops.get(op_id, ""))
             if operation is None:
+                self._remember_cancel(op_id)
                 return False
             operation.token.cancel()
         return True
+
+    def _remember_cancel(self, op_id: str) -> None:
+        now = time.monotonic()
+        while self._early_cancels and next(iter(self._early_cancels.values())) <= now:
+            self._early_cancels.popitem(last=False)
+        self._early_cancels.pop(op_id, None)
+        self._early_cancels[op_id] = now + contract.LIMITS["early_cancel_ttl_ms"] / 1000
+        while len(self._early_cancels) > contract.LIMITS["early_cancels"]:
+            self._early_cancels.popitem(last=False)
+
+    def _cancelled_early(self, op_id: str) -> bool:
+        expiry = self._early_cancels.pop(op_id, None)
+        return expiry is not None and expiry > time.monotonic()
 
     def ensure_queue(self, runtime: Runtime) -> OfflineQueue:
         """The executor's own engine and transport, independent of every UI handle; created on first start."""
@@ -392,6 +409,7 @@ class Bridge:
                 "events_push": True,
                 "platform_storage": True,
                 "platform_export": True,
+                "cancel_before_start": True,
             },
             "limits": dict(contract.LIMITS),
         }
@@ -412,6 +430,8 @@ class Bridge:
                 entry = self.engine_entry(engine_id) if engine_id is not None else None
                 if client_id is not None and client_id in self._client_ops:
                     raise BridgeError("operation_id_in_use", "an operation with this id is still running")
+                if client_id is not None and self._cancelled_early(client_id):
+                    raise OperationCancelled()
                 operation = Operation(
                     key=uuid.uuid4().hex,
                     engine_id=engine_id,

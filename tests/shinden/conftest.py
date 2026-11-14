@@ -3,9 +3,19 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from alt_ani_core import dom
+from alt_ani_core.dom import selectolax_backend, stdlib_backend
 from alt_ani_core.transport.api import HttpStatusError
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "shinden"
+
+
+@pytest.fixture(autouse=True, params=["selectolax", "stdlib"])
+def dom_backend(request, monkeypatch) -> str:
+    """Every parser test runs on both backends: selectolax on desktop, the stdlib one on Android."""
+    backends = {"selectolax": selectolax_backend.parse, "stdlib": stdlib_backend.parse}
+    monkeypatch.setattr(dom, "_backend", backends[request.param])
+    return request.param
 
 
 @pytest.fixture
