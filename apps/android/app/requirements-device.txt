@@ -1,6 +1,6 @@
-# cffi 2.1.1 comes from apps/android/wheels/; hashes wait for that wheel, as pip's hash mode needs one for every line.
-yt-dlp==2026.10.26
-certifi==2026.10.23
-curl-cffi==0.17.0
-cffi==2.1.1
-pycparser==3.11
+# cffi 2.1.1 is our own build from apps/android/wheels/ (no index publishes one for Android).
+yt-dlp==2026.10.26 --hash=sha256:a05c5b5d8562f7e8a62f5334348b406af4930d56d3a65f8021d14af0e22339ae
+certifi==2026.10.23 --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1
+curl-cffi==0.17.0 --hash=sha256:0d85bec9648bf7c14c3b43056ba82521740f72cd96ed7700a0e1973e7fc93f74
+cffi==2.1.1 --hash=sha256:6728ff32baacdf2f245f8d8710ad156ae23c1920ac52d1e6c8a0733cd7fce20e
+pycparser==3.11 --hash=sha256:51d5a8ba2be0bbe440b99d2112604c95bbbc3c2748a64260186c541e1729cd80
