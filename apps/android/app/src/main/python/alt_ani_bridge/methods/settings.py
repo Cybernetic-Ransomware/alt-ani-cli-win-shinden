@@ -99,7 +99,11 @@ def network_set(c: Call) -> Any:
 
 
 def network_get(c: Call) -> Any:
-    return {"kind": c.runtime.network.current().value}
+    """With a viewing, also whether it holds the mobile-data consent: the kind alone cannot tell a client that."""
+    reply: dict[str, Any] = {"kind": c.runtime.network.current().value}
+    if c.r.has("playback_session"):
+        reply["cellular_allowed"] = c.runtime.consent(common.playback_session(c.r).session_id) is not None
+    return reply
 
 
 def storage_changed(c: Call) -> Any:
@@ -115,6 +119,6 @@ METHODS = {
     "preferences_get": method(preferences_get),
     "preferences_update": method(preferences_update, "changes", "expected_revision"),
     "network_set": method(network_set, "kind"),
-    "network_get": method(network_get),
+    "network_get": method(network_get, "playback_session"),
     "storage_changed": method(storage_changed),
 }

@@ -119,7 +119,7 @@ The bridge cannot stop requests Media3 makes with a URL it already has. After `n
 let the buffer play and not refresh until `playback_allow_cellular`.
 
 The hold was chosen by trial T9 in stage 4 (`TransferGateTrialTest`, emulator x86_64, Media3 1.11.1, two runs, same
-results). A probe numbered every `open()`, sent the number as `X-Probe-Seq` and stamped the gate under the gate's own
+results; results and how to run it again: [T9 trial](../android/t9-transfer-gate-trial.md)). A probe numbered every `open()`, sent the number as `X-Probe-Seq` and stamped the gate under the gate's own
 lock; the controlled server logged each request. Candidates: K1 `LoadControl` refusing to load, K2 `open()` failing with
 a retry policy that polls, K3 `open()` waiting on the gate, and K1 with K3.
 
@@ -131,18 +131,30 @@ a retry policy that polls, K3 `open()` waiting on the gate, and K1 with K3.
   next poll (0.3–1.2 s). K3 resumes when the gate opens (0.1–1.1 s, the time to play again). A seek or `release()`
   interrupts the waiting loader thread (`InterruptedIOException`; release took under 25 ms).
 
-Decision: K3 (`GatedDataSource`, network sources only; local files and `content://` are never held). The guarantee: no
-HTTP request whose `open()` reaches the gate check after the close is sent until the gate opens. These requests still
-go through and are the limit of the guarantee:
-- a request that passed the check just before the close;
-- a redirect followed inside an `open()` that started before the close, because `HttpURLConnection` follows it;
-- a transfer already under way, which is finished, not cut off.
+Decision: K3 (`GatedDataSource`, network sources only; local files and `content://` are never held). The guarantee:
+once the gate is closed, no further `open()` is let through until it opens. The gate does not stop what it let through
+before the close:
+- an `open()` that passed the check just before the close sends its request;
+- a redirect inside such an `open()` is followed, because `HttpURLConnection` follows it;
+- a transfer already under way is finished, not cut off.
+
+This is not the same as "no new requests after the network changes". The gate closes only when the client handles
+`network.changed` or `playback.consent_required`. That handling comes some time after `network_set` returns: the event
+pump delivers the event, and then the main thread runs it. Until then, every `open()` still goes through.
 
 Media3 also fails a player that buffers without progress for 10 minutes. No hold can prevent that, so when the buffer
 runs out behind a closed gate the controller pauses the player and resumes it when the gate opens. The gate closes on
 `playback.consent_required`. It also closes on `network.changed` to offline, and to cellular without consent. It opens
-after `playback_allow_cellular` or on Wi-Fi. After every events resync the client reads `network_get` again, so a
-skipped notice cannot leave the gate open. A refresh needed while the gate is closed waits until it opens.
+after `playback_allow_cellular` or on Wi-Fi. After every events resync the client calls `network_get` with its
+playback session. The reply carries the network kind and `cellular_allowed` for that session. The kind alone cannot
+say whether consent was given or ended while events were lost, so the bridge's answer replaces the client's flag. A
+skipped notice therefore cannot leave the gate open. A resync reply is ignored if a network event or a consent was
+applied while the call was running.
+
+A `stream_refresh` needed while the gate is closed waits until it opens. The same applies when the bridge refuses
+`playback_prepare` or `stream_refresh` with `network.cellular_consent_required`. Closing the playback or starting
+another episode drops the waiting call. Consent never carries over: the next episode asks for it again. A user
+pause, Home or the screen lock while waiting is an ordinary pause: neither the consent nor Wi-Fi resumes playback.
 
 ### Platform boundary and secrets
 

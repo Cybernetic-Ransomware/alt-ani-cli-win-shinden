@@ -144,6 +144,16 @@ class TestCellularConsent:
         event, _ = v2.wait_event(cursor, lambda e: e["type"] == "playback.consent_required")
         assert event["data"]["playback_session"]["id"] == session["id"]
 
+    def test_network_get_reports_the_consent_of_the_viewing(self, v2):
+        v2.data("network_set", kind="cellular")
+        session = begin(v2)
+        assert v2.data("network_get") == {"kind": "cellular"}
+        assert v2.data("network_get", playback_session=session) == {"kind": "cellular", "cellular_allowed": False}
+        v2.data("playback_allow_cellular", playback_session=session)
+        assert v2.data("network_get", playback_session=session)["cellular_allowed"] is True
+        begin(v2, ep(2))
+        assert v2.data("network_get", playback_session=session)["cellular_allowed"] is False
+
     def test_offline(self, v2):
         error = (v2.data("network_set", kind="offline"), prepare(v2, begin(v2)))[1]["error"]
         assert (error["code"], error["kind"]) == ("network.offline", "unavailable")

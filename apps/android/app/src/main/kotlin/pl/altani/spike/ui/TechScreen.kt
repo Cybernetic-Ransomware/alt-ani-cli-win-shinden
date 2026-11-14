@@ -55,6 +55,7 @@ fun TechScreen(model: TechViewModel, playback: PlaybackViewModel) {
                 }
                 Button(onClick = { playback.playControlled(JSONObject().put("kind", "progressive"), local = true) }) { Text("Local") }
             }
+            Button(onClick = { playback.playControlled(JSONObject().put("kind", "hls"), episodeIndex = 1) }) { Text("HLS, next episode") }
             Text(
                 "playback: ${state.phase} ${state.mode ?: ""} ${state.variant ?: ""} refreshes=${state.refreshes} " +
                     "variant_changes=${state.variantChanges}" + (state.error?.let { " error=$it" } ?: ""),

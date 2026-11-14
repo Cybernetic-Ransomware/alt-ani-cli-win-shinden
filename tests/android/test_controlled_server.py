@@ -1,5 +1,7 @@
 """Controlled server features the T9 transfer-gate trial relies on: probes, injected failures, redirects, live, throttling."""
 
+import http.client
+import json
 import socket
 import sys
 import threading
@@ -123,3 +125,28 @@ def test_a_client_that_leaves_during_a_throttled_body_is_logged_as_aborted(serve
     (entry,) = finished(server)
     assert entry["aborted"] is True
     assert entry["sent"] is None
+
+
+def test_expire_revokes_the_urls_handed_out_so_far_only(server):
+    server.state.reset(Scenario(kind="hls", ttl_sec=600))
+    resolve = f"{server.url}/host/api/1"
+    first = json.loads(fetch(resolve)[1])["variants"][0]["url"]
+    assert fetch(first)[0] == 200
+    expire = urllib.request.Request(f"{server.url}/_control/expire", data=b"{}", method="POST")
+    with urllib.request.urlopen(expire, timeout=30) as reply:
+        assert json.loads(reply.read()) == {"revoked": 1}
+    assert fetch(first)[0] == 403
+    assert requests(server)[-1]["reason"] == "expired"
+    second = json.loads(fetch(resolve)[1])["variants"][0]["url"]
+    assert fetch(second)[0] == 200
+
+
+def test_a_control_post_leaves_a_keep_alive_connection_usable(server):
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=30)
+    try:
+        connection.request("POST", "/_control/expire", body=b"{}", headers={"Content-Type": "application/json"})
+        connection.getresponse().read()
+        connection.request("GET", "/_control/log", headers={"Connection": "close"})
+        assert connection.getresponse().status == 200
+    finally:
+        connection.close()

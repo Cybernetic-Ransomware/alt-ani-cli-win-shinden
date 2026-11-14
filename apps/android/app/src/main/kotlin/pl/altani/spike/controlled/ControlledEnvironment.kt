@@ -53,13 +53,13 @@ object ControlledEnvironment {
 
     class Listing(val series: JSONObject, val episode: JSONObject)
 
-    /** search → episodes, as the product will do it; the first episode of the fixture listing. */
-    suspend fun listing(runtime: BridgeRuntime): Listing {
+    /** search → episodes, as the product will do it; [index] counts from the top of the fixture listing. */
+    suspend fun listing(runtime: BridgeRuntime, index: Int = 0): Listing {
         val hit = runtime.call("search", JSONObject().put("query", "frieren")).data().getJSONArray("hits").getJSONObject(0)
         val ref = JSONObject()
         listOf("id", "slug", "title", "url").forEach { ref.put(it, hit.get(it)) }
         val listing = runtime.call("episodes", JSONObject().put("series", ref)).data()
-        return Listing(listing.getJSONObject("series"), listing.getJSONArray("episodes").getJSONObject(0))
+        return Listing(listing.getJSONObject("series"), listing.getJSONArray("episodes").getJSONObject(index))
     }
 
     /** Queues the episode, runs the executor and waits for the offline copy `playback_prepare` then prefers. */
@@ -94,6 +94,9 @@ object ControlledEnvironment {
 
     /** `POST /_control/scenario`; resets the server's request log. */
     fun configure(scenario: JSONObject, base: String = BASE): JSONObject = request("$base/_control/scenario", scenario)
+
+    /** `POST /_control/expire`: every URL resolved so far answers 403 `expired`; the next resolve gets working ones. */
+    fun expireUrls(base: String = BASE): JSONObject = request("$base/_control/expire", JSONObject())
 
     /** `GET /_control/log`: the scenario, the resolve count and every media request with its status. */
     fun serverLog(base: String = BASE): JSONObject = request("$base/_control/log", null)

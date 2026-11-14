@@ -29,13 +29,13 @@ class PlaybackViewModel(app: Application) : AndroidViewModel(app) {
     val controller: PlaybackController? = runtime?.let { PlaybackController(app, it, viewModelScope, ::add) }
 
     /** Configures the server, then search → episodes → `playback_begin` → `playback_prepare` → Media3. */
-    fun playControlled(scenario: JSONObject, criteria: JSONObject? = null, local: Boolean = false): Job =
+    fun playControlled(scenario: JSONObject, criteria: JSONObject? = null, local: Boolean = false, episodeIndex: Int = 0): Job =
         viewModelScope.launch {
             val runtime = runtime ?: return@launch add("controlled playback needs a debug build")
             val player = controller ?: return@launch
             try {
                 withContext(Dispatchers.IO) { ControlledEnvironment.configure(scenario) }
-                val listing = ControlledEnvironment.listing(runtime)
+                val listing = ControlledEnvironment.listing(runtime, episodeIndex)
                 if (local) {
                     add("downloading episode ${listing.episode.opt("number")}")
                     ControlledEnvironment.download(runtime, listing)

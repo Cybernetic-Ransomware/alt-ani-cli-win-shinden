@@ -79,11 +79,17 @@ class PlaybackController(
     // paused by the controller once the buffer ran out behind a closed gate, so the gate's opening resumes it
     private var heldByGate = false
     private var pendingRefresh: Pair<PlaybackSource.Online, Long>? = null
+    private var pendingPrepare: JSONObject? = null
+
+    // bumped by every event or consent applied to the gate, so a resync reply that crossed one of them is dropped
+    private var gateSignals = 0
+
+    internal val playbackSession: JSONObject? get() = session
 
     init {
         if (manageGate) {
             uiScope.launch { bridge.events.events.collect(::onEvent) }
-            // a resync may have skipped the consent notice; the network kind is enough to set the gate again
+            // a resync may have skipped the consent notice or a network change
             uiScope.launch { bridge.events.resync.collect { syncNetwork() } }
             bridge.events.start()
         }
@@ -102,12 +108,22 @@ class PlaybackController(
             }) { write, result -> _writes.update { it + (write to result) } }
             val args = JSONObject().put("playback_session", playbackSession).put("series", series).put("episode", episode)
             criteria?.let { args.put("criteria", it) }
-            val prepared = bridge.call("playback_prepare", args)
-            if (prepared !is BridgeResult.Ok) return@launch stop(prepared)
-            val chosen = PlaybackSource.parse(prepared.data)
-            _state.update { it.copy(mode = if (chosen is PlaybackSource.Local) chosen.kind else "online") }
-            play(chosen, prepared.data.getJSONObject("resume").optLong("position_ms"))
+            prepare(args)
         }
+
+    private suspend fun prepare(args: JSONObject) {
+        val playbackSession = session
+        val prepared = bridge.call("playback_prepare", args)
+        if (session !== playbackSession) return
+        if (prepared.needsConsent()) {
+            pendingPrepare = args
+            return waitForConsent()
+        }
+        if (prepared !is BridgeResult.Ok) return stop(prepared)
+        val chosen = PlaybackSource.parse(prepared.data)
+        _state.update { it.copy(mode = if (chosen is PlaybackSource.Local) chosen.kind else "online") }
+        play(chosen, prepared.data.getJSONObject("resume").optLong("position_ms"))
+    }
 
     /** After an Activity recreation: playback went on; step back so the viewer sees the last seconds again. */
     fun onViewAttached(recreated: Boolean) {
@@ -122,7 +138,7 @@ class PlaybackController(
 
     /** Home, another app or the screen lock; never a configuration change. Coming back does not resume. */
     fun onBackground() {
-        heldByGate = false
+        releaseHold()
         if (player.playWhenReady) player.pause()
     }
 
@@ -138,6 +154,7 @@ class PlaybackController(
             val result = bridge.call("playback_allow_cellular", JSONObject().put("playback_session", playbackSession), mutation = true)
             if (result is BridgeResult.Ok && session === playbackSession) {
                 consented = true
+                gateSignals++
                 openGate()
             } else if (result is BridgeResult.Failure) {
                 log("mobile data not allowed: ${result.code}")
@@ -189,6 +206,11 @@ class PlaybackController(
             val args = JSONObject().put("session_id", online.sessionId).put("playback_session", playbackSession)
             val result = bridge.call("stream_refresh", args)
             refreshGate.finished()
+            if (session !== playbackSession) return@launch
+            if (result.needsConsent()) {
+                pendingRefresh = online to positionMs
+                return@launch waitForConsent()
+            }
             if (result !is BridgeResult.Ok) return@launch stop(result)
             val fresh = PlaybackSource.parse(result.data) as PlaybackSource.Online
             if (fresh.variantChanged) {
@@ -217,15 +239,25 @@ class PlaybackController(
         when (event.optString("type")) {
             "playback.consent_required" -> {
                 val id = data.optJSONObject("playback_session")?.optString("id")
+                gateSignals++
                 if (id != null && id == session?.optString("id") && !consented) closeGate()
             }
-            "network.changed" -> applyNetwork(data.optString("kind"))
+            "network.changed" -> {
+                gateSignals++
+                applyNetwork(data.optString("kind"))
+            }
         }
     }
 
+    /** The bridge holds the consent; a flag kept here misses one given or ended while events were lost. */
     private suspend fun syncNetwork() {
-        val reply = bridge.call("network_get")
-        if (reply is BridgeResult.Ok) applyNetwork(reply.data.optString("kind"))
+        val playbackSession = session
+        val signals = gateSignals
+        val args = JSONObject().apply { playbackSession?.let { put("playback_session", it) } }
+        val reply = bridge.call("network_get", args)
+        if (reply !is BridgeResult.Ok || session !== playbackSession || gateSignals != signals) return
+        if (playbackSession != null) consented = reply.data.optBoolean("cellular_allowed")
+        applyNetwork(reply.data.optString("kind"))
     }
 
     private fun applyNetwork(kind: String) {
@@ -253,10 +285,28 @@ class PlaybackController(
             heldByGate = false
             player.play()
         }
+        pendingPrepare?.let { args ->
+            pendingPrepare = null
+            uiScope.launch { prepare(args) }
+        }
         pendingRefresh?.let { (online, position) ->
             pendingRefresh = null
             refresh(online, position)
         }
+    }
+
+    /** The bridge refused a request for want of consent, which can come before the notice that closes the gate. */
+    private fun waitForConsent() {
+        consented = false
+        closeGate()
+        _state.update { it.copy(phase = Phase.WAITING_CONSENT, consentRequired = true) }
+    }
+
+    /** After Home or the lock the gate's opening must not start playback by itself. */
+    private fun releaseHold() {
+        if (!heldByGate) return
+        heldByGate = false
+        _state.update { it.copy(phase = Phase.PAUSED, pauses = it.pauses + 1) }
     }
 
     /** Media3 fails a player that buffers without progress for long; pausing it while waiting for consent avoids that. */
@@ -278,6 +328,7 @@ class PlaybackController(
         consented = false
         heldByGate = false
         pendingRefresh = null
+        pendingPrepare = null
         if (manageGate) {
             gate.open()
             _state.update { it.copy(consentRequired = false) }
@@ -362,7 +413,10 @@ class PlaybackController(
         }
     }
 
+    private fun BridgeResult.needsConsent() = this is BridgeResult.Failure && code == CONSENT_REQUIRED
+
     companion object {
+        const val CONSENT_REQUIRED = "network.cellular_consent_required"
         const val ROTATION_REWIND_MS = 1_500L
         const val BACK_BUFFER_MS = 5_000
     }

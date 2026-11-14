@@ -57,6 +57,8 @@ class State:
         self.requests: list[dict[str, Any]] = []
         self.failures: dict[str, int] = {}
         self.live_started: float | None = None
+        self.issued: set[int] = set()
+        self.revoked: set[int] = set()
 
     def reset(self, scenario: Scenario) -> None:
         with self.lock:
@@ -65,6 +67,14 @@ class State:
             self.requests = []
             self.failures = {}
             self.live_started = None
+            self.issued = set()
+            self.revoked = set()
+
+    def expire_issued(self) -> int:
+        """Every URL handed out so far answers 403 ``expired`` from now on; later resolves get working ones."""
+        with self.lock:
+            self.revoked |= self.issued
+            return len(self.revoked)
 
     def record(self, entry: dict[str, Any]) -> None:
         with self.lock:
@@ -134,12 +144,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"")
 
     def do_POST(self) -> None:
+        # read even when unused: a body left behind would be parsed as the next request on this keep-alive connection
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        if urlsplit(self.path).path == "/_control/expire":
+            revoked = self.server.state.expire_issued()
+            self._send(200, json.dumps({"revoked": revoked}).encode(), "application/json")
+            return
         if urlsplit(self.path).path != "/_control/scenario":
             self._send(404, b"")
             return
-        length = int(self.headers.get("Content-Length") or 0)
         try:
-            scenario = Scenario(**json.loads(self.rfile.read(length) or b"{}"))
+            scenario = Scenario(**json.loads(body or b"{}"))
         except (TypeError, ValueError) as exc:
             self._send(400, str(exc).encode())
             return
@@ -173,6 +188,8 @@ class Handler(BaseHTTPRequestHandler):
         labels = scenario.refresh_variants if refreshed and scenario.refresh_variants else scenario.variants
         ttl = scenario.refresh_ttl_sec if refreshed else scenario.ttl_sec
         exp = int(time.time() + ttl) if ttl else 0
+        with state.lock:
+            state.issued.add(exp)
         base = f"http://{self.headers.get('Host')}/m/{exp}/{state.sign(exp)}/{_KINDS[scenario.kind]}"
         headers = dict(REQUIRED_HEADERS, Referer=f"https://{HOST}/e/{online_id}")
         variants = [
@@ -201,7 +218,7 @@ class Handler(BaseHTTPRequestHandler):
         if not exp_text.isdigit() or not hmac.compare_digest(sig, state.sign(int(exp_text))):
             status = 403
             entry["reason"] = "signature"
-        elif int(exp_text) and time.time() > int(exp_text):
+        elif int(exp_text) in state.revoked or (int(exp_text) and time.time() > int(exp_text)):
             status = 403
             entry["reason"] = "expired"
         elif missing:

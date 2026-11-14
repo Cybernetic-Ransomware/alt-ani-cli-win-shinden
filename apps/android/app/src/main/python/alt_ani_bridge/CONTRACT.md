@@ -98,7 +98,7 @@ policy?, rank_by_health?, force_fresh?, quality?}`, `probe_hosts {session_id, ca
 | `preferences_get` | — | preferences |
 | `preferences_update` | `changes{audio?, subs?, quality?, download_network?, auto_alternatives?, max_active_downloads?}, expected_revision` | preferences |
 | `network_set` | `kind: wifi\|cellular\|offline` | `{kind, sessions_closed}` |
-| `network_get` | — | `{kind}` |
+| `network_get` | `playback_session?` | `{kind}`; with a viewing also `cellular_allowed` (that viewing is open and holds the consent; since 2.1) |
 | `storage_changed` | — | `{executor_notified}` |
 
 ### Watching
@@ -120,7 +120,8 @@ policy?, rank_by_health?, force_fresh?, quality?}`, `probe_hosts {session_id, ca
 | `episode_next` | `series_id, current, episodes?` (numbers in the known order) | `{basis: listing\|none, next{number, local_copy}\|null, later_local_copy{number, item}\|null}` |
 
 Client obligation: after `playback.consent_required`, stop new player transfers, let the buffer play and do not call
-`stream_refresh` until `playback_allow_cellular`.
+`stream_refresh` until `playback_allow_cellular`. After a resync, `network_get` with the viewing tells whether the consent still holds;
+the kind alone does not.
 
 ### Queue
 
