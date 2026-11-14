@@ -39,9 +39,10 @@ jobs:
           mkdir cffi libffi
           tar xzf cffi.tar.gz --strip-components=1 -C cffi
           tar xzf libffi.tar.gz -C libffi
-          # only libffi.a is shipped, so cffi links it statically; the .pc prefix points at the machine that built it
-          sed -i "s|^prefix=.*|prefix=${PWD}/libffi|" libffi/lib/pkgconfig/libffi.pc
-          echo "LIBFFI_DIR=${PWD}/libffi" >> "$GITHUB_ENV"
+          # cibuildwheel replaces CFLAGS, LDFLAGS and pkg-config paths for Android, so the paths go through
+          # setuptools' build_ext options; only libffi.a is shipped, so cffi links it statically
+          printf '\n[build_ext]\ninclude_dirs = %s\nlibrary_dirs = %s\n' "${PWD}/libffi/include" "${PWD}/libffi/lib" >> cffi/setup.cfg
+          cat cffi/setup.cfg
 
       - name: Install cibuildwheel
         run: python -m pip install "cibuildwheel==${CIBUILDWHEEL_VERSION}"
@@ -55,12 +56,6 @@ jobs:
           # an arm64 wheel cannot be tested on an x86_64 runner; the app's device run is the test
           CIBW_TEST_SKIP: "*"
           CIBW_BUILD_VERBOSITY: 1
-          # only our libffi is visible to pkg-config, never the runner's own
-          CIBW_ENVIRONMENT_ANDROID: >-
-            PKG_CONFIG_LIBDIR="$LIBFFI_DIR/lib/pkgconfig"
-            PKG_CONFIG_PATH=""
-            CFLAGS="-I$LIBFFI_DIR/include"
-            LDFLAGS="-L$LIBFFI_DIR/lib -Wl,-z,max-page-size=16384"
         run: python -m cibuildwheel cffi --output-dir wheelhouse
 
       - name: Check 16 KB alignment
