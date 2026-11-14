@@ -87,5 +87,7 @@ The trial asserts nothing; without `-e t9trial true` its 40 cases are skipped. T
 the default suite:
 
 - `ConsentGateTest` (controller and bridge): hold and resume on consent or Wi-Fi, the deferred `stream_refresh`, a user
-  pause, and the resync after lost events.
+  pause or Home during a running or a deferred refresh, offline and back to cellular with consent, the resync after lost
+  events, and a network change behind more events than the pump buffers.
+- `StaleStartTest`: a `playback_begin` reply that lands after a close or a later start.
 - `ConsentUiTest` (the Activity): the consent button, the next episode, Home and the lock while held.

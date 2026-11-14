@@ -1,12 +1,17 @@
 package pl.altani.spike.playback
 
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.io.File
 import java.util.Collections
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -35,6 +40,7 @@ class ConsentGateTest {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val names = mutableListOf<String>()
     private val log = Collections.synchronizedList(mutableListOf<String>())
+    private val hold = CallHold()
     private var runtime: BridgeRuntime? = null
     private var controller: PlaybackController? = null
     private lateinit var listing: ControlledEnvironment.Listing
@@ -53,7 +59,7 @@ class ConsentGateTest {
     /** The no-progress detector is cut to 3 s, so a wait without the controller's pause would fail the player here. */
     private fun start(vararg extra: Pair<String, Any?>, stuckMs: Int? = STUCK_MS): PlaybackController {
         val name = "consent-${UUID.randomUUID()}".also { names += it }
-        val rt = ControlledEnvironment.runtime(app, name).also { runtime = it }
+        val rt = ControlledEnvironment.runtime(app, name, wrap = hold::wrap).also { runtime = it }
         ControlledEnvironment.configure(scenario("hls", "segment_delay_ms" to 1_000, *extra))
         listing = runBlocking { ControlledEnvironment.listing(rt) }
         val created = onMain { PlaybackController(app, rt, scope, { log += it }, stuckBufferingTimeoutMs = stuckMs) }
@@ -149,8 +155,8 @@ class ConsentGateTest {
         assertTrue("transfers went on", mediaRequests().size > requests)
     }
 
-    /** A request passes the open gate, the gate closes during its held redirect, then the target has expired. */
-    private fun startWithARefreshNeededWhileHeld(): PlaybackController {
+    /** A request has passed the open gate and the server holds its redirect for 5 s. */
+    private fun startWithAHeldRedirect(): PlaybackController {
         val player = start(
             "ttl_sec" to 600,
             "redirect_files" to JSONArray().put(REDIRECTED),
@@ -163,6 +169,12 @@ class ConsentGateTest {
             assertTrue("redirect of $REDIRECTED not held", SystemClock.elapsedRealtime() < deadline)
             Thread.sleep(100)
         }
+        return player
+    }
+
+    /** The gate closes during the held redirect, then the redirect target has expired. */
+    private fun startWithARefreshNeededWhileHeld(): PlaybackController {
+        val player = startWithAHeldRedirect()
         network("cellular")
         player.awaitHeld()
         ControlledEnvironment.expireUrls()
@@ -214,6 +226,61 @@ class ConsentGateTest {
         awaitOnMain("next episode plays", 20_000, { player.player.isPlaying }) { it }
         assertEquals("only the new episode's prepare", 2, resolves())
         during(3_000) { assertEquals("the old refresh never ran", 0, onMain { player.state.value.refreshes }) }
+    }
+
+    /** The redirect target has expired on Wi-Fi and the bridge holds the `stream_refresh` call. */
+    private fun startWithARefreshRunning(): PlaybackController {
+        val player = startWithAHeldRedirect()
+        hold.hold("stream_refresh")
+        ControlledEnvironment.expireUrls()
+        hold.awaitHeld()
+        assertEquals(PlaybackController.Phase.REFRESHING, onMain { player.state.value.phase })
+        return player
+    }
+
+    private fun PlaybackController.assertRefreshedButPaused() {
+        awaitOnMain("refreshed source prepared", 20_000, { state.value.refreshes to player.playbackState }) { (refreshes, playback) ->
+            refreshes == 1 && playback != Player.STATE_IDLE
+        }
+        during(3_000) {
+            val (state, playing) = onMain { state.value to player.playWhenReady }
+            assertFalse("started on its own", playing)
+            assertNull(state.error)
+            assertEquals(PlaybackController.Phase.PAUSED, state.phase)
+        }
+        assertEquals("one prepare and one refresh", 2, resolves())
+    }
+
+    @Test
+    fun homeDuringARunningRefreshKeepsTheRefreshedPlaybackPaused() {
+        val player = startWithARefreshRunning()
+        onMain { player.onBackground() }
+        hold.release()
+        player.assertRefreshedButPaused()
+    }
+
+    @Test
+    fun aUserPauseDuringARunningRefreshIsKept() {
+        val player = startWithARefreshRunning()
+        onMain { player.player.pause() }
+        hold.release()
+        player.assertRefreshedButPaused()
+    }
+
+    @Test
+    fun homeWhileARefreshWaitsKeepsThePlaybackPausedBackOnWifi() {
+        val player = startWithARefreshNeededWhileHeld()
+        onMain { player.onBackground() }
+        network("wifi")
+        player.assertRefreshedButPaused()
+    }
+
+    @Test
+    fun aUserPauseWhileARefreshWaitsIsKeptAfterConsent() {
+        val player = startWithARefreshNeededWhileHeld()
+        onMain { player.player.pause() }
+        player.allow()
+        player.assertRefreshedButPaused()
     }
 
     /** The user pauses while the buffer still plays behind the closed gate; [reopen] then lets transfers go on. */
@@ -272,6 +339,56 @@ class ConsentGateTest {
     }
 
     @Test
+    fun aConsentStillHeldReopensTheGateWhenMobileDataComesBackAfterOffline() {
+        val player = start()
+        player.allow()
+        network("offline")
+        player.awaitHeld()
+        network("cellular")
+        player.awaitPlayingOnItsOwn()
+        assertFalse(onMain { player.state.value.consentRequired })
+    }
+
+    @Test
+    fun theResyncReopensTheGateForAConsentStillHeldAfterOffline() {
+        val player = start()
+        player.allow()
+        missEvents { network("offline") }
+        player.awaitHeld()
+        missEvents { network("cellular") }
+        player.awaitPlayingOnItsOwn()
+        assertFalse(onMain { player.state.value.consentRequired })
+    }
+
+    /** The main thread, where the controller takes its events, is blocked while the bridge publishes more than the pump buffers. */
+    @Test
+    fun aNetworkChangeFollowedByMoreEventsThanTheBufferStillClosesTheGate() {
+        val player = start()
+        val events = runtime!!.events
+        val blocked = CountDownLatch(1)
+        val free = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            blocked.countDown()
+            free.await(60, TimeUnit.SECONDS)
+        }
+        assertTrue(blocked.await(10, TimeUnit.SECONDS))
+        try {
+            val received = events.state.value.received
+            network("cellular")
+            // executor.state, which the controller ignores; the bridge journal keeps far more, so it reports no resync
+            repeat(FILLER) { call("executor_stop", JSONObject()) }
+            val deadline = SystemClock.elapsedRealtime() + 3_000
+            while (events.state.value.received < received + FILLER + 1 && SystemClock.elapsedRealtime() < deadline) {
+                Thread.sleep(100)
+            }
+        } finally {
+            free.countDown()
+        }
+        player.awaitWaitingForConsent()
+        player.assertHeldQuietly()
+    }
+
+    @Test
     fun theResyncClosesTheGateWhenTheBridgeEndedTheConsent() {
         val player = start()
         player.allow()
@@ -286,5 +403,6 @@ class ConsentGateTest {
     private companion object {
         const val STUCK_MS = 3_000
         const val REDIRECTED = "hls/seg_006.ts"
+        const val FILLER = 300
     }
 }

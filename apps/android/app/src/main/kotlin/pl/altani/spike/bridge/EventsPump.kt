@@ -3,7 +3,6 @@ package pl.altani.spike.bridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,14 +31,17 @@ class EventsPump(
     )
 
     private val _state = MutableStateFlow(State())
-    private val _events = MutableSharedFlow<JSONObject>(extraBufferCapacity = 256, onBufferOverflow = BufferOverflow.DROP_OLDEST)
-    private val _resync = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    // a slow collector suspends the pump instead of losing events; the bridge's journal holds them meanwhile
+    private val _events = MutableSharedFlow<JSONObject>(extraBufferCapacity = 256)
+    private val _resync = MutableStateFlow(0)
     private val lock = Any()
     private var job: Job? = null
 
     val state: StateFlow<State> = _state.asStateFlow()
     val events: SharedFlow<JSONObject> = _events.asSharedFlow()
-    val resync: SharedFlow<Unit> = _resync.asSharedFlow()
+
+    /** Counts heads; a state, so a holder that subscribes late still re-reads its snapshots once at the start. */
+    val resync: StateFlow<Int> = _resync.asStateFlow()
 
     fun start() {
         synchronized(lock) {
@@ -65,7 +67,7 @@ class EventsPump(
                 val epoch = head.data.getString("epoch")
                 var seq = head.data.getLong("seq")
                 _state.update { it.copy(epoch = epoch, nextSeq = seq, heads = it.heads + 1, lastError = null) }
-                _resync.tryEmit(Unit)
+                _resync.update { it + 1 }
                 while (true) {
                     val cursor = JSONObject().put("epoch", epoch).put("seq", seq)
                     val reply = source("events_next", JSONObject().put("cursor", cursor).put("max", 100).put("wait_ms", waitMs))
@@ -77,7 +79,7 @@ class EventsPump(
                     if (data.getBoolean("resync") || data.getString("epoch") != epoch) break
                     val batch = data.getJSONArray("events")
                     for (i in 0 until batch.length()) {
-                        _events.tryEmit(batch.getJSONObject(i))
+                        _events.emit(batch.getJSONObject(i))
                     }
                     seq = data.getLong("next_seq")
                     _state.update { it.copy(nextSeq = seq, received = it.received + batch.length()) }

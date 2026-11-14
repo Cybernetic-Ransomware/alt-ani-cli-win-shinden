@@ -1,6 +1,8 @@
 package pl.altani.spike.bridge
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
@@ -73,7 +75,7 @@ class EventsPumpTest {
     fun `resync or another epoch starts over from a new head and signals the holders`() = runTest {
         val pump = pump()
         // conflated: a holder only needs to know that its snapshots are stale
-        val resynced = async(start = CoroutineStart.UNDISPATCHED) { pump.resync.first() }
+        val resynced = async(start = CoroutineStart.UNDISPATCHED) { pump.resync.first { it == 3 } }
         replies.send(head("e", 1))
         replies.send(next("e", 4, resync = true))
         replies.send(head("e", 4))
@@ -87,6 +89,43 @@ class EventsPumpTest {
         resynced.await()
         assertEquals("other", after.getJSONObject("cursor").getString("epoch"))
         assertEquals(3, pump.state.value.heads)
+    }
+
+    @Test
+    fun `a collector that falls behind by more than the buffer loses no event`() = runTest {
+        val pump = pump()
+        val resume = CompletableDeferred<Unit>()
+        val seen = mutableListOf<Long>()
+        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            pump.events.collect {
+                resume.await()
+                seen += it.getLong("seq")
+            }
+        }
+        replies.send(head("e", 1))
+        listOf(1L..100L, 101L..200L, 201L..301L).forEach { replies.send(next("e", it.last + 1, *it.toList().toLongArray())) }
+        pump.start()
+        expect("events_head")
+        repeat(3) { expect("events_next") }
+        testScheduler.runCurrent()
+        assertNull("the pump waits for the collector instead of polling on", requests.tryReceive().getOrNull())
+
+        resume.complete(Unit)
+        expect("events_next")
+        testScheduler.runCurrent()
+
+        assertEquals((1L..301L).toList(), seen)
+    }
+
+    @Test
+    fun `a holder that subscribes after the head still gets the resync`() = runTest {
+        val pump = pump()
+        replies.send(head("e", 1))
+        pump.start()
+        expect("events_head")
+        expect("events_next")
+
+        assertEquals(1, pump.resync.first())
     }
 
     @Test

@@ -9,6 +9,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
+import pl.altani.spike.bridge.BridgeEndpoint
 import pl.altani.spike.bridge.BridgeResult
 import pl.altani.spike.bridge.BridgeRuntime
 import pl.altani.spike.bridge.ChaquopyEndpoint
@@ -19,7 +20,14 @@ object ControlledEnvironment {
 
     enum class Storage { FS, CONTENT_URI }
 
-    fun runtime(context: Context, name: String, storage: Storage = Storage.FS, base: String = BASE): BridgeRuntime {
+    /** [wrap] lets a test hold or watch single calls on their way into Python. */
+    fun runtime(
+        context: Context,
+        name: String,
+        storage: Storage = Storage.FS,
+        base: String = BASE,
+        wrap: (BridgeEndpoint) -> BridgeEndpoint = { it },
+    ): BridgeRuntime {
         val dir = File(context.filesDir, "controlled-content/$name")
         var storageArg: JSONObject? = null
         return BridgeRuntime(
@@ -36,7 +44,7 @@ object ControlledEnvironment {
                 storageArg = JSONObject(
                     py.getModule("controlled_host").callAttr("storage", bridge, libraryRoot, authority, entry).toString(),
                 )
-                ChaquopyEndpoint(bridge)
+                wrap(ChaquopyEndpoint(bridge))
             },
             engineArgs = {
                 JSONObject()

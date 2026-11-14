@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import pl.altani.spike.bridge.BridgeResult
 import pl.altani.spike.bridge.BridgeRuntime
@@ -76,6 +78,15 @@ class PlaybackController(
     private var internalSeek = false
     private var consented = false
 
+    // bumped by every start, close and release, so a reply to an earlier start never touches a later one
+    private var generation = 0
+
+    // P3 lets the last playback_begin the bridge saw win, so the bridge must see them in the order the user asked
+    private val beginOrder = Mutex()
+
+    // the user's wish to play: a pause, Home or the lock clear it and only resume() or a new start sets it again
+    private var playIntent = true
+
     // paused by the controller once the buffer ran out behind a closed gate, so the gate's opening resumes it
     private var heldByGate = false
     private var pendingRefresh: Pair<PlaybackSource.Online, Long>? = null
@@ -98,8 +109,13 @@ class PlaybackController(
     fun start(series: JSONObject, episode: JSONObject, criteria: JSONObject? = null): Job =
         uiScope.launch {
             stopSession()
+            val started = generation
+            playIntent = true
             _state.value = State(phase = Phase.PREPARING)
-            val begin = bridge.call("playback_begin", JSONObject().put("series", series).put("episode", episode), mutation = true)
+            val begin = beginOrder.withLock {
+                bridge.call("playback_begin", JSONObject().put("series", series).put("episode", episode), mutation = true)
+            }
+            if (started != generation) return@launch abandon(begin)
             if (begin !is BridgeResult.Ok) return@launch stop(begin)
             val playbackSession = begin.data.getJSONObject("playback_session")
             session = playbackSession
@@ -111,10 +127,18 @@ class PlaybackController(
             prepare(args)
         }
 
+    /** A close or another start came first; the bridge still opened this viewing, so it is closed unseen. */
+    private fun abandon(begin: BridgeResult) {
+        if (begin !is BridgeResult.Ok) return
+        val orphan = begin.data.getJSONObject("playback_session")
+        bridge.scope.launch { bridge.call(PositionReporter.CLOSE, JSONObject().put("playback_session", orphan), mutation = true) }
+        log("abandoned a superseded start")
+    }
+
     private suspend fun prepare(args: JSONObject) {
-        val playbackSession = session
+        val started = generation
         val prepared = bridge.call("playback_prepare", args)
-        if (session !== playbackSession) return
+        if (started != generation) return
         if (prepared.needsConsent()) {
             pendingPrepare = args
             return waitForConsent()
@@ -139,11 +163,13 @@ class PlaybackController(
     /** Home, another app or the screen lock; never a configuration change. Coming back does not resume. */
     fun onBackground() {
         releaseHold()
+        playIntent = false
         if (player.playWhenReady) player.pause()
     }
 
     fun resume() {
         heldByGate = false
+        playIntent = true
         if (source != null) player.play()
     }
 
@@ -181,7 +207,9 @@ class PlaybackController(
         player.setMediaSource(MediaSources.create(context, chosen, hold))
         seekInternally(positionMs)
         player.prepare()
-        player.playWhenReady = true
+        // a source swap must not undo a pause or a trip to the background made while the bridge was answering
+        player.playWhenReady = playIntent
+        if (!playIntent) _state.update { it.copy(phase = Phase.PAUSED) }
     }
 
     private fun seekInternally(positionMs: Long) {
@@ -202,11 +230,13 @@ class PlaybackController(
             return
         }
         _state.update { it.copy(phase = Phase.REFRESHING, refreshes = it.refreshes + 1) }
+        val started = generation
+        val gateOfThisViewing = refreshGate
         uiScope.launch {
             val args = JSONObject().put("session_id", online.sessionId).put("playback_session", playbackSession)
             val result = bridge.call("stream_refresh", args)
-            refreshGate.finished()
-            if (session !== playbackSession) return@launch
+            gateOfThisViewing.finished()
+            if (started != generation) return@launch
             if (result.needsConsent()) {
                 pendingRefresh = online to positionMs
                 return@launch waitForConsent()
@@ -263,7 +293,7 @@ class PlaybackController(
     private fun applyNetwork(kind: String) {
         when (kind) {
             "wifi" -> openGate()
-            "cellular" -> if (!consented) closeGate()
+            "cellular" -> if (consented) openGate() else closeGate()
             "offline" -> closeGate()
         }
     }
@@ -317,6 +347,7 @@ class PlaybackController(
     }
 
     private fun stopSession() {
+        generation++
         ticker?.cancel()
         reporter?.let { current ->
             if (source != null) current.explicit(player.currentPosition, duration())
@@ -362,10 +393,13 @@ class PlaybackController(
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            // the player view's own play button reaches the player directly, not through resume()
+            if (playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) playIntent = true
             if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST && source != null) {
                 if (heldByGate) {
                     _state.update { it.copy(phase = Phase.WAITING_CONSENT) }
                 } else {
+                    playIntent = false
                     _state.update { it.copy(phase = Phase.PAUSED, pauses = it.pauses + 1) }
                 }
                 reporter?.explicit(player.currentPosition, duration())

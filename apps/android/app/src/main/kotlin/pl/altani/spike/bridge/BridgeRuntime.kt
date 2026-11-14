@@ -13,6 +13,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
 /** `ended` is true only once the bridge reported every operation returned and no Kotlin worker still holds one. */
@@ -64,20 +65,28 @@ class BridgeRuntime(
         mutation: Boolean = false,
         dispatcher: CoroutineDispatcher = callDispatcher,
     ): BridgeResult {
-        if (closing) return CLOSED
+        val pending = setup() ?: return CLOSED
         val ready = try {
-            setup().await()
+            pending.await()
         } catch (e: SetupFailed) {
             return e.failure
         }
+        if (closing) return CLOSED
         return ready.client.call(method, JSONObject(args.toString()).put("engine_id", ready.engineId), mutation, dispatcher)
     }
 
     /** A false `ended` keeps threads, Python object and tracker while an operation is still inside Python; repeatable. */
     suspend fun shutdown(timeoutMs: Long): ShutdownReport {
         if (released) return ShutdownReport(true, BridgeResult.Ok(JSONObject().put("ended", true)), 0)
-        closing = true
+        val starting = synchronized(lock) {
+            closing = true
+            setup
+        }
         events.stop()
+        // the endpoint and engine are made by blocking calls that no cancel reaches, so their outcome is awaited
+        if (starting != null && withTimeoutOrNull(timeoutMs) { starting.join() } == null) {
+            return ShutdownReport(false, STARTING, tracker.active.value)
+        }
         val target = synchronized(lock) { endpoint }
         if (target == null) {
             release()
@@ -98,8 +107,10 @@ class BridgeRuntime(
         return ShutdownReport(ended, reply, tracker.active.value)
     }
 
-    private fun setup(): Deferred<Setup> =
+    /** Null once closing began, so no call can start a setup that shutdown would not see. */
+    private fun setup(): Deferred<Setup>? =
         synchronized(lock) {
+            if (closing) return null
             setup?.takeUnless { it.isCompleted && it.isCancelled }
                 ?: scope.async(callDispatcher) { createEngine() }.also { setup = it }
         }
@@ -110,6 +121,8 @@ class BridgeRuntime(
         } catch (e: Exception) {
             throw SetupFailed(BridgeResult.internal(e.javaClass.simpleName))
         }
+        // shutdown waits for this setup, but an engine made after it began would outlive the shutdown call
+        if (closing) throw SetupFailed(CLOSED)
         val reply = try {
             BridgeResult.parse(target.createEngine(engineArgs().toString()))
         } catch (e: Exception) {
@@ -136,6 +149,9 @@ class BridgeRuntime(
         const val WORKER_GRACE_MS = 2_000L
 
         val CLOSED = BridgeResult.Failure("engine_closed", "closed", false, JSONObject())
+
+        /** Shutdown timed out while the endpoint or the engine was still being created. */
+        val STARTING = BridgeResult.Failure("engine_starting", "unavailable", true, JSONObject())
 
         private fun threads(name: String): ThreadFactory {
             val count = AtomicInteger()

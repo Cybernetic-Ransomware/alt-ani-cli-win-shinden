@@ -48,6 +48,9 @@ answers `executor.closing`, and the call may be repeated. `runtime_close` also w
 closed earlier: each close reports them until they end, and only then are the runtime and its platform objects released. `runtime_close` (and `Bridge.shutdown`) closes handles, then
 the executor, then the watcher and push threads, then gives back the platform objects the runtime used; a timeout
 never releases a lock. A platform object in use by a runtime or a running export cannot be released (`platform.in_use`).
+On Android `BridgeRuntime.shutdown` also waits for a start-up still creating the Python bridge or its engine, which
+no cancel interrupts: until it returns the report is `ended: false` (`engine_starting`), and an engine is never created
+after closing began.
 
 ### Repeating a mutation after a lost reply
 
@@ -145,16 +148,23 @@ pump delivers the event, and then the main thread runs it. Until then, every `op
 Media3 also fails a player that buffers without progress for 10 minutes. No hold can prevent that, so when the buffer
 runs out behind a closed gate the controller pauses the player and resumes it when the gate opens. The gate closes on
 `playback.consent_required`. It also closes on `network.changed` to offline, and to cellular without consent. It opens
-after `playback_allow_cellular` or on Wi-Fi. After every events resync the client calls `network_get` with its
+after `playback_allow_cellular`, on Wi-Fi, and on cellular while the viewing's consent still holds (offline and back).
+After every events resync the client calls `network_get` with its
 playback session. The reply carries the network kind and `cellular_allowed` for that session. The kind alone cannot
 say whether consent was given or ended while events were lost, so the bridge's answer replaces the client's flag. A
 skipped notice therefore cannot leave the gate open. A resync reply is ignored if a network event or a consent was
-applied while the call was running.
+applied while the call was running. Nothing is lost on the Kotlin side either: the event pump waits for a slow
+collector instead of dropping events (the bridge's journal holds them meanwhile and reports a resync if it overflows),
+and the resync signal is a state, so a collector that subscribes late still re-reads once.
 
 A `stream_refresh` needed while the gate is closed waits until it opens. The same applies when the bridge refuses
 `playback_prepare` or `stream_refresh` with `network.cellular_consent_required`. Closing the playback or starting
 another episode drops the waiting call. Consent never carries over: the next episode asks for it again. A user
 pause, Home or the screen lock while waiting is an ordinary pause: neither the consent nor Wi-Fi resumes playback.
+The controller keeps the user's wish to play apart from the source: a pause, Home or the lock clears it, only the
+user's play sets it again, and a prepare or refresh that lands afterwards installs the source paused. Every start,
+close and release starts a new generation; a reply to an earlier one is dropped, and a `playback_begin` that lands
+after it is closed again. Starts reach the bridge in the user's order, so P3 keeps the last one.
 
 ### Platform boundary and secrets
 

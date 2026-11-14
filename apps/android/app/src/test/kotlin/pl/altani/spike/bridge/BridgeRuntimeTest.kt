@@ -113,6 +113,59 @@ class BridgeRuntimeTest {
     }
 
     @Test
+    fun `shutdown during a blocked endpoint factory waits for it and no engine is made afterwards`() = test {
+        val entered = CountDownLatch(1)
+        val unblock = CountDownLatch(1)
+        val runtime = BridgeRuntime(
+            endpointFactory = {
+                entered.countDown()
+                // a Python start-up that no coroutine cancel interrupts
+                unblock.await()
+                bridge
+            },
+            engineArgs = { JSONObject() },
+        )
+        val first = async(Dispatchers.Default) { runtime.call("bridge_info") }
+        entered.awaitOrFail("factory running")
+
+        val report = runtime.shutdown(300)
+
+        assertFalse("the factory still runs", report.ended)
+        assertEquals("engine_starting", (report.bridge as BridgeResult.Failure).code)
+        assertFalse(runtime.released)
+        unblock.countDown()
+        assertEquals(BridgeRuntime.CLOSED, first.await())
+        assertEquals(0, bridge.engines.get())
+        val second = runtime.shutdown(5_000)
+        assertTrue(second.ended)
+        assertTrue(runtime.released)
+    }
+
+    @Test
+    fun `shutdown during engine creation waits for it and then closes the engine`() = test {
+        val entered = CountDownLatch(1)
+        val unblock = CountDownLatch(1)
+        bridge.createEngineReply = {
+            entered.countDown()
+            unblock.await()
+            FakeBridge.ok(JSONObject().put("engine_id", "engine-1"))
+        }
+        val runtime = runtime()
+        val first = async(Dispatchers.Default) { runtime.call("bridge_info") }
+        entered.awaitOrFail("engine creation running")
+
+        val closing = async(Dispatchers.Default) { runtime.shutdown(5_000) }
+        assertFalse(closing.isCompleted)
+        unblock.countDown()
+
+        assertTrue(closing.await().ended)
+        assertEquals("the bridge closed the engine made meanwhile", 1, bridge.shutdowns.get())
+        assertEquals(1, bridge.engines.get())
+        assertTrue(runtime.released)
+        first.await()
+    }
+
+    @Test
     fun `the long poll runs on its own thread while every call thread is busy`() = test {
         val slowEntered = CountDownLatch(1)
         val releaseSlow = CountDownLatch(1)
