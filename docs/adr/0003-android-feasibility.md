@@ -6,6 +6,10 @@ Accepted 2026-11-17 — D1 is path A (Chaquopy runs the engine with `curl_cffi` 
 transport). Real mobile data, the consent button on a phone and the 16 KB runtime are deferred to later stages; see
 "What was and was not verified".
 
+Changed acceptance criterion: the stage 4 plan required a real mobile-data run to close the stage. On 2026-11-17 the
+criterion was narrowed to technical feasibility on a physical ARM64 device. The deferred checks were not passed; they
+stay open, and the verification table below must not be read as a full PASS.
+
 ## Context
 
 ADR-0002 splits the project into an engine and clients so that an Android application (Kotlin/Compose, Chaquopy,

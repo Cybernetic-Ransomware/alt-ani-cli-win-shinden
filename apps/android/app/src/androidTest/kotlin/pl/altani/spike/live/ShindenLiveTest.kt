@@ -100,7 +100,7 @@ class ShindenLiveTest {
         return Timed(result, SystemClock.elapsedRealtime() - start)
     }
 
-    private class Listing(val series: JSONObject, val episodes: JSONArray)
+    private class Listing(val series: JSONObject, val episodes: JSONArray, val complete: Boolean)
 
     /** search → episodes with one report line per step; null when a step failed. */
     private fun listing(rt: BridgeRuntime, column: String): Listing? {
@@ -122,16 +122,17 @@ class ShindenLiveTest {
                 .put("complete", data?.opt("complete"))
                 .put("pages_fetched", data?.opt("pages_fetched")),
         )
-        return data?.let { Listing(it.getJSONObject("series"), it.getJSONArray("episodes")) }
+        return data?.let { Listing(it.getJSONObject("series"), it.getJSONArray("episodes"), it.optBoolean("complete", false)) }
     }
 
     /** T12 transport columns on the current network: curl_cffi straight to Shinden and, given a solver, with its clearance. */
     @Test
     fun transportColumns() {
         val columns = listOfNotNull("direct" to false, solver?.let { "flaresolverr" to true })
-        val results = columns.map { (column, useSolver) -> column to (listing(runtime(useSolver), column) != null) }
+        val results = columns.map { (column, useSolver) -> column to (listing(runtime(useSolver), column)?.complete == true) }
         report("T12_TRANSPORT", JSONObject().put("network", "wifi").put("columns", JSONObject(results.toMap())))
-        assertTrue("no column reached an episode list: $results", results.any { it.second })
+        // every configured column must pass on its own, so a working solver cannot hide a broken direct path
+        results.forEach { (column, complete) -> assertTrue("$column did not reach a complete episode list", complete) }
     }
 
     /** T3b on the device: the stdlib backend's time for one full episode-list page, p95 of repeated runs. */
