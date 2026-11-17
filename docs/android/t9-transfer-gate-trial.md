@@ -2,7 +2,8 @@
 
 Trial behind the K3 decision in [ADR-0006](../adr/0006-mobile-client-contract.md). Two runs on 2026-11-14 with the same
 results. Environment: emulator `Medium_Phone_API_37.0` (x86_64), Media3 1.11.1, `emulatorDebug`, controlled server on
-`127.0.0.1:8765` through `adb reverse`. Not run on a physical device yet.
+`127.0.0.1:8765` through `adb reverse`. Repeated on 2026-11-16 on a Xiaomi Mi 10T Lite (arm64, Android 12,
+`deviceDebug`): all 40 cases matched the emulator.
 
 ## Method
 
