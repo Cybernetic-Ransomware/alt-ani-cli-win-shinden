@@ -1,4 +1,5 @@
 import re
+import threading
 
 import pytest
 
@@ -28,7 +29,7 @@ from alt_ani_core.providers.api import StaticEmbeds, url_matches
 from alt_ani_core.providers.shinden import ShindenProvider
 from alt_ani_core.services.engine import Engine
 from alt_ani_core.testing import FakeResponse, InMemoryHistory
-from alt_ani_core.transport.api import HttpSession, SessionProfile
+from alt_ani_core.transport.api import HttpSession, SessionProfile, TransportError
 
 from .support import EPISODE, EPISODE_URL, route_xhr
 
@@ -42,6 +43,7 @@ _SHINDEN_REF = SeriesRef(
     id="61064", slug="sousou-no-frieren", title="Frieren", url="https://shinden.pl/series/61064-sousou-no-frieren"
 )
 _SOLVER_ACCESS = AccessConfig(flaresolverr_url="http://solver.invalid:8191/v1", use_flaresolverr=True)
+_TIMEOUT = 5.0
 
 
 def _embed(online_id: str) -> EmbedURL:
@@ -57,12 +59,15 @@ class StaticProvider:
         self.profiles: list[AccessConfig] = []
         self.player_ids: tuple[str, ...] = ("1", "2")
         self.embed_ids: tuple[str, ...] | None = None
+        self.unreachable = False
 
     def owns(self, url: str) -> bool:
         return url_matches(url, hosts=frozenset({_HOST}), path=re.compile(r"/anime/[^/]+(?:/|$)"))
 
     def session_profile(self, access: AccessConfig, cache_dir) -> SessionProfile:
         self.profiles.append(access)
+        if self.unreachable:
+            raise TransportError("site down")
         return SessionProfile(name=self.name, headers={"Referer": _REFERER})
 
     def search(self, client: HttpSession, query: str, *, cancel: CancelToken) -> SearchResults:
@@ -227,6 +232,63 @@ class TestStaticProviderSessions:
         assert found[1] is None
         assert found[2] is not None
         assert "https://evil.example/anime/x/" not in static_site.urls
+
+    def test_metadata_many_reads_providers_concurrently(self, make_mixed, static_site, clearance_calls, shinden_html):
+        both_in_flight = threading.Barrier(2, timeout=_TIMEOUT)
+        shinden_page = shinden_html("series_frieren.html")
+
+        def meet(page):
+            def reply(request):
+                both_in_flight.wait()
+                return page
+
+            return reply
+
+        static_site.route(_STATIC_REF.url, meet("<html></html>"))
+        static_site.route(_SHINDEN_REF.url, meet(shinden_page))
+
+        found = make_mixed().metadata_many([_STATIC_REF, _SHINDEN_REF])
+
+        assert None not in found
+
+    def test_metadata_many_keeps_other_providers_when_one_is_unreachable(
+        self, make_mixed, static_site, static, clearance_calls, shinden_html
+    ):
+        static_site.route(_SHINDEN_REF.url, shinden_html("series_frieren.html"))
+        static.unreachable = True
+
+        found = make_mixed().metadata_many([_STATIC_REF, _SHINDEN_REF])
+
+        assert found[0] is None
+        assert found[1] is not None
+        assert _STATIC_REF.url not in static_site.urls
+
+    def test_metadata_many_with_two_providers_still_propagates_cancellation(
+        self, make_mixed, static_site, clearance_calls, shinden_html
+    ):
+        cancel = CancelToken()
+        both_in_flight = threading.Barrier(2, timeout=_TIMEOUT)
+
+        def cancelling(request):
+            both_in_flight.wait()
+            cancel.cancel()
+            return "<html></html>"
+
+        def waiting(request):
+            both_in_flight.wait()
+            return shinden_html("series_frieren.html")
+
+        static_site.route(_STATIC_REF.url, cancelling)
+        static_site.route(_SHINDEN_REF.url, waiting)
+        engine = make_mixed()
+
+        with pytest.raises(OperationCancelled):
+            engine.metadata_many([_STATIC_REF, _SHINDEN_REF], cancel=cancel)
+
+        workers = [s for s in static_site.sessions if s.threads]
+        assert len(workers) == 2
+        assert all(worker.closed for worker in workers)
+        assert engine.closed is False
 
 
 @pytest.mark.unit

@@ -257,16 +257,41 @@ class Engine:
             return provider.metadata(op.client, ref)
 
     def metadata_many(self, refs: Sequence[SeriesRef], *, cancel: CancelToken = NEVER) -> list[SeriesMetadata | None]:
-        """Concurrent per provider, with one HTTP session per worker thread; None marks a series that could not be read."""
+        """Concurrent across and within providers; None marks a series not read or whose site was unreachable."""
         results: list[SeriesMetadata | None] = [None] * len(refs)
         routed = [next((p for p in self._providers if p.owns(ref.url)), None) for ref in refs]
-        for provider in self._providers:
-            indexes = [i for i, owner in enumerate(routed) if owner is provider]
-            if indexes:
-                found = self._metadata_batch(provider, [refs[i] for i in indexes], cancel)
-                for i, meta in zip(indexes, found, strict=True):
-                    results[i] = meta
+        groups = [
+            (provider, indexes)
+            for provider in self._providers
+            if (indexes := [i for i, owner in enumerate(routed) if owner is provider])
+        ]
+        if len(groups) == 1:
+            provider, indexes = groups[0]
+            found_per_group = [self._provider_batch(provider, [refs[i] for i in indexes], cancel)]
+        elif groups:
+            with ThreadPoolExecutor(max_workers=len(groups)) as pool:
+                futures = [
+                    pool.submit(self._provider_batch, provider, [refs[i] for i in indexes], cancel)
+                    for provider, indexes in groups
+                ]
+            found_per_group = [future.result() for future in futures]
+        else:
+            found_per_group = []
+        for (_, indexes), found in zip(groups, found_per_group, strict=True):
+            for i, meta in zip(indexes, found, strict=True):
+                results[i] = meta
         return results
+
+    def _provider_batch(
+        self, provider: Provider, refs: Sequence[SeriesRef], cancel: CancelToken
+    ) -> list[SeriesMetadata | None]:
+        try:
+            return self._metadata_batch(provider, refs, cancel)
+        except EngineClosedError:
+            raise
+        except TransportError, ShindenError:
+            # one site being unreachable must not discard the series other providers did read
+            return [None] * len(refs)
 
     def _metadata_batch(
         self, provider: Provider, refs: Sequence[SeriesRef], cancel: CancelToken
@@ -278,12 +303,12 @@ class Engine:
 
             def fetch(ref: SeriesRef) -> SeriesMetadata | None:
                 op.check()
-                client = getattr(local, "client", None)
-                if client is None:
-                    client = local.client = op.transport.open(op.profile)
-                    with opened_lock:
-                        opened.append(client)
                 try:
+                    client = getattr(local, "client", None)
+                    if client is None:
+                        client = local.client = op.transport.open(op.profile)
+                        with opened_lock:
+                            opened.append(client)
                     return provider.metadata(client, ref)
                 except TransportError, ShindenError:
                     return None
