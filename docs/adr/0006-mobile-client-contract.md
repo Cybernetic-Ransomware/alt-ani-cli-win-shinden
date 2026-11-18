@@ -48,6 +48,9 @@ answers `executor.closing`, and the call may be repeated. `runtime_close` also w
 closed earlier: each close reports them until they end, and only then are the runtime and its platform objects released. `runtime_close` (and `Bridge.shutdown`) closes handles, then
 the executor, then the watcher and push threads, then gives back the platform objects the runtime used; a timeout
 never releases a lock. A platform object in use by a runtime or a running export cannot be released (`platform.in_use`).
+On Android `BridgeRuntime.shutdown` also waits for a start-up still creating the Python bridge or its engine, which
+no cancel interrupts: until it returns the report is `ended: false` (`engine_starting`), and an engine is never created
+after closing began.
 
 ### Repeating a mutation after a lost reply
 
@@ -77,6 +80,12 @@ destination. There is no idempotency-key table.
 | `events_next` | at once | `cancelled` |
 
 Batches always answer `ok: true` with one result per item, plus `interrupted` and `not_attempted` when cancelled.
+
+Contract 2.1 (additive) closes the gap before registration: a `cancel(op_id)` that finds no running operation is
+remembered for a bounded time and number of ids, and the call that later arrives with that `op_id` ends `cancelled`
+without running. A Kotlin caller can therefore cancel as soon as it has chosen the `op_id`, without knowing whether
+its call has reached the bridge yet, and never has to repeat a cancel. A lost reply after the commit point is still
+an unknown outcome: the client reads the state before retrying.
 
 ### Events are refresh signals
 
@@ -110,8 +119,52 @@ a refresh and rotation, ends with `playback_ended`, `playback_close` or a `playb
 
 The bridge cannot stop requests Media3 makes with a URL it already has. After `network_set(cellular)` it emits
 `playback.consent_required` for each open viewing without consent; the client must then stop new player transfers,
-let the buffer play and not refresh until `playback_allow_cellular`. Whether Media3 can be held like that is checked
-in stage 5.
+let the buffer play and not refresh until `playback_allow_cellular`.
+
+The hold was chosen by trial T9 in stage 4 (`TransferGateTrialTest`, emulator x86_64, Media3 1.11.1, two runs, same
+results; results and how to run it again: [T9 trial](../android/t9-transfer-gate-trial.md)). A probe numbered every `open()`, sent the number as `X-Probe-Seq` and stamped the gate under the gate's own
+lock; the controlled server logged each request. Candidates: K1 `LoadControl` refusing to load, K2 `open()` failing with
+a retry policy that polls, K3 `open()` waiting on the gate, and K1 with K3.
+
+- K1 lets the playlist refresh, the first playlist and segment of a prepare, a retry planned before the close and an
+  `open()` that reaches the check after the close through. With an empty buffer Media3 fails it after 4 s
+  (`StuckPlayerException`, buffering and not loading), and so it fails K1 with K3 as well.
+- K2 and K3 sent no request that started after the close in any case. K2 needs `getMinimumLoadableRetryCount` set to
+  unlimited for every load, because the gate's failures count towards the same error count. It also resumes only on its
+  next poll (0.3–1.2 s). K3 resumes when the gate opens (0.1–1.1 s, the time to play again). A seek or `release()`
+  interrupts the waiting loader thread (`InterruptedIOException`; release took under 25 ms).
+
+Decision: K3 (`GatedDataSource`, network sources only; local files and `content://` are never held). The guarantee:
+once the gate is closed, no further `open()` is let through until it opens. The gate does not stop what it let through
+before the close:
+- an `open()` that passed the check just before the close sends its request;
+- a redirect inside such an `open()` is followed, because `HttpURLConnection` follows it;
+- a transfer already under way is finished, not cut off.
+
+This is not the same as "no new requests after the network changes". The gate closes only when the client handles
+`network.changed` or `playback.consent_required`. That handling comes some time after `network_set` returns: the event
+pump delivers the event, and then the main thread runs it. Until then, every `open()` still goes through.
+
+Media3 also fails a player that buffers without progress for 10 minutes. No hold can prevent that, so when the buffer
+runs out behind a closed gate the controller pauses the player and resumes it when the gate opens. The gate closes on
+`playback.consent_required`. It also closes on `network.changed` to offline, and to cellular without consent. It opens
+after `playback_allow_cellular`, on Wi-Fi, and on cellular while the viewing's consent still holds (offline and back).
+After every events resync the client calls `network_get` with its
+playback session. The reply carries the network kind and `cellular_allowed` for that session. The kind alone cannot
+say whether consent was given or ended while events were lost, so the bridge's answer replaces the client's flag. A
+skipped notice therefore cannot leave the gate open. A resync reply is ignored if a network event or a consent was
+applied while the call was running. Nothing is lost on the Kotlin side either: the event pump waits for a slow
+collector instead of dropping events (the bridge's journal holds them meanwhile and reports a resync if it overflows),
+and the resync signal is a state, so a collector that subscribes late still re-reads once.
+
+A `stream_refresh` needed while the gate is closed waits until it opens. The same applies when the bridge refuses
+`playback_prepare` or `stream_refresh` with `network.cellular_consent_required`. Closing the playback or starting
+another episode drops the waiting call. Consent never carries over: the next episode asks for it again. A user
+pause, Home or the screen lock while waiting is an ordinary pause: neither the consent nor Wi-Fi resumes playback.
+The controller keeps the user's wish to play apart from the source: a pause, Home or the lock clears it, only the
+user's play sets it again, and a prepare or refresh that lands afterwards installs the source paused. Every start,
+close and release starts a new generation; a reply to an earlier one is dropped, and a `playback_begin` that lands
+after it is closed again. Starts reach the bridge in the user's order, so P3 keeps the last one.
 
 ### Platform boundary and secrets
 
@@ -152,7 +205,7 @@ newer decision; a slow UI never slows the engine.
 Harder: every mutation needs the revision the client last read; signals require the snapshot-plus-cursor procedure;
 the watcher costs one light read per interval while someone listens; export repeats need a client-side check.
 
-Assumptions for stages 4–6, not verified here: Chaquopy callbacks from Python threads and a blocking `events_next` on
-a Kotlin thread; Kotlin objects as `FileStore`/`ExportTarget` and the cost of `write(bytes)` over JNI for SAF;
-`content_uri` and headers in Media3; holding Media3 loading until consent; network classification; `flock` in the
-app directory; background work; a transport without `curl_cffi`.
+Assumptions for stages 4–6, not verified here (`content_uri`, headers and the consent hold in Media3 were verified on
+the emulator in stage 4): Chaquopy callbacks from Python threads and a blocking `events_next` on a Kotlin thread; Kotlin
+objects as `FileStore`/`ExportTarget` and the cost of `write(bytes)` over JNI for SAF; network classification; `flock`
+in the app directory; background work; a transport without `curl_cffi`.

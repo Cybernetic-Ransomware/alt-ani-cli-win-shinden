@@ -213,6 +213,58 @@ class TestOperations:
     def test_cancel_unknown_operation_is_false(self, client):
         assert client.bridge.cancel("never-started") is False
 
+    def test_cancel_before_the_call_ends_it_cancelled_once(self, client):
+        assert client.bridge.cancel("op-early") is False
+
+        error = client.error("history_watch", op_id="op-early")
+        assert (error["code"], error["kind"]) == ("cancelled", "cancelled")
+        client.data("history_watch", op_id="op-early")
+        assert client.data("engine_status")["running_operations"] == 0
+
+    def test_cancel_while_the_call_is_on_its_way_in(self, client):
+        from alt_ani_bridge import bridge as bridge_module
+
+        real_parse = bridge_module.parse
+
+        def cancel_then_parse(text):
+            # the caller's thread is inside call() but its op_id is not registered yet
+            assert client.bridge.cancel("op-window") is False
+            return real_parse(text)
+
+        with patch.object(bridge_module, "parse", cancel_then_parse):
+            error = client.error("history_watch", op_id="op-window")
+        assert error["code"] == "cancelled"
+
+    def test_early_cancel_expires(self, client, monkeypatch):
+        from alt_ani_bridge import contract
+
+        monkeypatch.setitem(contract.LIMITS, "early_cancel_ttl_ms", 0)
+        client.bridge.cancel("op-late")
+        client.data("history_watch", op_id="op-late")
+
+    def test_early_cancels_are_bounded_oldest_first(self, client):
+        from alt_ani_bridge.contract import LIMITS
+
+        ids = [f"op-{i}" for i in range(LIMITS["early_cancels"] + 1)]
+        for op_id in ids:
+            client.bridge.cancel(op_id)
+
+        client.data("history_watch", op_id=ids[0])
+        assert client.error("history_watch", op_id=ids[1])["code"] == "cancelled"
+        assert client.error("history_watch", op_id=ids[-1])["code"] == "cancelled"
+
+    def test_cancel_of_a_running_operation_leaves_its_id_reusable(self, client, extract_ok):
+        session_id, sources = _open(client)
+        entered, release = self._blocked_show(client)
+        thread, replies = self._resolve_in_thread(client, session_id, sources[0]["online_id"], "op-1")
+        assert entered.wait(5)
+
+        assert client.bridge.cancel("op-1") is True
+        release.set()
+        thread.join(5)
+        assert replies[0]["error"]["code"] == "cancelled"
+        client.data("history_watch", op_id="op-1")
+
     def test_cancel_running_operation(self, client, extract_ok):
         session_id, sources = _open(client)
         entered, release = self._blocked_show(client)

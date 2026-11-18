@@ -35,9 +35,46 @@ def _sqlite(files_dir: str) -> str:
 
 def _dom() -> str:
     from alt_ani_core import dom
+    from alt_ani_core.dom import stdlib_backend
+
+    # selectolax has no Android wheel; the app installs the stdlib backend the same way
+    dom.set_backend(stdlib_backend.parse)
 
     node = dom.parse("<div class='a'><iframe src='//x/y'></iframe></div>").css_first("iframe")
     return f"iframe src={node.attributes.get('src') if node else None}"
+
+
+def _bridge_info() -> str:
+    from alt_ani_bridge import Bridge
+
+    reply = json.loads(Bridge().call("bridge_info", "{}"))
+    if not reply["ok"]:
+        raise RuntimeError(reply["error"]["code"])
+    info = reply["data"]
+    return f"contract {info['contract']}, {len(info['methods'])} methods, capabilities {info['capabilities']}"
+
+
+def _bridge_engine(files_dir: str, cache_dir: str) -> str:
+    from alt_ani_bridge import Bridge
+
+    bridge = Bridge()
+    try:
+        created = json.loads(
+            bridge.create_engine(
+                json.dumps({"cache_dir": cache_dir, "history_path": str(Path(files_dir) / "feasibility-state.db")})
+            )
+        )
+        if not created["ok"]:
+            raise RuntimeError(created["error"]["code"])
+        engine_id = created["data"]["engine_id"]
+        status = json.loads(bridge.call("engine_status", json.dumps({"engine_id": engine_id})))
+        if not status["ok"]:
+            raise RuntimeError(status["error"]["code"])
+        return f"engine created, status {status['data']}"
+    finally:
+        closed = json.loads(bridge.shutdown(5))
+        if not (closed["ok"] and closed["data"]["ended"]):
+            raise RuntimeError(f"shutdown did not end: {closed}")
 
 
 def _curl_transport() -> str:
@@ -61,6 +98,11 @@ def run(files_dir: str, cache_dir: str) -> str:
     _check("engine_imports", _engine_imports, report)
     _check("sqlite_history", lambda: _sqlite(files_dir), report)
     _check("dom_backend", _dom, report)
+    _check("bridge_info", _bridge_info, report)
+    _check("bridge_engine", lambda: _bridge_engine(files_dir, cache_dir), report)
     _check("curl_transport", _curl_transport, report)
     _check("yt_dlp", _ytdlp, report)
-    return json.dumps(report, indent=2)
+    text = json.dumps(report, indent=2)
+    # Chaquopy sends stdout to logcat (tag python.stdout), where adb can read the report
+    print(f"FEASIBILITY_REPORT {json.dumps(report)}")
+    return text

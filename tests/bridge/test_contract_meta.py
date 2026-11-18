@@ -20,7 +20,8 @@ def raw(client, method: str, text: str) -> dict:
 class TestBridgeInfo:
     def test_describes_exactly_what_is_callable(self, v2):
         info = json.loads(v2.bridge.call("bridge_info", "{}"))["data"]
-        assert info["contract"] == "2.0"
+        assert info["contract"] == "2.1"
+        assert info["capabilities"]["cancel_before_start"] is True
         assert info["capabilities"]["interaction_grants"] is False
         assert info["limits"] == LIMITS
         assert not any("grant" in name or "complete_interaction" in name for name in info["methods"])

@@ -23,7 +23,8 @@ lint:
     uv run ruff format --check .
     uv run ty check apps packages/core/src
     uv run lint-imports
-    uv run python -m codespell_lib apps packages docs
+    # tracked files only, so local untracked notes and build output never fail the run
+    uv run python -m codespell_lib (git ls-files apps packages docs)
     uv run bandit -c pyproject.toml -r apps packages/core/src -q
 
 # Build both wheels and check them in clean virtual environments

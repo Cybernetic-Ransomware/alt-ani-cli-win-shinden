@@ -1,47 +1,70 @@
 # Android feasibility spike
 
-Not a product: one screen that loads the shared engine (`packages/core`) and the JSON bridge
-(`app/src/main/python/alt_ani_bridge`) through Chaquopy and prints a report of what works on the device.
-It exists to answer the open questions in [ADR-0003](../../docs/adr/0003-android-feasibility.md).
-It is **not** part of the merge gate of the engine/CLI split and nothing in CI builds it.
+Not a product: one technical screen that loads the shared engine (`packages/core`) and the JSON bridge
+(`app/src/main/python/alt_ani_bridge`) through Chaquopy, plays media through Media3 and prints what works on the
+device. Results and the D1 decision (path A) are in [ADR-0003](../../docs/adr/0003-android-feasibility.md).
+Nothing in CI builds it.
 
 The bridge itself is covered on the desktop by `tests/bridge/` (no Android toolchain needed).
 
-## Status
+## Flavors
 
-Nothing in this directory has been built yet. The Gradle files were written without an Android SDK at hand;
-only the Chaquopy version was checked against its changelog. Expect to adjust plugin and library versions in
-`gradle/libs.versions.toml` on the first build.
+| Flavor | ABI | Python requirements | Talks to |
+|---|---|---|---|
+| `device` | arm64-v8a | `app/requirements-device.txt`: `curl-cffi` 0.17.0 on our `cffi` 2.1.1 wheel from `wheels/` | real hosts and the controlled server |
+| `emulator` | x86_64 | `app/requirements-emulator.txt`: no `curl-cffi` (no x86_64 wheel) | the controlled server only; never released |
 
-## Running the experiment (Windows 11 + Android SDK)
+## Building
 
-Record every step's outcome in ADR-0003, including the ones you could not run.
+```powershell
+$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
+$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+cd apps/android
+.\gradlew :app:assembleDeviceDebug :app:assembleDeviceDebugAndroidTest
+```
 
-1. **Wheel availability (no build needed)** — for each native dependency:
-   ```powershell
-   py -3.14 -m pip download --only-binary=:all: --no-deps --platform android_24_arm64_v8a --python-version 3.14 -d wheels curl-cffi
-   py -3.14 -m pip download --only-binary=:all: --no-deps --platform android_24_arm64_v8a --python-version 3.14 -d wheels cffi
-   py -3.14 -m pip download --only-binary=:all: --no-deps --platform android_24_arm64_v8a --python-version 3.14 -d wheels selectolax
-   ```
-   Chaquopy 17 installs with `--only-binary`, so a package without an Android wheel cannot be installed at all.
-2. **Build** — `gradle wrapper` once, then `.\gradlew :app:assembleDebug`. Enable the commented `install(...)`
-   lines in `app/build.gradle.kts` one at a time.
-3. **Native libraries and 16 KB page size (static)** — list the `.so` files in the APK and check their LOAD
-   segment alignment:
-   ```powershell
-   & "$env:ANDROID_HOME\build-tools\<version>\zipalign.exe" -c -P 16 -v 4 app\build\outputs\apk\debug\app-debug.apk
-   & "$env:ANDROID_HOME\ndk\<version>\toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-readelf.exe" -l <extracted .so>
-   ```
-   Alignment of `0x4000` or more on every LOAD segment is required for 16 KB devices.
-4. **Emulator** — first check what the image can run, do not assume either way:
-   ```powershell
-   adb shell getprop ro.product.cpu.abilist
-   ```
-   An x86_64 image that does not list `arm64-v8a` cannot load arm64-only wheels (curl-cffi); it can still run
-   the pure-Python checks. Note whether a result came from native x86_64 code or ARM translation.
-5. **Physical ARM64 device** (when available) — same report, plus a real request to shinden.pl on Wi-Fi with
-   FlareSolverr and on mobile data without it.
-6. **16 KB runtime** — only on a 16 KB device or emulator image; otherwise it stays unverified.
+The APKs to install are in `app/build/outputs/apk/device/debug/` and `app/build/outputs/apk/androidTest/device/debug/`,
+never in `app/build/intermediates/`. `tools/android/bootstrap-wrapper.ps1` regenerates the Gradle wrapper without an
+installed `gradle`.
 
-A successful build, an emulator run, a run on a physical ARM64 device and 16 KB compatibility are four
-separate confirmations; none implies another.
+Static 16 KB check of every native library, including the ones nested in Chaquopy's assets:
+
+```powershell
+uv run python tools/android/check_native_libs.py apps/android/app/build/outputs/apk/device/debug/app-device-debug.apk
+```
+
+## Tests on a device or emulator
+
+Pass `-s <serial>` to every `adb` command when more than one device is attached.
+
+Controlled suite (bridge, Media3 playback, consent gate, stale starts) against `tools/android/controlled_server.py`:
+
+```powershell
+uv run python tools/android/controlled_server.py --port 8765   # separate terminal
+adb reverse tcp:8765 tcp:8765
+adb shell am instrument -w pl.altani.spike.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Without the server the controlled tests are skipped; `-e controlledServer required` makes them fail instead. The T9
+trial is opt-in, see [T9](../../docs/android/t9-transfer-gate-trial.md).
+
+Live Shinden on a `device` build (opt-in, real network):
+
+```powershell
+adb logcat -c
+adb shell am instrument -w -e shindenLive true -e class pl.altani.spike.live.ShindenLiveTest `
+    pl.altani.spike.test/androidx.test.runner.AndroidJUnitRunner
+adb logcat -d -s ShindenLive:I
+```
+
+Optional arguments: `-e access flaresolverr -e flaresolverr http://<host>:8191`, `-e query <title>`,
+`-e episodeIndex <n>`, `-e playSeconds <s>`. The log carries codes, counts and timings only; each run uses its own
+runtime directory, deleted afterwards, because it may hold a `cf_clearance` cookie. The playback check fails on a
+seek, so do not touch the player while it runs.
+
+## MIUI
+
+Xiaomi phones without a SIM refuse `adb install` (`INSTALL_FAILED_USER_RESTRICTED`): push the APK to
+`/sdcard/Download` and install it from the phone. They also deny key injection and Activity starts from the test
+process, so `PlaybackLifecycleTest` and `ConsentUiTest` cannot run there; check the lifecycle by hand on the
+technical screen instead (rotation, Home, screen lock).
