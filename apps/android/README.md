@@ -62,6 +62,26 @@ Optional arguments: `-e access flaresolverr -e flaresolverr http://<host>:8191`,
 runtime directory, deleted afterwards, because it may hold a `cf_clearance` cookie. The playback check fails on a
 seek, so do not touch the player while it runs.
 
+## Catalog tab
+
+The app opens on **Catalog**: search → series → episodes → episode, on the real Shinden through the process's bridge
+(never the controlled server), with playback by the same `PlaybackController` as the controlled flow. **Tech** keeps the
+technical buttons and the controlled playback; starting one flow closes the other's player. The device's network
+changes reach the engine as `network_set`; on mobile data the player asks for consent per episode. The engine is created
+without FlareSolverr, so a Cloudflare block shows as an access error.
+
+The status line separates three things: the bridge answered (lists appear), a stream was resolved (`stream: online
+<variant>`), and Media3 really played (`media3: confirmed` — at least 3 s of position progress in this attempt plus a
+rendered first frame for video). `PLAYING` alone is not a confirmation.
+
+Manual check on a `device` build: search a known title (e.g. Frieren), open its episodes, pick one and wait for
+`media3: confirmed`; pause and resume, rotate (playback goes on), Home and back (stays paused), pick another episode,
+then airplane mode and a new search for the network message and Retry. Evidence without URLs or tokens:
+
+```powershell
+adb logcat -s AltAniCatalog:I AltAniPlayback:I AltAniNetwork:I
+```
+
 ## MIUI
 
 Xiaomi phones without a SIM refuse `adb install` (`INSTALL_FAILED_USER_RESTRICTED`): push the APK to

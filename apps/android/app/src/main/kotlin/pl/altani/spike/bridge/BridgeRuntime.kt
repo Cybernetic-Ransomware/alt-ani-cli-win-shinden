@@ -55,6 +55,10 @@ class BridgeRuntime(
     val engineCreations: Int
         get() = engineCount.get()
 
+    /** True once a call asked for the engine; before that its creation arguments still carry the current state. */
+    val engineRequested: Boolean
+        get() = synchronized(lock) { setup != null }
+
     private class Setup(val client: BridgeClient, val engineId: String)
 
     private class SetupFailed(val failure: BridgeResult.Failure) : Exception(failure.code)

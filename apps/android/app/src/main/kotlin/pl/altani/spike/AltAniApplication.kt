@@ -2,13 +2,16 @@ package pl.altani.spike
 
 import android.app.Application
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.util.Log
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import java.io.File
 import org.json.JSONObject
 import pl.altani.spike.bridge.BridgeRuntime
 import pl.altani.spike.bridge.ChaquopyEndpoint
+import pl.altani.spike.bridge.NetworkSync
 import pl.altani.spike.controlled.ControlledEnvironment
 
 /** Owns the process's [BridgeRuntime]; nothing is closed on the way out, the state is durable in SQLite. */
@@ -22,9 +25,19 @@ class AltAniApplication : Application() {
                 JSONObject()
                     .put("cache_dir", cacheDir.absolutePath)
                     .put("history_path", File(filesDir, "alt-ani.db").absolutePath)
-                    .put("network", currentNetwork())
+                    .put("network", networkSync.kind.value)
             },
         )
+    }
+
+    /** The real [bridge] only; the controlled runtime stays on loopback "wifi". */
+    val networkSync: NetworkSync by lazy {
+        NetworkSync(
+            initial = currentNetwork(),
+            scope = bridge.scope,
+            engineRequested = { bridge.engineRequested },
+            send = { kind -> bridge.call("network_set", JSONObject().put("kind", kind), mutation = true) },
+        ) { Log.i(TAG, it) }
     }
 
     /** Debug builds only: the technical screen's controlled playback, separate from [bridge] and its database. */
@@ -37,15 +50,31 @@ class AltAniApplication : Application() {
         if (!Python.isStarted()) {
             Python.start(AndroidPlatform(this))
         }
+        // once per process: an Activity recreated by rotation never registers a second monitor
+        getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) = networkSync.update(kindOf(caps))
+
+                override fun onLost(network: Network) = networkSync.update(OFFLINE)
+            },
+        )
     }
 
     private fun currentNetwork(): String {
         val manager = getSystemService(ConnectivityManager::class.java)
-        val caps = manager.getNetworkCapabilities(manager.activeNetwork) ?: return "offline"
-        return when {
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) -> "wifi"
-            else -> "offline"
-        }
+        return kindOf(manager.getNetworkCapabilities(manager.activeNetwork))
+    }
+
+    private companion object {
+        const val TAG = "AltAniNetwork"
+        const val OFFLINE = "offline"
+
+        fun kindOf(caps: NetworkCapabilities?): String =
+            when {
+                caps == null -> OFFLINE
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) -> "wifi"
+                else -> OFFLINE
+            }
     }
 }
