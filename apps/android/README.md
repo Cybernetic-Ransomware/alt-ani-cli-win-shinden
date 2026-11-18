@@ -74,6 +74,11 @@ The status line separates three things: the bridge answered (lists appear), a st
 <variant>`), and Media3 really played (`media3: confirmed` — at least 3 s of position progress in this attempt plus a
 rendered first frame for video). `PLAYING` alone is not a confirmation.
 
+Turning the device sideways while the catalogue plays shows the player alone on the screen, without system bars; an
+error or the mobile-data consent keeps the regular layout so the message stays visible. The player's fullscreen button
+turns the screen (Back leaves fullscreen); once the device is held that way, auto-rotate takes over again, and with
+auto-rotate off the button's orientation stays.
+
 Manual check on a `device` build: search a known title (e.g. Frieren), open its episodes, pick one and wait for
 `media3: confirmed`; pause and resume, rotate (playback goes on), Home and back (stays paused), pick another episode,
 then airplane mode and a new search for the network message and Retry. Evidence without URLs or tokens:

@@ -1,6 +1,7 @@
 package pl.altani.spike.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -39,7 +41,7 @@ import pl.altani.spike.ui.CatalogFlow.Load
 
 @UnstableApi
 @Composable
-fun CatalogScreen(catalog: CatalogViewModel, playback: PlaybackViewModel) {
+fun CatalogScreen(catalog: CatalogViewModel, playback: PlaybackViewModel, onFullscreen: (Boolean) -> Unit) {
     val flow = catalog.flow
     val state by flow.state.collectAsStateWithLifecycle()
     val mode by playback.mode.collectAsStateWithLifecycle()
@@ -65,7 +67,7 @@ fun CatalogScreen(catalog: CatalogViewModel, playback: PlaybackViewModel) {
                 Button(onClick = { flow.search(query) }, enabled = query.isNotBlank()) { Text("Search") }
             }
         }
-        player?.takeIf { mode == PlaybackViewModel.Mode.CATALOG }?.let { PlayerPanel(it, playback) }
+        player?.takeIf { mode == PlaybackViewModel.Mode.CATALOG }?.let { PlayerPanel(it, playback, onFullscreen) }
         val series = state.series
         if (series == null) {
             SearchResults(state.search, flow)
@@ -83,14 +85,10 @@ fun CatalogScreen(catalog: CatalogViewModel, playback: PlaybackViewModel) {
 
 @UnstableApi
 @Composable
-private fun PlayerPanel(controller: PlaybackController, playback: PlaybackViewModel) {
+private fun PlayerPanel(controller: PlaybackController, playback: PlaybackViewModel, onFullscreen: (Boolean) -> Unit) {
     val state by controller.state.collectAsStateWithLifecycle()
     val seen by playback.evidence.snapshot.collectAsStateWithLifecycle()
-    AndroidView(
-        factory = { PlayerView(it).apply { player = controller.player } },
-        onRelease = { it.player = null },
-        modifier = Modifier.fillMaxWidth().height(200.dp),
-    )
+    CatalogPlayerView(controller, fullscreen = false, onFullscreen, Modifier.fillMaxWidth().height(200.dp))
     val stream = when {
         state.mode == null -> "not resolved"
         state.mode == "online" -> "online ${state.variant ?: ""}"
@@ -110,6 +108,27 @@ private fun PlayerPanel(controller: PlaybackController, playback: PlaybackViewMo
             OutlinedButton(onClick = playback::retryCatalog) { Text("Retry") }
         }
     }
+}
+
+@UnstableApi
+@Composable
+fun FullscreenPlayer(controller: PlaybackController, onExit: () -> Unit) {
+    BackHandler(onBack = onExit)
+    CatalogPlayerView(controller, fullscreen = true, { if (!it) onExit() }, Modifier.fillMaxSize().background(Color.Black))
+}
+
+@UnstableApi
+@Composable
+private fun CatalogPlayerView(controller: PlaybackController, fullscreen: Boolean, onFullscreen: (Boolean) -> Unit, modifier: Modifier) {
+    AndroidView(
+        factory = { PlayerView(it).apply { player = controller.player } },
+        update = { view ->
+            view.setFullscreenButtonState(fullscreen)
+            view.setFullscreenButtonClickListener { onFullscreen(it) }
+        },
+        onRelease = { it.player = null },
+        modifier = modifier,
+    )
 }
 
 @Composable
