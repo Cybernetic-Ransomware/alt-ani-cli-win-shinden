@@ -123,6 +123,10 @@ def shinden_episodes_incomplete(series_id: str, pages_fetched: int, pages_total:
     _emit("shinden_episodes_incomplete", id=series_id, fetched=pages_fetched, total=pages_total, reason=reason)
 
 
+def shinden_search_incomplete(pages_fetched: int, hits: int, total: int | None, reason: str) -> None:
+    _emit("shinden_search_incomplete", fetched=pages_fetched, hits=hits, total=total, reason=reason)
+
+
 def player_selected(online_id: str, player: str, host: str | None) -> None:
     _emit("player_selected", online_id=online_id, player=player, host=host)
 

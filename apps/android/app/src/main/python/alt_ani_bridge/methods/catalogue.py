@@ -21,8 +21,7 @@ def sources(session: SessionEntry) -> list[dict[str, Any]]:
 
 
 def search(c: Call) -> Any:
-    hits = c.engine.search(c.r.text("query"), cancel=c.token)
-    return {"hits": [dto.series_hit(hit) for hit in hits]}
+    return dto.search_results(c.engine.search(c.r.text("query"), cancel=c.token))
 
 
 def metadata(c: Call) -> Any:

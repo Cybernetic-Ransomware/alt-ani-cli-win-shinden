@@ -4,7 +4,7 @@ import sys
 
 from alt_ani_cli import playback
 from alt_ani_cli.args import CliOptions, missing_input_error
-from alt_ani_cli.content import CONTENT, EXCEPTIONS
+from alt_ani_cli.content import CONTENT, EXCEPTIONS, search_incomplete_text
 from alt_ani_cli.paths import CliPaths
 from alt_ani_cli.player import runner as player_runner
 from alt_ani_cli.ui import progress
@@ -36,10 +36,13 @@ def _pick_series(options: CliOptions, engine: Engine) -> tuple[SeriesRef, float,
 
     query = " ".join(options.query)
     progress.info(_PROG["searching"].format(query=repr(query)))
-    hits = engine.search(query)
+    results = engine.search(query)
+    hits = results.hits
     if not hits:
         progress.error(_PROG["no_results"].format(query=repr(query)))
         sys.exit(1)
+    if not results.complete:
+        progress.warn(search_incomplete_text(results))
 
     idx = (options.select_nth - 1) if options.select_nth else 0
     if idx < 0 or idx >= len(hits):

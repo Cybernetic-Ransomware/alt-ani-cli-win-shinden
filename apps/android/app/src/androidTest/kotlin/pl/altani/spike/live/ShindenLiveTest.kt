@@ -317,7 +317,7 @@ from alt_ani_core.transport.curl import CurlTransport
 
 dom.set_backend(stdlib_backend.parse)
 with CurlTransport().open(clearance.shinden_profile(None)) as s:
-    hits = [h for h in search.search_series(s, QUERY) if "/series/" in h.url][:4]
+    hits = [h for h in search.search_series(s, QUERY).hits if "/series/" in h.url][:4]
     pages = []
     for hit in hits:
         ref = series.parse_series_url(hit.url)

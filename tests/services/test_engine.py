@@ -71,9 +71,9 @@ class TestLifecycle:
         transport.route("https://shinden.pl/series", shinden_html("search_frieren.html"))
         engine = make_engine()
 
-        hits = engine.search("frieren")
+        results = engine.search("frieren")
 
-        assert hits
+        assert results.hits and results.complete
         assert transport.requests[0].params == {"search": "frieren"}
         assert transport.requests[0].profile == "shinden"
 

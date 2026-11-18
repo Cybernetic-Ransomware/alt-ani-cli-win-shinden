@@ -91,6 +91,10 @@ policy?, rank_by_health?, force_fresh?, quality?}`, `probe_hosts {session_id, ca
 `reload_episode {session_id}`, `close_session {session_id}`, `history_watch`, `history_downloads`,
 `history_record_watch {series, episode}`, `history_record_download {series, episode}`, `history_clear`.
 
+`search` answers `{hits[], total, complete, incomplete_reason, pages_fetched}`; `total` is the site's counter (or
+null), and `complete: false` (`page_limit`, `http_error`, `repeated_page`, `empty_page`) means `hits` is a prefix of
+the server order, never the whole result.
+
 ### Preferences and network
 
 | method | request | response |
