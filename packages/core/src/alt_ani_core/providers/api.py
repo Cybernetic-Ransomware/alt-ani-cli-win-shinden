@@ -1,14 +1,14 @@
 """What the engine needs from one anime site; everything after the embed URL (extraction, ranking, health) is shared."""
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import unquote, urlsplit
 
 from alt_ani_core.cancel import CancelToken
 from alt_ani_core.config import AccessConfig
-from alt_ani_core.errors import ShindenError
+from alt_ani_core.errors import ParseError, PlayerNotFoundError, ShindenError
 from alt_ani_core.models import EmbedURL, EpisodeListing, EpisodeRow, PlayerEntry, SearchResults, SeriesMetadata, SeriesRef
 from alt_ani_core.transport.api import HttpSession, SessionProfile
 
@@ -54,13 +54,23 @@ class Provider(Protocol):
 
     def episodes(self, client: HttpSession, ref: SeriesRef, *, cancel: CancelToken) -> EpisodeListing: ...
 
-    def load_episode(self, client: HttpSession, episode: EpisodeRow) -> tuple[list[PlayerEntry], EpisodeEmbeds]: ...
+    def load_episode(self, client: HttpSession, episode: EpisodeRow) -> tuple[list[PlayerEntry], EpisodeEmbeds]:
+        """Every returned player can be turned into an embed by the returned EpisodeEmbeds."""
+        ...
 
 
 class StaticEmbeds:
     """Embeds an episode page lists outright: no request, no anti-bot wait, nothing to refresh."""
 
-    def __init__(self, embeds: Mapping[str, EmbedURL]) -> None:
+    def __init__(self, players: Sequence[PlayerEntry], embeds: Mapping[str, EmbedURL]) -> None:
+        ids = [p.online_id for p in players]
+        missing = sorted(set(ids) - embeds.keys())
+        extra = sorted(embeds.keys() - set(ids))
+        duplicate = sorted({i for i in ids if ids.count(i) > 1})
+        if missing or extra or duplicate:
+            raise ParseError("the episode page's players and embeds do not match").coded(
+                "episode.embeds_mismatch", missing=missing, extra=extra, duplicate=duplicate
+            )
         self.antibot_phase = False
         self._embeds = dict(embeds)
 
@@ -71,7 +81,8 @@ class StaticEmbeds:
         cancel.raise_if_cancelled()
         embed = self._embeds.get(online_id)
         if embed is None:
-            raise AssertionError("player is not on this episode page")
+            # a player from before a reload; the constructor already ruled out a parser mismatch
+            raise PlayerNotFoundError("player is not on this episode page").coded("episode.player_not_listed")
         return embed
 
     def stops_operation(self, exc: ShindenError) -> bool:

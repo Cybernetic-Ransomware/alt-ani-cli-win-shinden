@@ -8,6 +8,7 @@ from alt_ani_core.errors import (
     NoStreamError,
     OperationCancelled,
     ParseError,
+    PlayerNotFoundError,
     ReloadLimitError,
     SourcesExhaustedError,
     StaleSessionError,
@@ -54,6 +55,8 @@ class StaticProvider:
 
     def __init__(self) -> None:
         self.profiles: list[AccessConfig] = []
+        self.player_ids: tuple[str, ...] = ("1", "2")
+        self.embed_ids: tuple[str, ...] | None = None
 
     def owns(self, url: str) -> bool:
         return url_matches(url, hosts=frozenset({_HOST}), path=re.compile(r"/anime/[^/]+(?:/|$)"))
@@ -79,8 +82,9 @@ class StaticProvider:
 
     def load_episode(self, client: HttpSession, episode: EpisodeRow) -> tuple[list[PlayerEntry], StaticEmbeds]:
         client.get(episode.url).raise_for_status()
-        players = [PlayerEntry(online_id=i, player=f"Host{i}", lang_audio="jp", lang_subs="pl") for i in ("1", "2")]
-        return players, StaticEmbeds({p.online_id: _embed(p.online_id) for p in players})
+        players = [PlayerEntry(online_id=i, player=f"Host{i}", lang_audio="jp", lang_subs="pl") for i in self.player_ids]
+        embed_ids = self.player_ids if self.embed_ids is None else self.embed_ids
+        return players, StaticEmbeds(players, {i: _embed(i) for i in embed_ids})
 
 
 @pytest.fixture
@@ -275,6 +279,26 @@ class TestStaticEpisodeSession:
         assert static_site.urls == [_EP_URL, _EP_URL]
         with pytest.raises(ReloadLimitError):
             session.reload()
+
+    def test_a_page_whose_players_and_embeds_disagree_does_not_open(self, make_mixed, static_site, static, clearance_calls):
+        static.embed_ids = ("1",)
+
+        with pytest.raises(ParseError) as exc_info:
+            make_mixed().open_episode(_STATIC_EP)
+
+        assert exc_info.value.code == "episode.embeds_mismatch"
+
+    def test_a_source_from_before_a_reload_is_a_classified_error(
+        self, make_mixed, static_site, static, extract_seam, clearance_calls
+    ):
+        session = make_mixed().open_episode(_STATIC_EP)
+        stale = session.sources[1]
+        static.player_ids = ("1", "3")
+        session.reload()
+
+        with pytest.raises(PlayerNotFoundError):
+            session.resolve(stale)
+        extract_seam.assert_not_called()
 
     def test_set_access_makes_a_static_session_stale_and_closes_its_http_session(
         self, make_mixed, static_site, extract_seam, clearance_calls
