@@ -1,4 +1,4 @@
-"""One opened episode: its player list, XHR state, embed cache and limits; operations on it are serialized."""
+"""One opened episode: its player list, embed source, embed cache and limits; operations on it are serialized."""
 
 import threading
 from collections.abc import Sequence
@@ -46,9 +46,9 @@ from alt_ani_core.rules import ranking
 from alt_ani_core.rules.filtering import filter_players
 from alt_ani_core.rules.health import HealthTransition, Signal, classify_failure
 from alt_ani_core.shinden import api as shinden_api
-from alt_ani_core.shinden.xhr import EpisodeXhr
 
 if TYPE_CHECKING:
+    from alt_ani_core.providers.api import EpisodeEmbeds
     from alt_ani_core.services.engine import Engine, Operation
 
 PHASE_ANTIBOT = "antibot_delay"
@@ -68,14 +68,22 @@ class _Deferred:
 
 class EpisodeSession:
     def __init__(
-        self, engine: Engine, generation: int, episode: EpisodeRow, players: Sequence[PlayerEntry], xhr: EpisodeXhr
+        self,
+        engine: Engine,
+        generation: int,
+        episode: EpisodeRow,
+        players: Sequence[PlayerEntry],
+        source: EpisodeEmbeds,
+        *,
+        provider: str,
     ) -> None:
         self.episode = episode
         self._engine = engine
         self._generation = generation
+        self._provider = provider
         self._lock = threading.RLock()
         self._players = tuple(players)
-        self._xhr = xhr
+        self._source = source
         self._embeds: dict[str, EmbedURL] = {}
         self._fresh_resolves: dict[str, int] = {}
         self._reloaded = False
@@ -128,10 +136,10 @@ class EpisodeSession:
                 )
             self._reloaded = True
             try:
-                with self._engine.operation(cancel, generation=self._generation) as op:
-                    players, xhr = self._engine.load_episode(op.client, self.episode)
+                with self._engine.operation(cancel, generation=self._generation, provider=self._provider) as op:
+                    players, source = self._engine.load_episode(op.client, self.episode)
                     op.check()
-                    self._players, self._xhr, self._embeds = tuple(players), xhr, {}
+                    self._players, self._source, self._embeds = tuple(players), source, {}
             except EngineInterrupt:
                 # an interrupted reload reloaded nothing, so it does not use up the one allowed reload
                 self._reloaded = False
@@ -139,17 +147,17 @@ class EpisodeSession:
 
     def probe_hosts(self, candidates: Sequence[PlayerEntry], *, cancel: CancelToken = NEVER) -> ShindenXhrError | None:
         """Learns hosts one source at a time, so a block or outage stops before the next XHR; returns that stop error."""
-        with self._lock, self._engine.operation(cancel, generation=self._generation) as op:
+        with self._lock, self._engine.operation(cancel, generation=self._generation, provider=self._provider) as op:
             pending = [p for p in candidates if p.online_id not in self._embeds]
             if not pending:
                 return None
-            self._xhr.begin_operation()
+            self._source.begin_operation()
             for candidate in pending:
                 try:
                     embed = self._resolve_embed(op, candidate.online_id, cancel)
                 except ShindenXhrError as exc:
                     op.check()
-                    if shinden_api.xhr_outcome(exc) is shinden_api.XhrOutcome.NEXT_PLAYER:
+                    if not self._source.stops_operation(exc):
                         continue
                     return exc
                 except ShindenError:
@@ -177,7 +185,7 @@ class EpisodeSession:
         Raises SourcesExhaustedError when nothing worked, and a ShindenXhrError whose outcome is not NEXT_PLAYER
         as it is: that is the shared API failing, not a source. Cancellation and a stale session record nothing.
         """
-        with self._lock, self._engine.operation(cancel, generation=self._generation) as op:
+        with self._lock, self._engine.operation(cancel, generation=self._generation, provider=self._provider) as op:
             if force_fresh:
                 self._spend_fresh_resolve(chosen)
                 try:
@@ -197,7 +205,7 @@ class EpisodeSession:
         options: ExtractOptions | None,
         cancel: CancelToken,
     ) -> ResolvedStream:
-        self._xhr.begin_operation()
+        self._source.begin_operation()
         walk = policy is FallbackPolicy.WALK
         order = [chosen, *(p for p in candidates if p is not chosen)] if walk else [chosen]
         attempts: list[SourceAttempt] = []
@@ -266,7 +274,7 @@ class EpisodeSession:
             op.check()
             self._record_failure(host, candidate, exc, start)
             attempts.append(SourceAttempt(source=candidate, host=host, error=type(exc).__name__))
-            if isinstance(exc, ShindenXhrError) and shinden_api.xhr_outcome(exc) is not shinden_api.XhrOutcome.NEXT_PLAYER:
+            if self._source.stops_operation(exc):
                 raise
             return None
         op.check()
@@ -310,22 +318,19 @@ class EpisodeSession:
 
     def _fresh_embed(self, op: Operation, candidate: PlayerEntry, cancel: CancelToken) -> EmbedURL:
         events = self._engine.events
-        events.emit(PhaseStarted(phase=PHASE_ANTIBOT))
+        antibot = self._source.antibot_phase
+        if antibot:
+            events.emit(PhaseStarted(phase=PHASE_ANTIBOT))
         try:
             embed = self._resolve_embed(op, candidate.online_id, cancel)
         finally:
-            events.emit(PhaseFinished(phase=PHASE_ANTIBOT))
+            if antibot:
+                events.emit(PhaseFinished(phase=PHASE_ANTIBOT))
         self._embeds[candidate.online_id] = embed
         return embed
 
     def _resolve_embed(self, op: Operation, online_id: str, cancel: CancelToken) -> EmbedURL:
-        embed = shinden_api.resolve_embed(
-            op.client,
-            online_id,
-            xhr=self._xhr,
-            min_sleep_seconds=self._engine.config.antibot_delay_sec,
-            cancel=cancel,
-        )
+        embed = self._source.embed(op.client, online_id, cancel=cancel)
         op.check()
         return embed
 
@@ -354,16 +359,12 @@ class EpisodeSession:
             http_status=None,
         )
 
-    def _xhr_diag(self) -> dict:
-        xhr = self._xhr
-        return {"xhr_backend": xhr.backend, "token_refreshed": xhr.refresh_used, "xhr_fallback": xhr.fallback_reason}
-
     def _record_success(self, host: str | None, candidate: PlayerEntry, start: float) -> None:
         if host is not None:
             _emit_transition(
                 self._engine.health.record(host, candidate.online_id, Signal.SUCCESS), category=None, http_status=None
             )
-        diagnostics.resolve_result(host, True, None, self._engine.clock() - start, **self._xhr_diag())
+        diagnostics.resolve_result(host, True, None, self._engine.clock() - start, **self._source.diag())
 
     def _record_failure(self, host: str | None, candidate: PlayerEntry, exc: ShindenError, start: float) -> None:
         fields = _failure_fields(exc)
@@ -379,9 +380,11 @@ class EpisodeSession:
             )
             transition = self._engine.health.record(host, candidate.online_id, signal)
             _emit_transition(transition, category=fields.get("category"), http_status=fields.get("http_status"))
-        diagnostics.resolve_result(host, False, type(exc).__name__, self._engine.clock() - start, **fields, **self._xhr_diag())
+        diagnostics.resolve_result(
+            host, False, type(exc).__name__, self._engine.clock() - start, **fields, **self._source.diag()
+        )
         # a shared-API stop is not this source's failure; the caller reports it from the raised error
-        if fields.get("xhr_outcome") in (None, shinden_api.XhrOutcome.NEXT_PLAYER):
+        if not self._source.stops_operation(exc):
             self._engine.events.emit(
                 SourceAttemptFailed(player=candidate.player, episode=self.episode.number, redacted_text=redact_text(exc))
             )

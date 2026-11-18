@@ -19,6 +19,9 @@ series:
     Shinden wymaga potwierdzenia wieku (18+) dla tej serii.
     Zaloguj się na shinden.pl w przeglądarce i potwierdź wiek, a następnie skopiuj ciasteczka sesji do pliku cookies lub użyj --url z zalogowaną sesją.
 
+episode:
+  parse_error: "Żaden obsługiwany serwis nie rozpoznaje adresu odcinka: {url}"
+
 shinden:
   parser_drift: "Struktura strony shinden się zmieniła ({page}): {detail}. Parser wymaga aktualizacji."
   challenge: "shinden zwrócił stronę wyzwania Cloudflare zamiast treści ({page}) — ciasteczko cf_clearance prawdopodobnie nie jest już akceptowane."

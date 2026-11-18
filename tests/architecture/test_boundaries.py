@@ -93,11 +93,23 @@ BRIDGE_HISTORY_NAMES = {"alt_ani_core.history.database": {"STORE_ERRORS"}}
 
 # package → engine packages it must not import
 LAYERS = {
-    "rules": {"shinden", "extract", "services", "download", "transfer", "storage", "history", "dom", "diagnostics"},
-    "transport": {"shinden", "extract", "services", "download", "history", "dom", "rules"},
-    "dom": {"shinden", "extract", "services", "download", "history", "transport", "rules"},
-    "shinden": {"extract", "services", "download", "history"},
-    "extract": {"shinden", "services", "download", "history"},
+    "rules": {
+        "shinden",
+        "extract",
+        "services",
+        "download",
+        "transfer",
+        "storage",
+        "history",
+        "dom",
+        "diagnostics",
+        "providers",
+    },
+    "transport": {"shinden", "extract", "services", "download", "history", "dom", "rules", "providers"},
+    "dom": {"shinden", "extract", "services", "download", "history", "transport", "rules", "providers"},
+    "providers": {"services", "download", "transfer", "history", "storage"},
+    "shinden": {"extract", "services", "download", "history", "providers"},
+    "extract": {"shinden", "services", "download", "history", "providers"},
     "history": {"shinden", "extract", "services", "download", "transfer", "storage", "transport", "dom"},
     "storage": {"shinden", "extract", "services", "download", "transfer", "history", "transport", "dom", "diagnostics"},
     "transfer.py": {"shinden", "extract", "services", "history", "storage", "transport", "dom"},
