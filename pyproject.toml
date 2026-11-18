@@ -133,6 +133,7 @@ type = "layers"
 layers = [
     "alt_ani_cli",
     "alt_ani_core.services",
+    "alt_ani_core.providers",
     "alt_ani_core.shinden : alt_ani_core.extract : alt_ani_core.download : alt_ani_core.transfer : alt_ani_core.history : alt_ani_core.storage",
     "alt_ani_core.rules",
     "alt_ani_core.transport : alt_ani_core.dom : alt_ani_core.diagnostics",

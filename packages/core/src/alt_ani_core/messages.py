@@ -27,6 +27,9 @@ MESSAGES: dict[str, dict[str, str]] = {
         "Log in to shinden.pl in your browser and confirm age, then copy the session cookies to a cookies "
         "file or use --url with a logged-in session.",
     },
+    "episode": {
+        "parse_error": "No provider handles this episode URL: {url}",
+    },
     "shinden": {
         "parser_drift": "shinden page structure changed ({page}): {detail}. The parser needs an update.",
         "challenge": "shinden returned a Cloudflare challenge page instead of content ({page}) — the cf_clearance "

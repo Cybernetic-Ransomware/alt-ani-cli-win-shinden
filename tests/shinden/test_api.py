@@ -14,6 +14,7 @@ from alt_ani_core.config import GUEST_AUTH, SHINDEN_API_BASE, SHINDEN_XHR_BASE
 from alt_ani_core.errors import OperationCancelled, ShindenXhrError
 from alt_ani_core.events import SourceAttemptFailed
 from alt_ani_core.models import EpisodeRow
+from alt_ani_core.providers.shinden import ShindenEmbeds
 from alt_ani_core.services.episode_session import EpisodeSession
 from alt_ani_core.shinden.api import XhrOutcome, resolve_embed, stop_message, xhr_outcome
 from alt_ani_core.shinden.xhr import BACKEND_API4, BACKEND_NEW, EpisodeXhr, EpisodeXhrContext
@@ -382,7 +383,8 @@ class TestPlayerShowIframe:
         err = exc_info.value
         assert err.reason == "unexpected_iframe_src"
         candidate = MagicMock(online_id="42", player="Example")
-        session = EpisodeSession(make_engine(), 0, EpisodeRow(1, "Example", _EPISODE_URL), [], _api4_xhr())
+        source = ShindenEmbeds(_api4_xhr(), min_sleep_seconds=0.0)
+        session = EpisodeSession(make_engine(), 0, EpisodeRow(1, "Example", _EPISODE_URL), [], source, provider="shinden")
         session._record_failure(None, candidate, err, 0.0)
         assert diag_events
         failed = sink.of(SourceAttemptFailed)

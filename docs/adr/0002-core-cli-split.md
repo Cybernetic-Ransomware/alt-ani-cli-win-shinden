@@ -37,6 +37,7 @@ No compatibility shims: `alt_ani_cli.shinden`, `alt_ani_cli.extract`, `alt_ani_c
 alt_ani_cli            alt_ani_bridge
       \                    /
        alt_ani_core.services        Engine, EpisodeSession
+       alt_ani_core.providers       Provider, EpisodeEmbeds; ShindenProvider adapts shinden/
        shinden/  extract/  download  history/  transport/{curl,clearance}  dom/
        transport/api  diagnostics  events  cancel  config
        models  errors  rules/*  redaction  messages          (standard library only)
@@ -80,10 +81,13 @@ Kotlin threads. An `asyncio` engine would have meant rewriting every extractor w
 
 ### Concurrency, cancellation, staleness
 
-- `EpisodeSession` serializes `resolve`, `probe_hosts` and `reload` with one lock; its XHR state, embed cache and
-  budgets change only under it.
-- `Engine` hands the Shinden HTTP session out as leases tied to a generation. `set_access` and `close` bump the
-  generation; the old session is closed once its last lease is released.
+- `EpisodeSession` serializes `resolve`, `probe_hosts` and `reload` with one lock; its embed source (Shinden: the XHR
+  state), embed cache and budgets change only under it.
+- `Engine` routes every series and episode URL to the provider that owns it (scheme, exact host and path; anything
+  else is refused before a request) and hands each provider's HTTP session out as leases tied to one shared
+  generation. A provider's session profile is built only when that provider is first used, so Shinden's clearance
+  is never fetched for another site. `set_access` and `close` bump the generation; every old session is closed once
+  its last lease is released.
 - `metadata_many` gives every worker thread its own HTTP session; no session is shared between threads.
 - Cancellation (`CancelToken`) and staleness are `EngineInterrupt(BaseException)`, so they pass through the broad
   `except Exception` in extractor fallbacks and through yt-dlp. They are checked before and after every request
