@@ -14,7 +14,7 @@ from alt_ani_core.config import AccessConfig, EngineConfig
 from alt_ani_core.errors import EngineClosedError, ShindenError, StaleSessionError
 from alt_ani_core.events import NULL_SINK, EventSink, XhrFallback
 from alt_ani_core.history.store import HistoryStore
-from alt_ani_core.models import EpisodeListing, EpisodeRow, PlayerEntry, SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_core.models import EpisodeListing, EpisodeRow, PlayerEntry, SearchResults, SeriesMetadata, SeriesRef
 from alt_ani_core.rules.health import ResolverHealth
 from alt_ani_core.services.episode_session import EpisodeSession
 from alt_ani_core.shinden import metadata as shinden_metadata
@@ -225,9 +225,9 @@ class Engine:
         finally:
             self._release(slot)
 
-    def search(self, query: str, *, cancel: CancelToken = NEVER) -> list[SeriesHit]:
+    def search(self, query: str, *, cancel: CancelToken = NEVER) -> SearchResults:
         with self.operation(cancel) as op:
-            return shinden_search.search_series(op.client, query)
+            return shinden_search.search_series(op.client, query, cancel=cancel)
 
     def series_from_url(self, url: str) -> SeriesRef:
         return shinden_series.parse_series_url(url)

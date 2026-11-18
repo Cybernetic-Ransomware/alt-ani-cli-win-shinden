@@ -12,7 +12,7 @@ from alt_ani_core.config import GUEST_AUTH, SHINDEN_API_BASE, SHINDEN_XHR_BASE, 
 from alt_ani_core.errors import DownloadFailedError, FilterMismatchError, IncompleteEpisodeListError, NoStreamError
 from alt_ani_core.events import HostDeferred, SourceAttemptFailed, XhrFallback
 from alt_ani_core.history.sqlite import SqliteHistory
-from alt_ani_core.models import ExtractionFailure, SeriesHit
+from alt_ani_core.models import ExtractionFailure, SearchResults, SeriesHit
 from alt_ani_core.services.engine import Engine
 from alt_ani_core.testing import FakeResponse, InMemoryHistory, make_stream
 from alt_ani_core.transport.api import NetworkError, TransportTimeout
@@ -437,7 +437,7 @@ class TestNoninteractiveInput:
 
     def test_search_without_results_exits(self, cli_paths, console):
         engine = MagicMock(spec=Engine)
-        engine.search.return_value = []
+        engine.search.return_value = SearchResults(hits=[])
 
         with pytest.raises(SystemExit) as exc_info:
             run(options(url=None, query=("fate", "zero")), engine, cli_paths)
@@ -449,7 +449,7 @@ class TestNoninteractiveInput:
 
     def test_select_nth_beyond_the_results_exits(self, cli_paths, console):
         engine = MagicMock(spec=Engine)
-        engine.search.return_value = [SeriesHit(id="1", slug="fate", title="Fate", url=SERIES_URL)]
+        engine.search.return_value = SearchResults(hits=[SeriesHit(id="1", slug="fate", title="Fate", url=SERIES_URL)])
 
         with pytest.raises(SystemExit) as exc_info:
             run(options(url=None, query=("fate",), select_nth=2), engine, cli_paths)
@@ -464,7 +464,7 @@ class TestNoninteractiveInput:
             SeriesHit(id="1", slug="fate", title="Fate (TV)", url=SERIES_URL),
         ]
         with (
-            patch.object(engine, "search", return_value=hits) as mock_search,
+            patch.object(engine, "search", return_value=SearchResults(hits=hits)) as mock_search,
             patch.object(engine, "episodes", wraps=engine.episodes) as mock_episodes,
         ):
             run(options(url=None, query=("fate",), select_nth=2), engine, cli_paths)
@@ -473,6 +473,17 @@ class TestNoninteractiveInput:
         ref = mock_episodes.call_args.args[0]
         assert (ref.id, ref.title, ref.url) == ("1", "Fate (TV)", SERIES_URL)
         actions.play.assert_called_once()
+
+    def test_incomplete_search_warns_and_still_picks(self, cli_paths, console):
+        engine = MagicMock(spec=Engine)
+        hit = SeriesHit(id="1", slug="fate", title="Fate", url=SERIES_URL)
+        engine.search.return_value = SearchResults(hits=[hit], total=150, pages_fetched=2, incomplete_reason="page_limit")
+        engine.episodes.side_effect = SystemExit(9)
+
+        with pytest.raises(SystemExit):
+            run(options(url=None, query=("fate",)), engine, cli_paths)
+
+        assert console.of("warn") == ["Pokazano 1 z 150 wyników — zawęź zapytanie, aby zobaczyć resztę."]
 
 
 @pytest.mark.unit

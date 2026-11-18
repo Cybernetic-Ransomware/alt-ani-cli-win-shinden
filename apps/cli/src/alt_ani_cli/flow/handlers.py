@@ -16,7 +16,7 @@ from pathlib import Path
 
 from alt_ani_cli import __version__, playback
 from alt_ani_cli.args import CliOptions
-from alt_ani_cli.content import CONTENT, error_text
+from alt_ani_cli.content import CONTENT, error_text, search_incomplete_text
 from alt_ani_cli.flow.state import _VIRTUAL_SCREENS, BACK, FlowState, Screen, ScreenResult, _BackSentinel
 from alt_ani_cli.paths import CliPaths
 from alt_ani_cli.player import runner as player_runner
@@ -232,10 +232,13 @@ def handle_series_pick(state: FlowState) -> ScreenResult:
         return Screen.SEARCH_QUERY
 
     progress.info(_PROG["searching"].format(query=repr(state.query)))
-    hits = state.engine.search(state.query)
+    results = state.engine.search(state.query)
+    hits = results.hits
     if not hits:
         progress.error(_PROG["no_results"].format(query=repr(state.query)))
         return BACK
+    if not results.complete:
+        progress.warn(search_incomplete_text(results))
 
     state.hits = hits
     metadata = _prefetch_series_metadata(state.engine, hits)

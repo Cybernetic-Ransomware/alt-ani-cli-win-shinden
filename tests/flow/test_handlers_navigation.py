@@ -10,7 +10,7 @@ from alt_ani_cli.content import CONTENT
 from alt_ani_cli.flow.handlers import HANDLERS, _prefetch_series_metadata, _sorted_by_date_desc
 from alt_ani_cli.flow.state import Screen, _BackSentinel
 from alt_ani_core.errors import ShindenError
-from alt_ani_core.models import EpisodeListing, RelatedSeries, SeriesHit, SeriesMetadata, SeriesRef
+from alt_ani_core.models import EpisodeListing, RelatedSeries, SearchResults, SeriesHit, SeriesMetadata, SeriesRef
 from alt_ani_core.transport.api import NetworkError
 
 from .support import (
@@ -248,9 +248,9 @@ class TestHandleResumePickModes:
 
 @pytest.mark.unit
 class TestHandleSeriesPick:
-    def _state(self, hits=(SERIES_HIT,)):
+    def _state(self, hits=(SERIES_HIT,), **results):
         state = make_state(query="fate")
-        state.engine.search.return_value = list(hits)
+        state.engine.search.return_value = SearchResults(hits=list(hits), **results)
         state.engine.series_from_url.return_value = SERIES_REF
         return state
 
@@ -275,6 +275,26 @@ class TestHandleSeriesPick:
             result = HANDLERS[Screen.SERIES_PICK](state)
         assert isinstance(result, _BackSentinel)
         mock_err.assert_called_once_with(_PROG["no_results"].format(query=repr("fate")))
+
+    def test_complete_results_do_not_warn(self):
+        state = self._state()
+        with (
+            patch("alt_ani_cli.flow.handlers._prefetch_series_metadata", return_value={}),
+            patch("alt_ani_cli.ui.menus.select_series_once", return_value=("back", None)),
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            HANDLERS[Screen.SERIES_PICK](state)
+        mock_warn.assert_not_called()
+
+    def test_incomplete_results_warn_with_shown_and_total(self):
+        state = self._state(total=150, pages_fetched=2, incomplete_reason="page_limit")
+        with (
+            patch("alt_ani_cli.flow.handlers._prefetch_series_metadata", return_value={}),
+            patch("alt_ani_cli.ui.menus.select_series_once", return_value=("back", None)),
+            patch("alt_ani_cli.ui.progress.warn") as mock_warn,
+        ):
+            HANDLERS[Screen.SERIES_PICK](state)
+        mock_warn.assert_called_once_with(_PROG["search_incomplete"].format(shown=1, total=150))
 
     def test_pick_sets_ref_and_returns_fetch(self):
         hit = replace(SERIES_HIT, title="Fate/stay night")

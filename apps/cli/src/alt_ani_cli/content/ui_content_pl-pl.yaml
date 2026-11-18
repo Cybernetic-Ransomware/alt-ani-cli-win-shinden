@@ -38,6 +38,7 @@ cli:
 progress:
   searching: "Szukam: {query}"
   no_results: "Brak wyników dla: {query}"
+  search_incomplete: "Pokazano {shown} z {total} wyników — zawęź zapytanie, aby zobaczyć resztę."
   select_nth_invalid: "--select-nth {n}: jest tylko {count} wyników."
   fetching_episodes: "Pobieram listę odcinków: {title}"
   no_episodes: "Brak dostępnych odcinków."

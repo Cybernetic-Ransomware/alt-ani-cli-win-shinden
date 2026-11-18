@@ -4,6 +4,7 @@ import yaml
 
 from alt_ani_core.errors import ShindenError
 from alt_ani_core.messages import MESSAGES
+from alt_ani_core.models import SearchResults
 from alt_ani_core.redaction import redact_text
 
 
@@ -32,3 +33,8 @@ def error_text(exc: ShindenError) -> str:
             if template is not None:
                 return redact_text(template.format(**exc.params))
     return redact_text(exc)
+
+
+def search_incomplete_text(results: SearchResults) -> str:
+    total = results.total if results.total is not None else "?"
+    return CONTENT["progress"]["search_incomplete"].format(shown=len(results.hits), total=total)

@@ -6,6 +6,7 @@ import pytest
 
 from alt_ani_core.errors import NoStreamError, ShindenXhrError
 from alt_ani_core.services import episode_session
+from alt_ani_core.shinden import search
 from alt_ani_core.testing import FakeResponse, make_stream
 from alt_ani_core.transport.api import HttpStatusError, TransportTimeout
 
@@ -68,6 +69,28 @@ class TestCatalogue:
         hits = client.data("search", query="frieren")["hits"]
         assert hits
         assert set(hits[0]) == {"id", "slug", "title", "url", "series_type"}
+
+    def test_search_reports_completeness(self, client):
+        client.transport.route("https://shinden.pl/series", (client.fixtures / SEARCH_HTML).read_text(encoding="utf-8"))
+        data = client.data("search", query="frieren")
+        assert {k: data[k] for k in ("total", "complete", "incomplete_reason", "pages_fetched")} == {
+            "total": 4,
+            "complete": True,
+            "incomplete_reason": None,
+            "pages_fetched": 1,
+        }
+
+    def test_search_cut_at_page_limit_reports_incomplete(self, client, monkeypatch):
+        monkeypatch.setattr(search, "MAX_SEARCH_PAGES", 1)
+        client.transport.route("https://shinden.pl/series", (client.fixtures / "search_mixed.html").read_text(encoding="utf-8"))
+        data = client.data("search", query="one piece")
+        assert len(data["hits"]) == 6
+        assert {k: data[k] for k in ("total", "complete", "incomplete_reason", "pages_fetched")} == {
+            "total": 85,
+            "complete": False,
+            "incomplete_reason": "page_limit",
+            "pages_fetched": 1,
+        }
 
     def test_network_failure_is_retryable(self, client):
         client.transport.route("https://shinden.pl/series", TransportTimeout())

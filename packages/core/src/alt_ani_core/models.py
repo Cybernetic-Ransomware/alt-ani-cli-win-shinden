@@ -14,6 +14,20 @@ class SeriesHit:
 
 
 @dataclass(frozen=True)
+class SearchResults:
+    hits: list[SeriesHit]
+    # the site's result counter across all pages; None when the page had none
+    total: int | None = None
+    pages_fetched: int = 1
+    # page_limit, http_error, repeated_page or empty_page; None when the site reported no further page
+    incomplete_reason: str | None = None
+
+    @property
+    def complete(self) -> bool:
+        return self.incomplete_reason is None
+
+
+@dataclass(frozen=True)
 class SeriesRef:
     id: str
     slug: str

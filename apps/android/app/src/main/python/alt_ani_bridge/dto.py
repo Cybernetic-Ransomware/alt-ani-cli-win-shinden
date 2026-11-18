@@ -11,6 +11,7 @@ from alt_ani_core.models import (
     PlayerSource,
     RelatedSeries,
     ResolvedStream,
+    SearchResults,
     SeriesHit,
     SeriesMetadata,
     SeriesRef,
@@ -25,6 +26,16 @@ _PROGRESSIVE_MIME = {"mp4": "video/mp4", "webm": "video/webm", "mkv": "video/x-m
 
 def series_hit(hit: SeriesHit) -> dict[str, Any]:
     return {"id": hit.id, "slug": hit.slug, "title": hit.title, "url": hit.url, "series_type": hit.series_type}
+
+
+def search_results(results: SearchResults) -> dict[str, Any]:
+    return {
+        "hits": [series_hit(hit) for hit in results.hits],
+        "total": results.total,
+        "complete": results.complete,
+        "incomplete_reason": results.incomplete_reason,
+        "pages_fetched": results.pages_fetched,
+    }
 
 
 def series_ref(ref: SeriesRef) -> dict[str, Any]:

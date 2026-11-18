@@ -4,12 +4,48 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from alt_ani_core.cancel import CancelToken
 from alt_ani_core.config import SHINDEN_BASE
-from alt_ani_core.errors import ParseError
-from alt_ani_core.shinden.search import _parse_results, search_series
+from alt_ani_core.errors import OperationCancelled, ParseError
+from alt_ani_core.shinden import search
+from alt_ani_core.shinden.search import MAX_SEARCH_PAGES, _parse_page, search_series
+from alt_ani_core.shinden.utils import ParseTally
+from alt_ani_core.testing import RecordingCancel
+from alt_ani_core.transport.api import HttpStatusError
 
 _FRIEREN_COUNTER = '<span class="sh-tagi-liczba"><b>4</b> anime</span>'
 _EMPTY_MARKER = '<div class="sh-szukaj-brak"><p>Nic nie pasuje.</p></div>'
+_PAGE2_URL = f"{SHINDEN_BASE}/series?search=one+piece&page=2"
+_MORE = '<div class="sh-tagi-wiecej"><a class="sh-tagi-przycisk" href="/series?search=one+piece&amp;page=3" data-sh-wiecej="">Pokaż więcej</a></div>'
+_P1_IDS = ["12", "13184", "59184"]
+_P2_IDS = ["34583", "59385", "61035", "71511"]
+
+
+@pytest.fixture(autouse=True)
+def _no_page_delay(monkeypatch):
+    monkeypatch.setattr(CancelToken, "wait", lambda _self, _seconds: None)
+
+
+@pytest.fixture
+def client_for(fake_response):
+    """Client whose GET answers page 1 by its search params and later pages by their full URL."""
+
+    def _make(page1: str, later: dict | None = None):
+        later = later or {}
+
+        def _get(url, params=None):
+            body = page1 if params is not None else later[url]
+            return body(url) if callable(body) else fake_response(body)
+
+        client = MagicMock()
+        client.get.side_effect = _get
+        return client
+
+    return _make
+
+
+def _with_more(html: str) -> str:
+    return html.replace("</ol>", "</ol>" + _MORE, 1)
 
 
 def _without_rows(html: str) -> str:
@@ -18,6 +54,13 @@ def _without_rows(html: str) -> str:
 
 def _event(events, name):
     return [fields for event, fields in events if event == name]
+
+
+def _parse_results(html: str):
+    tally = ParseTally("search")
+    hits = _parse_page(html, tally, set(), first=True).hits
+    tally.finish()
+    return hits
 
 
 @pytest.mark.unit
@@ -140,6 +183,133 @@ class TestSearchSeries:
     def test_requests_search_param(self, shinden_html, fake_response):
         client = MagicMock()
         client.get.return_value = fake_response(shinden_html("search_frieren.html"))
-        hits = search_series(client, "frieren")
+        results = search_series(client, "frieren")
         client.get.assert_called_once_with(f"{SHINDEN_BASE}/series", params={"search": "frieren"})
-        assert len(hits) == 4
+        assert len(results.hits) == 4
+
+    def test_single_page_is_complete(self, shinden_html, client_for, diag_events):
+        results = search_series(client_for(shinden_html("search_frieren.html")), "frieren")
+        assert (results.complete, results.total, results.pages_fetched) == (True, 4, 1)
+        assert diag_events == []
+
+    def test_first_page_http_error_propagates(self, client_for, fake_response):
+        client = client_for(lambda _url: fake_response("", status=503))
+        with pytest.raises(HttpStatusError):
+            search_series(client, "frieren")
+
+
+@pytest.mark.unit
+class TestSearchPagination:
+    def _two_pages(self, shinden_html):
+        return shinden_html("search_mixed.html"), {_PAGE2_URL: shinden_html("search_mixed_p2.html")}
+
+    def test_max_pages_is_two(self):
+        assert MAX_SEARCH_PAGES == 2
+
+    def test_follows_show_more_link_and_keeps_server_order(self, shinden_html, client_for):
+        page1, later = self._two_pages(shinden_html)
+        client = client_for(page1, later)
+        results = search_series(client, "one piece")
+        ids = [h.id for h in results.hits]
+        assert ids[:3] == _P1_IDS
+        assert ids[-4:] == _P2_IDS
+        assert len(ids) == 10 == len(set(ids))
+        assert client.get.call_args_list[1].args == (_PAGE2_URL,)
+
+    def test_missing_show_more_on_last_page_ends_complete(self, shinden_html, client_for, diag_events):
+        page1, later = self._two_pages(shinden_html)
+        results = search_series(client_for(page1, later), "one piece")
+        assert (results.complete, results.incomplete_reason, results.pages_fetched) == (True, None, 2)
+        assert _event(diag_events, "shinden_search_incomplete") == []
+
+    def test_counter_matching_hits_emits_no_diagnostics(self, shinden_html, client_for, diag_events):
+        page1, later = self._two_pages(shinden_html)
+        later = {url: html.replace("<b>85</b>", "<b>10</b>") for url, html in later.items()}
+        search_series(client_for(page1.replace("<b>85</b>", "<b>10</b>"), later), "one piece")
+        assert diag_events == []
+
+    def test_counter_short_of_hits_is_logged_but_complete(self, shinden_html, client_for, diag_events):
+        page1, later = self._two_pages(shinden_html)
+        results = search_series(client_for(page1, later), "one piece")
+        assert results.complete
+        assert _event(diag_events, "shinden_count_mismatch") == [
+            {"page": "search", "counter": "total", "expected": 85, "actual": 10}
+        ]
+
+    def test_positive_counter_without_show_more_does_not_fetch_more(self, shinden_html, client_for):
+        page1 = shinden_html("search_mixed.html").replace('data-sh-wiecej=""', "")
+        client = client_for(page1)
+        results = search_series(client, "one piece")
+        assert (results.complete, results.total, client.get.call_count) == (True, 85, 1)
+
+    def test_duplicates_across_pages_are_dropped(self, shinden_html, client_for):
+        page1, later = self._two_pages(shinden_html)
+        later = {_PAGE2_URL: later[_PAGE2_URL].replace("/titles/34583-one-piece-cry-heart", "/titles/12-one-piece")}
+        results = search_series(client_for(page1, later), "one piece")
+        ids = [h.id for h in results.hits]
+        assert ids.count("12") == 1
+        assert "34583" not in ids
+        assert results.complete
+
+    def test_page_of_only_repeats_is_incomplete(self, shinden_html, client_for, diag_events):
+        page1 = shinden_html("search_mixed.html")
+        results = search_series(client_for(page1, {_PAGE2_URL: page1}), "one piece")
+        assert (results.complete, results.incomplete_reason) == (False, "repeated_page")
+        assert len(results.hits) == 6
+
+    def test_empty_later_page_is_empty_page_not_drift(self, shinden_html, client_for, diag_events):
+        empty = shinden_html("search_empty.html").replace("<b>0</b>", "<b>85</b>")
+        results = search_series(client_for(shinden_html("search_mixed.html"), {_PAGE2_URL: empty}), "one piece")
+        assert (results.complete, results.incomplete_reason, results.pages_fetched) == (False, "empty_page", 2)
+        assert len(results.hits) == 6
+        assert _event(diag_events, "shinden_search_incomplete") == [
+            {"fetched": 2, "hits": 6, "total": 85, "reason": "empty_page"}
+        ]
+
+    def test_empty_first_page_with_positive_counter_still_raises(self, shinden_html, client_for):
+        empty = shinden_html("search_empty.html").replace("<b>0</b>", "<b>85</b>")
+        with pytest.raises(ParseError, match="search"):
+            search_series(client_for(empty), "one piece")
+
+    def test_later_page_without_list_or_marker_raises(self, shinden_html, client_for):
+        broken = shinden_html("search_mixed_p2.html").replace("sh-tagi-wyniki", "sh-renamed-list")
+        with pytest.raises(ParseError, match="search"):
+            search_series(client_for(shinden_html("search_mixed.html"), {_PAGE2_URL: broken}), "one piece")
+
+    def test_show_more_on_last_allowed_page_is_page_limit(self, shinden_html, client_for, diag_events):
+        page1, later = self._two_pages(shinden_html)
+        later = {_PAGE2_URL: _with_more(later[_PAGE2_URL])}
+        client = client_for(page1, later)
+        results = search_series(client, "one piece")
+        assert (results.complete, results.incomplete_reason, results.pages_fetched) == (False, "page_limit", 2)
+        assert len(results.hits) == 10
+        assert client.get.call_count == MAX_SEARCH_PAGES
+        assert _event(diag_events, "shinden_search_incomplete") == [
+            {"fetched": 2, "hits": 10, "total": 85, "reason": "page_limit"}
+        ]
+
+    def test_http_error_on_later_page_keeps_earlier_hits(self, shinden_html, client_for, fake_response):
+        later = {_PAGE2_URL: lambda _url: fake_response("", status=502)}
+        results = search_series(client_for(shinden_html("search_mixed.html"), later), "one piece")
+        assert (results.complete, results.incomplete_reason, results.pages_fetched) == (False, "http_error", 1)
+        assert [h.id for h in results.hits][:3] == _P1_IDS
+
+    def test_show_more_link_off_site_raises(self, shinden_html, client_for):
+        page1 = shinden_html("search_mixed.html").replace(
+            'href="/series?search=one+piece&amp;page=2" data-sh-wiecej', 'href="https://evil.example/series" data-sh-wiecej'
+        )
+        with pytest.raises(ParseError, match="next-page link"):
+            search_series(client_for(page1), "one piece")
+
+    def test_page_delay_goes_through_the_token(self, shinden_html, client_for):
+        cancel = RecordingCancel()
+        page1, later = self._two_pages(shinden_html)
+        search_series(client_for(page1, later), "one piece", cancel=cancel)
+        assert cancel.waits == [search._PAGE_DELAY_SEC]
+
+    def test_cancel_stops_before_the_next_page(self, shinden_html, client_for):
+        page1, later = self._two_pages(shinden_html)
+        client = client_for(page1, later)
+        with pytest.raises(OperationCancelled):
+            search_series(client, "one piece", cancel=RecordingCancel(cancel_on_wait=1))
+        assert client.get.call_count == 1

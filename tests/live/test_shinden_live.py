@@ -34,7 +34,7 @@ def client(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def first_series_hit(client):
-    hits = search.search_series(client, "frieren")
+    hits = search.search_series(client, "frieren").hits
     assert hits, "search returned no hits for a popular title"
     return next(h for h in hits if "/series/" in h.url)
 
@@ -42,6 +42,13 @@ def first_series_hit(client):
 @pytest.fixture(scope="module")
 def listing(client, first_series_hit):
     return series.list_episodes(client, series.parse_series_url(first_series_hit.url))
+
+
+def test_search_follows_show_more_to_the_whole_result(client):
+    results = search.search_series(client, "one piece")
+    assert results.pages_fetched > 1, "expected 'one piece' to span more than one result page"
+    assert results.complete, results.incomplete_reason
+    assert len(results.hits) == results.total
 
 
 def test_search_hits_are_well_formed(first_series_hit):
@@ -71,7 +78,7 @@ _CONTRACT_QUERIES = ("frieren", "one piece", "spy x family")
 @pytest.mark.parametrize("query", _CONTRACT_QUERIES)
 def test_honeypot_contract_holds_across_series(client, query):
     """Page reads only, no XHR; one fixture is no proof that every page shares the honeypot contract."""
-    hits = [h for h in search.search_series(client, query) if "/series/" in h.url]
+    hits = [h for h in search.search_series(client, query).hits if "/series/" in h.url]
     assert hits, f"no series hit for {query!r}"
     found = series.list_episodes(client, series.parse_series_url(hits[0].url))
     assert found.episodes

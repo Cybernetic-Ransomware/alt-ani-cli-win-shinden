@@ -64,7 +64,7 @@ def _replay(recorder: _Recorder) -> _Recorder:
 
 
 def _parse_everything(client, query: str) -> dict:
-    hits = search.search_series(client, query)
+    hits = search.search_series(client, query).hits
     hit = next(h for h in hits if "/series/" in h.url)
     ref = series.parse_series_url(hit.url)
     listing = series.list_episodes(client, ref)
