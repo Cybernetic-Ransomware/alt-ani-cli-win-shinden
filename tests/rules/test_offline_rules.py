@@ -144,6 +144,16 @@ class TestRetry:
     def test_retry_after_lengthens_the_backoff(self):
         assert retry.transient(0, "x", retry_after=900).delay_sec == 900
 
+    def test_a_held_database_lock_defers_without_spending_a_retry(self):
+        outcome = retry.store_busy()
+        assert (outcome.action, outcome.error.code, outcome.counts) == (retry.Action.DEFER, "store.busy", False)
+        assert outcome.delay_sec == retry.BACKOFF_SEC[0]
+
+    def test_a_failing_store_spends_retries_and_then_fails(self):
+        outcomes = [retry.store_unavailable(n) for n in range(retry.MAX_RETRIES + 1)]
+        assert [o.action for o in outcomes] == [retry.Action.DEFER] * retry.MAX_RETRIES + [retry.Action.FAIL]
+        assert {o.error.code for o in outcomes} == {"store.unavailable"}
+
 
 @pytest.mark.unit
 class TestConditions:

@@ -1,5 +1,6 @@
 """One attempt of one job on its own thread; it ends in exactly one store operation, only after its I/O ended."""
 
+import functools
 import threading
 import time
 import uuid
@@ -20,7 +21,7 @@ from alt_ani_core.errors import (
     UnknownRecordError,
 )
 from alt_ani_core.events import EventSink
-from alt_ani_core.history.database import STORE_ERRORS
+from alt_ani_core.history.database import STORE_DEFECTS, STORE_ERRORS, is_contention
 from alt_ani_core.history.local import LocalState
 from alt_ani_core.models import PlayerEntry, SeriesRef, StreamVariant
 from alt_ani_core.rules import retry
@@ -99,6 +100,14 @@ class _Finished(Exception):  # noqa: N818 - control flow inside the attempt
     pass
 
 
+class _StoreFailure(EngineInterrupt):  # noqa: N818 - control flow inside the attempt
+    """A store call failed past its retries; an interrupt, so yt-dlp cannot swallow it when a callback raises it."""
+
+    def __init__(self, cause: Exception) -> None:
+        super().__init__()
+        self.cause = cause
+
+
 class Attempt:
     """Owned by the scheduler; ``stop`` only cancels the token, the attempt itself settles the job afterwards."""
 
@@ -114,6 +123,8 @@ class Attempt:
         self._last_report = float("-inf")
         self._finished = threading.Event()
         self._unsettled: Callable[[], Any] | None = None
+        # set only while the write recording a complete file's evidence is attempted
+        self._evidence: Callable[[], Any] | None = None
         self.thread = threading.Thread(target=self.run, name=f"offline-attempt-{claim.job.id[:8]}", daemon=True)
 
     @property
@@ -151,20 +162,60 @@ class Attempt:
         return self.ctx.state.queue
 
     def run(self) -> None:
-        unexpected = False
+        try:
+            self._settle_run()
+        finally:
+            # on every path, a refused outcome write included: the scheduler retries that one through settle_pending
+            self._finished.set()
+
+    def _settle_run(self) -> None:
+        cause: BaseException
         try:
             self._run()
+            return
         except _Finished:
-            pass
+            return
+        except _StoreFailure as failure:
+            cause = failure.cause
         except _Stopped, EngineInterrupt:
+            # OperationCancelled from a cancelled store retry lands here too, so stops settle as they always did
             self._end_stopped()
-        except BaseException:
-            unexpected = True
-        if unexpected:
-            # nothing of the exception is stored: messages may carry URLs or paths
-            with suppress(_Finished):
-                self._finish(retry.fail("executor.unexpected"))
-        self._finished.set()
+            return
+        except BaseException as exc:
+            cause = exc
+        # ended outside the handlers: the _Finished that _finish raises must not escape from them
+        with suppress(_Finished):
+            self._end_failed(cause)
+
+    def _end_failed(self, cause: BaseException) -> None:
+        """Nothing of the exception is stored: messages may carry URLs or paths."""
+        if self.lost:
+            return
+        store_failure = isinstance(cause, STORE_ERRORS) and not isinstance(cause, STORE_DEFECTS)
+        if not store_failure:
+            # a defect would refuse the evidence write again and keep the outcome unsettled until a restart
+            self._evidence = None
+            self._finish(retry.fail("executor.unexpected"))
+        if self.token.cancelled:
+            self._end_stopped()
+            return
+        self._finish(retry.store_busy() if is_contention(cause) else retry.store_unavailable(self.job.retry_count))
+
+    def _persist[T](self, name: str, call: Callable[[], T]) -> T:
+        """A store call inside the attempt, retried like an outcome write; a cancelled wait raises OperationCancelled."""
+        config = self.ctx.config
+        tries = max(config.store_retries, 1)
+        for attempt in range(1, tries + 1):
+            try:
+                return call()
+            except STORE_DEFECTS as exc:
+                raise _StoreFailure(exc) from None
+            except STORE_ERRORS as exc:
+                if attempt == tries:
+                    self.ctx.events.emit(StoreUnavailable(operation=name))
+                    raise _StoreFailure(exc) from None
+            self.token.wait(config.store_retry_delay_sec)
+        raise AssertionError("unreachable")
 
     def _store_call(self, name: str, call: Callable[[], Any]) -> Any:
         """The outcome write must land: after bounded retries it is kept for the scheduler to retry (``settle_pending``)."""
@@ -180,16 +231,29 @@ class Attempt:
                 threading.Event().wait(config.store_retry_delay_sec)
         return None
 
+    def _store_outcome(self, name: str, call: Callable[[], Any]) -> None:
+        evidence = self._evidence
+        if evidence is None:
+            self._store_call(name, call)
+            return
+
+        def with_evidence() -> Any:
+            # the job may return to the queue only once its next attempt can publish the file from this evidence
+            evidence()
+            return call()
+
+        self._store_call(name, with_evidence)
+
     def _finish(self, outcome: retry.Outcome) -> NoReturn:
         queue = self.queue
         if outcome.action is retry.Action.WAIT and outcome.reason is not None:
             reason = outcome.reason
-            self._store_call("wait", lambda: queue.wait(self.attempt_id, reason, outcome.error))
+            self._store_outcome("wait", lambda: queue.wait(self.attempt_id, reason, outcome.error))
         elif outcome.action is retry.Action.DEFER:
             not_before = (self.ctx.wall() + timedelta(seconds=outcome.delay_sec)).isoformat()
-            self._store_call("defer", lambda: queue.defer(self.attempt_id, outcome.error, not_before, counts=outcome.counts))
+            self._store_outcome("defer", lambda: queue.defer(self.attempt_id, outcome.error, not_before, counts=outcome.counts))
         else:
-            self._store_call("fail", lambda: queue.fail(self.attempt_id, outcome.error))
+            self._store_outcome("fail", lambda: queue.fail(self.attempt_id, outcome.error))
         raise _Finished
 
     def _end_stopped(self) -> None:
@@ -201,7 +265,7 @@ class Attempt:
             # nothing in the store asked for this stop (shutdown, unreadable store): give the slot back unspent
             return queue.ack_stopped(self.attempt_id) or queue.defer(self.attempt_id, error, None, counts=False)
 
-        self._store_call("ack_stopped", settle)
+        self._store_outcome("ack_stopped", settle)
 
     def _check(self, status: AttemptStatus | None) -> None:
         if status is AttemptStatus.LOST:
@@ -228,7 +292,7 @@ class Attempt:
     def _run(self) -> None:
         job = self.job
         try:
-            series, episode = self.queue.episode_of(job.key)
+            series, episode = self._persist("episode_of", functools.partial(self.queue.episode_of, job.key))
         except UnknownRecordError:
             self._finish(retry.fail("state.unknown_episode"))
         if self.partial is not None and evidence_of(self.partial.validator) is not None:
@@ -360,8 +424,9 @@ class Attempt:
             self._finish(retry.wait(WaitReason.STORAGE, NO_SPACE))
         self._finish(retry.fail(exc.code or "storage.failed"))
 
-    def _set_partial(self, partial: PartialTransfer, bytes_done: int | None) -> None:
-        status = self.queue.set_partial(self.attempt_id, partial, bytes_done)
+    def _set_partial(self, partial: PartialTransfer, bytes_done: int | None, *, retried: bool = True) -> None:
+        call = functools.partial(self.queue.set_partial, self.attempt_id, partial, bytes_done)
+        status = self._persist("set_partial", call) if retried else call()
         self.partial = partial
         if status is AttemptStatus.LOST:
             self.lost = True
@@ -391,7 +456,7 @@ class Attempt:
                 return
             checkpointed = with_checkpoint(self.validator, length, fragments)
             try:
-                self._set_partial(PartialTransfer(locator, sid, vid, checkpointed), length)
+                self._set_partial(PartialTransfer(locator, sid, vid, checkpointed), length, retried=False)
             except STORE_ERRORS:
                 return
             self.validator = checkpointed
@@ -459,7 +524,10 @@ class Attempt:
         evidence = complete_evidence(size, digest)
         if self.partial is None:
             self._finish(retry.fail("executor.unexpected"))
-        self._set_partial(PartialTransfer(self.partial.locator, sid, vid, evidence), size)
+        proven = PartialTransfer(self.partial.locator, sid, vid, evidence)
+        self._evidence = functools.partial(self.queue.set_partial, self.attempt_id, proven, size)
+        self._set_partial(proven, size)
+        self._evidence = None
         self._check(None)
         self._publish(series, media, sid, vid, ext, (size, digest))
 
@@ -469,7 +537,7 @@ class Attempt:
         for _ in range(_RESERVE_TRIES):
             locator = self.ctx.store.allocate(name, frozenset(taken))
             try:
-                status = self.queue.set_target(self.attempt_id, locator)
+                status = self._persist("set_target", functools.partial(self.queue.set_target, self.attempt_id, locator))
             except StateConflictError:
                 taken.add(locator.key)
                 continue
@@ -490,8 +558,9 @@ class Attempt:
             target = self._reserve(series, ext)
         except StorageError as exc:
             self._storage_failure(exc)
-        if not self.queue.begin_finalize(self.attempt_id):
-            self._check(self.queue.report_progress(self.attempt_id, evidence[0], evidence[0]))
+        if not self._persist("begin_finalize", functools.partial(self.queue.begin_finalize, self.attempt_id)):
+            done = functools.partial(self.queue.report_progress, self.attempt_id, evidence[0], evidence[0])
+            self._check(self._persist("report_progress", done))
             raise _Stopped
         try:
             self.ctx.store.publish(media, target)

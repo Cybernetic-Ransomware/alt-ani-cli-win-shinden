@@ -14,12 +14,27 @@ from alt_ani_core.models import EpisodeRow, SeriesRef
 BUSY_TIMEOUT_MS = 5000
 # what a store operation raises when the file cannot be read or written; lets callers outside history/ catch it
 STORE_ERRORS: tuple[type[Exception], ...] = (sqlite3.Error,)
+# store errors a retry only repeats: they come from the calling code, not from the file or another connection
+STORE_DEFECTS: tuple[type[Exception], ...] = (
+    sqlite3.IntegrityError,
+    sqlite3.ProgrammingError,
+    sqlite3.InterfaceError,
+    sqlite3.DataError,
+    sqlite3.NotSupportedError,
+)
+_CONTENTION_CODES = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
 BACKUP_SUFFIX = ".bak"
 _TEMP_SUFFIX = ".tmp"
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def is_contention(exc: BaseException) -> bool:
+    """Another connection held the lock past the busy timeout; an extended code keeps the primary one in its low byte."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    return isinstance(exc, sqlite3.OperationalError) and isinstance(code, int) and (code & 0xFF) in _CONTENTION_CODES
 
 
 def backup_glob(db_path: Path, version: int) -> str:
