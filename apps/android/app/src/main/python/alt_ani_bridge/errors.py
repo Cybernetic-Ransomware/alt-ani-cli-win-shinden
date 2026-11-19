@@ -1,7 +1,4 @@
-"""Maps every failure to a stable, token-free error object; no Python exception crosses the bridge.
-
-``code`` is stable per condition; ``kind`` is a closed set a client can switch on. Mapping goes by exception class.
-"""
+"""Every failure as a token-free error: ``code`` stable per condition, ``kind`` from a closed set; no exception crosses."""
 
 import re
 from typing import Any

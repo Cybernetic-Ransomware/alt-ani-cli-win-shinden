@@ -4,3 +4,5 @@ app/build/
 local.properties
 *.apk
 *.aab
+# written by Android Studio (updateDaemonJvm); the build runs on the JDK the README names
+gradle/gradle-daemon-jvm.properties

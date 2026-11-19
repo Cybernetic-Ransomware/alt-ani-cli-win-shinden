@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
@@ -57,12 +58,12 @@ class ConsentGateTest {
     }
 
     /** The no-progress detector is cut to 3 s, so a wait without the controller's pause would fail the player here. */
-    private fun start(vararg extra: Pair<String, Any?>, stuckMs: Int? = STUCK_MS): PlaybackController {
+    private fun start(vararg extra: Pair<String, Any?>, stuckMs: Int? = STUCK_MS, device: MutableStateFlow<String>? = null): PlaybackController {
         val name = "consent-${UUID.randomUUID()}".also { names += it }
         val rt = ControlledEnvironment.runtime(app, name, wrap = hold::wrap).also { runtime = it }
         ControlledEnvironment.configure(scenario("hls", "segment_delay_ms" to 1_000, *extra))
         listing = runBlocking { ControlledEnvironment.listing(rt) }
-        val created = onMain { PlaybackController(app, rt, scope, { log += it }, stuckBufferingTimeoutMs = stuckMs) }
+        val created = onMain { PlaybackController(app, rt, scope, { log += it }, stuckBufferingTimeoutMs = stuckMs, deviceNetwork = device) }
         controller = created
         onMain { created.start(listing.series, listing.episode) }
         awaitOnMain("6 s buffered", 40_000, { created.player.isPlaying to created.player.totalBufferedDuration }) { (playing, ahead) ->
@@ -153,6 +154,38 @@ class ConsentGateTest {
         awaitOnMain("position moves on", 20_000, { player.player.currentPosition }) { it >= from + 6_000 }
         assertFalse(onMain { player.state.value.consentRequired })
         assertTrue("transfers went on", mediaRequests().size > requests)
+    }
+
+    /** The device's switch never reaches the bridge, as when `network_set` is late or failed. */
+    @Test
+    fun theDeviceHoldsTransfersWhileTheBridgeStillSaysWifi() {
+        val device = MutableStateFlow("wifi")
+        val player = start(device = device)
+        device.value = "cellular"
+        player.awaitWaitingForConsent()
+        player.assertHeldQuietly()
+        assertEquals("wifi", call("network_get", JSONObject(), mutation = false).getString("kind"))
+
+        // a late network_set from an earlier switch leaves the bridge on Wi-Fi again
+        network("cellular")
+        network("wifi")
+        player.assertHeldQuietly()
+
+        device.value = "wifi"
+        player.awaitPlayingOnItsOwn()
+    }
+
+    @Test
+    fun consentDoesNotOpenTheGateWhileTheDeviceIsOffline() {
+        val device = MutableStateFlow("wifi")
+        val player = start(device = device)
+        device.value = "offline"
+        player.awaitWaitingForConsent()
+        player.allow()
+        player.assertHeldQuietly()
+
+        device.value = "wifi"
+        player.awaitPlayingOnItsOwn()
     }
 
     /** A request has passed the open gate and the server holds its redirect for 5 s. */
