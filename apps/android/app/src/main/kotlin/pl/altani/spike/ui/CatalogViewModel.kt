@@ -11,7 +11,12 @@ import pl.altani.spike.AltAniApplication
 class CatalogViewModel(app: Application) : AndroidViewModel(app) {
     private val bridge = (app as AltAniApplication).bridge
 
-    val flow = CatalogFlow(viewModelScope, { method, args -> bridge.call(method, args) }, { Log.i(TAG, it) })
+    val flow = CatalogFlow(
+        viewModelScope,
+        { method, args -> bridge.call(method, args) },
+        { Log.i(TAG, it) },
+        lateResults = bridge.tracker.lateResults,
+    )
 
     init {
         viewModelScope.launch {

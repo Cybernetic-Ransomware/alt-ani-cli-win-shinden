@@ -84,7 +84,8 @@ titles without a date last, as the CLI's date sort does. A failed read falls bac
 An episode opens with `open_episode` and lists its players; **Auto** lets the bridge choose by the preferences, a
 listed player is played even outside them. Both reuse that episode session for `playback_prepare`. A failed player
 leaves the list on screen for another pick; a session the bridge closed (e.g. after a network change) is reopened once,
-and an expired one offers **Reload sources** instead of Retry. Sessions neither listed nor playing are closed.
+and an expired one offers **Reload sources** instead of Retry. Sessions neither listed nor playing are closed, including
+one whose `open_episode` reply came back only after the user had moved on (the runtime's late results).
 
 The status line separates three things: the bridge answered (lists appear), a stream was resolved (`stream: online
 <variant>`), and Media3 really played (`media3: confirmed` — at least 3 s of position progress in this attempt plus a

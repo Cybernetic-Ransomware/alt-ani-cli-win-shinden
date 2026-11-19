@@ -1,6 +1,7 @@
 package pl.altani.spike.ui
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -11,6 +12,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import pl.altani.spike.bridge.BridgeResult
+import pl.altani.spike.bridge.LateResult
 import pl.altani.spike.ui.CatalogFlow.Load
 import pl.altani.spike.ui.FakeCalls.Companion.airDates
 import pl.altani.spike.ui.FakeCalls.Companion.episodes
@@ -22,8 +24,9 @@ import pl.altani.spike.ui.FakeCalls.Companion.sources
 @OptIn(ExperimentalCoroutinesApi::class)
 class CatalogFlowTest {
     private val fake = FakeCalls()
+    private val late = MutableSharedFlow<LateResult>(extraBufferCapacity = 8)
 
-    private fun TestScope.flow() = CatalogFlow(backgroundScope, fake::call, clock = { 0L })
+    private fun TestScope.flow() = CatalogFlow(backgroundScope, fake::call, clock = { 0L }, lateResults = late)
 
     private fun <T> Load<T>.ready(): T = (this as Load.Ready<T>).value
 
@@ -451,5 +454,39 @@ class CatalogFlowTest {
         runCurrent()
         assertEquals("access_blocked", (flow.state.value.airDates as Load.Failed).code)
         assertEquals(2, fake.calls.count { it.method == "metadata_many" })
+    }
+
+    @Test
+    fun `a session opened by a cancelled call is closed once its late reply arrives`() = runTest {
+        val flow = flow()
+        episodeListed(flow, 1, 2)
+        val (first, second) = flow.state.value.episodes.ready().episodes
+        flow.openEpisode(first)
+        runCurrent()
+        val cancelled = fake.last("open_episode")
+        flow.openEpisode(second)
+        runCurrent()
+        assertTrue(cancelled.cancelled)
+        fake.last("open_episode").answer(sources("s2", "21"))
+        runCurrent()
+
+        late.tryEmit(LateResult("op-1", "open_episode", false, sources("orphan", "11")))
+        runCurrent()
+        assertEquals(listOf("orphan"), closed())
+        assertEquals("s2", flow.state.value.sources.ready().sessionId)
+    }
+
+    @Test
+    fun `late replies that hold no orphan session are left alone`() = runTest {
+        val flow = flow()
+        episodeListed(flow, 1)
+        opened(flow, 0, "s1", "11")
+        flow.pickSource(null)
+
+        late.tryEmit(LateResult("op-1", "open_episode", false, sources("s1", "11")))
+        late.tryEmit(LateResult("op-2", "open_episode", false, failure("cancelled", "cancelled")))
+        late.tryEmit(LateResult("op-3", "episodes", false, sources("other", "11")))
+        runCurrent()
+        assertTrue(closed().isEmpty())
     }
 }

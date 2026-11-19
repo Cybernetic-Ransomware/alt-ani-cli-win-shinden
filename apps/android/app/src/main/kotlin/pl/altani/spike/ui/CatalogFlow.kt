@@ -1,16 +1,20 @@
 package pl.altani.spike.ui
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import pl.altani.spike.bridge.BridgeResult
+import pl.altani.spike.bridge.LateResult
 
 /** search → series → episodes → sources on one coroutine at a time; a newer choice cancels the older call and drops its reply. */
 class CatalogFlow(
@@ -18,6 +22,7 @@ class CatalogFlow(
     private val call: suspend (method: String, args: JSONObject) -> BridgeResult,
     private val log: (String) -> Unit = {},
     private val clock: () -> Long = System::currentTimeMillis,
+    lateResults: Flow<LateResult> = emptyFlow(),
 ) {
     sealed interface Load<out T> {
         data object Idle : Load<Nothing>
@@ -64,6 +69,19 @@ class CatalogFlow(
     // episode sessions held in the engine: the one listed on screen and the one the player was given
     private var shown: String? = null
     private var playing: String? = null
+
+    init {
+        // a cancelled open_episode can still open its session in Python; its id then arrives only here
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            lateResults.collect { late ->
+                if (late.method != "open_episode") return@collect
+                val id = (late.result as? BridgeResult.Ok)?.data?.optString("session_id")?.ifEmpty { null } ?: return@collect
+                if (id == shown || id == playing) return@collect
+                log("late open_episode session closed")
+                close(id)
+            }
+        }
+    }
 
     fun search(query: String) {
         val text = query.trim()
