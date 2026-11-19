@@ -16,6 +16,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -71,7 +72,7 @@ fun CatalogScreen(catalog: CatalogViewModel, playback: PlaybackViewModel, onFull
         val series = state.series
         val episode = state.episode
         when {
-            series == null -> SearchResults(state.search, flow)
+            series == null -> SearchResults(state, flow)
             episode == null -> {
                 Header(series.title, flow)
                 Episodes(state.episodes, flow)
@@ -137,8 +138,8 @@ private fun CatalogPlayerView(controller: PlaybackController, fullscreen: Boolea
 }
 
 @Composable
-private fun SearchResults(load: Load<SearchPage>, flow: CatalogFlow) {
-    when (load) {
+private fun SearchResults(state: CatalogFlow.State, flow: CatalogFlow) {
+    when (val load = state.search) {
         Load.Idle -> Unit
         Load.Loading -> Busy("Searching…")
         is Load.Failed -> Failure(load, flow)
@@ -146,11 +147,26 @@ private fun SearchResults(load: Load<SearchPage>, flow: CatalogFlow) {
             val page = load.value
             if (page.hits.isEmpty()) return Text("No results for \"${page.query}\".")
             page.incompleteReason?.let { Note("Showing the first ${page.hits.size} of ${page.total ?: "?"} results ($it).") }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(state.order == HitOrder.RELEVANCE, { flow.orderBy(HitOrder.RELEVANCE) }, { Text("Best match") })
+                FilterChip(state.order == HitOrder.NEWEST, { flow.orderBy(HitOrder.NEWEST) }, { Text("Newest first") })
+            }
+            val dates = (state.airDates as? Load.Ready)?.value
+            when (val airDates = state.airDates) {
+                Load.Loading -> Busy("Reading air dates…")
+                is Load.Failed -> Text("Air dates unavailable: ${airDates.message}", color = MaterialTheme.colorScheme.error)
+                is Load.Ready ->
+                    airDates.value.values.count { it == null }.takeIf { it > 0 && state.order == HitOrder.NEWEST }?.let {
+                        Note("No air date for $it of ${page.hits.size} titles; they are listed last.")
+                    }
+                Load.Idle -> Unit
+            }
             LazyColumn {
-                items(page.hits) { hit ->
+                items(state.hits) { hit ->
                     Row(Modifier.fillMaxWidth().clickable { flow.selectSeries(hit) }.padding(vertical = 12.dp)) {
                         Text(hit.title, modifier = Modifier.weight(1f))
-                        Text(hit.type, style = MaterialTheme.typography.bodySmall)
+                        val year = dates?.get(hit.id)?.year?.takeIf { it > 0 }
+                        Text(listOfNotNull(hit.type.ifEmpty { null }, year).joinToString(" · "), style = MaterialTheme.typography.bodySmall)
                     }
                     HorizontalDivider()
                 }

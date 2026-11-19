@@ -12,6 +12,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import pl.altani.spike.bridge.BridgeResult
 import pl.altani.spike.ui.CatalogFlow.Load
+import pl.altani.spike.ui.FakeCalls.Companion.airDates
 import pl.altani.spike.ui.FakeCalls.Companion.episodes
 import pl.altani.spike.ui.FakeCalls.Companion.failure
 import pl.altani.spike.ui.FakeCalls.Companion.hit
@@ -370,5 +371,85 @@ class CatalogFlowTest {
         assertEquals(Load.Idle, flow.state.value.sources)
         assertTrue(flow.state.value.episodes is Load.Ready)
         assertEquals(listOf("s1"), closed())
+    }
+
+    @Test
+    fun `results come by relevance and newest first reads the air dates once`() = runTest {
+        val flow = flow()
+        flow.search("frieren")
+        runCurrent()
+        fake.last("search").answer(hits(hit("1", "Frieren Movie"), hit("2", "Other"), hit("3", "Frieren")))
+        runCurrent()
+        assertEquals(listOf("3", "1", "2"), flow.state.value.hits.map { it.id })
+        assertTrue(fake.calls.none { it.method == "metadata_many" })
+
+        flow.orderBy(HitOrder.NEWEST)
+        runCurrent()
+        assertEquals(Load.Loading, flow.state.value.airDates)
+        assertTrue(flow.state.value.busy)
+        val urls = fake.last("metadata_many").args.getJSONArray("urls")
+        assertEquals(listOf("1", "2", "3").map { "https://shinden.pl/series/$it-slug-$it" }, (0 until urls.length()).map(urls::getString))
+        fake.last("metadata_many").answer(airDates(listOf(2023, 9, 0), null, listOf(2020, 1, 1)))
+        runCurrent()
+        assertEquals(listOf("1", "3", "2"), flow.state.value.hits.map { it.id })
+        assertEquals(AirDate(2023, 9, 0), flow.state.value.airDates.ready()["1"])
+
+        flow.orderBy(HitOrder.RELEVANCE)
+        flow.orderBy(HitOrder.NEWEST)
+        runCurrent()
+        assertEquals(1, fake.calls.count { it.method == "metadata_many" })
+        assertEquals(HitOrder.NEWEST, flow.state.value.order)
+
+        flow.selectSeries(flow.state.value.hits.first())
+        runCurrent()
+        flow.back()
+        assertEquals("the order survives a visit to a series", HitOrder.NEWEST, flow.state.value.order)
+
+        flow.search("frieren")
+        assertEquals(HitOrder.RELEVANCE, flow.state.value.order)
+        assertEquals(Load.Idle, flow.state.value.airDates)
+    }
+
+    @Test
+    fun `air dates in flight are dropped by cancel, a series pick or a new search`() = runTest {
+        val flow = flow()
+        listed(flow, "1", "2")
+        flow.orderBy(HitOrder.NEWEST)
+        runCurrent()
+        flow.cancel()
+        runCurrent()
+        assertTrue(fake.last("metadata_many").cancelled)
+        assertEquals(HitOrder.RELEVANCE, flow.state.value.order)
+        assertEquals(Load.Idle, flow.state.value.airDates)
+
+        fake.ignoreCancel = true
+        flow.orderBy(HitOrder.NEWEST)
+        runCurrent()
+        val late = fake.last("metadata_many")
+        flow.selectSeries(flow.state.value.hits.first())
+        runCurrent()
+        late.answer(airDates(null, null))
+        runCurrent()
+        assertEquals(Load.Idle, flow.state.value.airDates)
+        assertEquals(Load.Loading, flow.state.value.episodes)
+    }
+
+    @Test
+    fun `a failed or malformed air date reply falls back to relevance and can be retried`() = runTest {
+        val flow = flow()
+        listed(flow, "1", "2")
+        flow.orderBy(HitOrder.NEWEST)
+        runCurrent()
+        fake.last("metadata_many").answer(airDates(listOf(2020, 1, 1)))
+        runCurrent()
+        assertEquals("malformed_reply", (flow.state.value.airDates as Load.Failed).code)
+        assertEquals(HitOrder.RELEVANCE, flow.state.value.order)
+
+        flow.orderBy(HitOrder.NEWEST)
+        runCurrent()
+        fake.last("metadata_many").answer(failure("access_blocked", "access"))
+        runCurrent()
+        assertEquals("access_blocked", (flow.state.value.airDates as Load.Failed).code)
+        assertEquals(2, fake.calls.count { it.method == "metadata_many" })
     }
 }

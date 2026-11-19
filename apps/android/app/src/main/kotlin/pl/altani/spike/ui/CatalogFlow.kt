@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import pl.altani.spike.bridge.BridgeResult
@@ -36,8 +37,20 @@ class CatalogFlow(
         val episode: Episode? = null,
         val sources: Load<SourcePage> = Load.Idle,
         val source: String? = null,
+        val order: HitOrder = HitOrder.RELEVANCE,
+        val airDates: Load<Map<String, AirDate?>> = Load.Idle,
     ) {
-        val busy: Boolean get() = search == Load.Loading || episodes == Load.Loading || sources == Load.Loading
+        val busy: Boolean
+            get() = search == Load.Loading || episodes == Load.Loading || sources == Load.Loading || airDates == Load.Loading
+
+        /** The search hits in [order]; until the air dates arrive [HitOrder.NEWEST] shows the relevance order. */
+        val hits: List<SeriesHit>
+            get() {
+                val page = (search as? Load.Ready)?.value ?: return emptyList()
+                val ranked = HitOrder.relevance(page.query, page.hits)
+                val dates = (airDates as? Load.Ready)?.value
+                return if (order == HitOrder.NEWEST && dates != null) HitOrder.newest(ranked, dates) else ranked
+            }
     }
 
     private val _state = MutableStateFlow(State())
@@ -64,6 +77,34 @@ class CatalogFlow(
             val load = reply.toLoad { SearchPage.parse(text, it) }
             if (load is Load.Ready) log("search hits=${load.value.hits.size} complete=${load.value.incompleteReason == null}")
             _state.update { it.copy(search = load) }
+        }
+    }
+
+    /** [HitOrder.NEWEST] reads the air dates of all hits once per search; choosing it again after a failure retries. */
+    fun orderBy(order: HitOrder) {
+        val current = _state.value
+        val page = (current.search as? Load.Ready)?.value ?: return
+        if (current.series != null) return
+        if (order == HitOrder.RELEVANCE) {
+            if (current.airDates == Load.Loading) supersede()
+            _state.update { it.copy(order = order) }
+            return
+        }
+        _state.update { it.copy(order = order) }
+        if (current.airDates is Load.Ready || current.airDates == Load.Loading) return
+        val started = supersede()
+        _state.update { it.copy(airDates = Load.Loading) }
+        job = scope.launch {
+            val urls = page.hits.map { it.url }
+            val reply = timed("metadata_many") { call("metadata_many", JSONObject().put("urls", JSONArray(urls))) }
+            if (started != generation) return@launch
+            val load = reply.toLoad { data ->
+                val found = data.getJSONArray("metadata")
+                if (found.length() != urls.size) throw JSONException("metadata count")
+                page.hits.indices.associate { page.hits[it].id to AirDate.parse(found.optJSONObject(it)) }
+            }
+            if (load is Load.Ready) log("metadata_many dated=${load.value.values.count { it != null }} of ${urls.size}")
+            _state.update { if (load is Load.Failed) it.copy(airDates = load, order = HitOrder.RELEVANCE) else it.copy(airDates = load) }
         }
     }
 
@@ -138,6 +179,7 @@ class CatalogFlow(
     fun cancel() {
         val current = _state.value
         when {
+            current.airDates == Load.Loading -> orderBy(HitOrder.RELEVANCE)
             current.sources == Load.Loading || current.episodes == Load.Loading -> back()
             current.search == Load.Loading -> {
                 supersede()
@@ -176,6 +218,8 @@ class CatalogFlow(
     private fun supersede(): Int {
         job?.cancel()
         job = null
+        // the air dates share the job, so a newer choice drops them like any other call in flight
+        _state.update { if (it.airDates == Load.Loading) it.copy(airDates = Load.Idle, order = HitOrder.RELEVANCE) else it }
         return ++generation
     }
 

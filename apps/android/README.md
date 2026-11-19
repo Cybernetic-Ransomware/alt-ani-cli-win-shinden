@@ -70,6 +70,11 @@ technical buttons and the controlled playback; starting one flow closes the othe
 changes reach the engine as `network_set`; on mobile data the player asks for consent per episode. The engine is created
 without FlareSolverr, so a Cloudflare block shows as an access error.
 
+Search results come by **Best match**, computed on the device: exact title, then titles starting with the query, whole
+words, substring, all words anywhere; ties go TV, ONA, OVA, film, special, then by title. **Newest first** reads the
+air dates of all hits with one `metadata_many` call (once per search; Cancel or opening a series drops it) and lists
+titles without a date last, as the CLI's date sort does. A failed read falls back to Best match.
+
 An episode opens with `open_episode` and lists its players; **Auto** lets the bridge choose by the preferences, a
 listed player is played even outside them. Both reuse that episode session for `playback_prepare`. A failed player
 leaves the list on screen for another pick; a session the bridge closed (e.g. after a network change) is reopened once,

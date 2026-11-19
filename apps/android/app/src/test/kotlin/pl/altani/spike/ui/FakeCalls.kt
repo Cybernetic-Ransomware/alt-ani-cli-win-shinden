@@ -80,6 +80,14 @@ class FakeCalls {
                     ),
             )
 
+        fun airDates(vararg dates: List<Int>?) =
+            BridgeResult.Ok(
+                JSONObject().put(
+                    "metadata",
+                    JSONArray(dates.map { date -> date?.let { JSONObject().put("air_date_sort", JSONArray(it)).put("description", "") } ?: JSONObject.NULL }),
+                ),
+            )
+
         fun failure(code: String, kind: String = "unavailable") = BridgeResult.Failure(code, kind, true, JSONObject())
     }
 }
