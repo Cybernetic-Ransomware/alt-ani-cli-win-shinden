@@ -11,7 +11,7 @@ import org.json.JSONException
 import org.json.JSONObject
 import pl.altani.spike.bridge.BridgeResult
 
-/** search → series → episodes on one coroutine at a time; a newer choice cancels the older call and drops its reply. */
+/** search → series → episodes → sources on one coroutine at a time; a newer choice cancels the older call and drops its reply. */
 class CatalogFlow(
     private val scope: CoroutineScope,
     private val call: suspend (method: String, args: JSONObject) -> BridgeResult,
@@ -34,8 +34,10 @@ class CatalogFlow(
         val series: SeriesHit? = null,
         val episodes: Load<EpisodePage> = Load.Idle,
         val episode: Episode? = null,
+        val sources: Load<SourcePage> = Load.Idle,
+        val source: String? = null,
     ) {
-        val busy: Boolean get() = search == Load.Loading || episodes == Load.Loading
+        val busy: Boolean get() = search == Load.Loading || episodes == Load.Loading || sources == Load.Loading
     }
 
     private val _state = MutableStateFlow(State())
@@ -46,10 +48,15 @@ class CatalogFlow(
     // bumped by every new choice, so a reply that came back despite its cancellation is still dropped
     private var generation = 0
 
+    // episode sessions held in the engine: the one listed on screen and the one the player was given
+    private var shown: String? = null
+    private var playing: String? = null
+
     fun search(query: String) {
         val text = query.trim()
         if (text.isEmpty()) return
         val started = supersede()
+        show(null)
         _state.value = State(query = text, search = Load.Loading)
         job = scope.launch {
             val reply = timed("search") { call("search", JSONObject().put("query", text)) }
@@ -62,7 +69,8 @@ class CatalogFlow(
 
     fun selectSeries(hit: SeriesHit) {
         val started = supersede()
-        _state.update { it.copy(series = hit, episodes = Load.Loading, episode = null) }
+        show(null)
+        _state.update { it.copy(series = hit, episodes = Load.Loading, episode = null, sources = Load.Idle, source = null) }
         job = scope.launch {
             val reply = timed("episodes") { call("episodes", JSONObject().put("series", hit.ref().toJson())) }
             if (started != generation) return@launch
@@ -72,23 +80,65 @@ class CatalogFlow(
         }
     }
 
-    /** The series the bridge returned with the listing, not the search hit, goes to playback. */
-    fun pickEpisode(episode: Episode): Pair<SeriesRef, Episode>? {
-        val page = (_state.value.episodes as? Load.Ready)?.value ?: return null
-        if (episode !in page.episodes) return null
-        _state.update { it.copy(episode = episode) }
-        return page.series to episode
+    fun openEpisode(episode: Episode) {
+        val page = (_state.value.episodes as? Load.Ready)?.value ?: return
+        if (episode !in page.episodes) return
+        val started = supersede()
+        show(null)
+        _state.update { it.copy(episode = episode, sources = Load.Loading, source = null) }
+        job = scope.launch {
+            val reply = timed("open_episode") { call("open_episode", JSONObject().put("episode", episode.toJson())) }
+            if (started != generation) {
+                // the engine opened it anyway; nothing on screen will ever use it
+                if (reply is BridgeResult.Ok) reply.data.optString("session_id").ifEmpty { null }?.let(::close)
+                return@launch
+            }
+            val load = reply.toLoad { SourcePage.parse(episode, it) }
+            if (load is Load.Ready) {
+                show(load.value.sessionId)
+                log("open_episode sources=${load.value.sources.size}")
+            }
+            _state.update { it.copy(sources = load) }
+        }
+    }
+
+    fun pickSource(source: Source?): PlaybackPick? {
+        val current = _state.value
+        val series = (current.episodes as? Load.Ready)?.value?.series ?: return null
+        val page = (current.sources as? Load.Ready)?.value ?: return null
+        if (source != null && source !in page.sources) return null
+        play(page.sessionId)
+        _state.update { it.copy(source = source?.onlineId ?: AUTO) }
+        return PlaybackPick(series, page.episode, page.sessionId, source?.onlineId)
+    }
+
+    /** The bridge closed a session (network change, access change); a listed one is opened again once. */
+    fun onSessionClosed(sessionId: String) {
+        if (playing == sessionId) playing = null
+        if (shown != sessionId) return
+        shown = null
+        log("episode session closed, reopening")
+        _state.value.episode?.let(::openEpisode)
+    }
+
+    fun reloadSources() {
+        _state.value.episode?.let(::openEpisode)
     }
 
     fun back() {
         supersede()
-        _state.update { it.copy(series = null, episodes = Load.Idle, episode = null) }
+        show(null)
+        if (_state.value.episode != null) {
+            _state.update { it.copy(episode = null, sources = Load.Idle, source = null) }
+        } else {
+            _state.update { it.copy(series = null, episodes = Load.Idle) }
+        }
     }
 
     fun cancel() {
         val current = _state.value
         when {
-            current.episodes == Load.Loading -> back()
+            current.sources == Load.Loading || current.episodes == Load.Loading -> back()
             current.search == Load.Loading -> {
                 supersede()
                 _state.update { it.copy(search = Load.Idle) }
@@ -100,9 +150,27 @@ class CatalogFlow(
         val current = _state.value
         val series = current.series
         when {
+            current.episode != null && current.sources is Load.Failed -> openEpisode(current.episode)
             series != null && current.episodes is Load.Failed -> selectSeries(series)
             current.search is Load.Failed -> search(current.query)
         }
+    }
+
+    private fun show(sessionId: String?) {
+        val old = shown
+        shown = sessionId
+        if (old != null && old != sessionId && old != playing) close(old)
+    }
+
+    private fun play(sessionId: String) {
+        val old = playing
+        playing = sessionId
+        if (old != null && old != sessionId && old != shown) close(old)
+    }
+
+    // not tied to the current job: a newer choice must not stop the cleanup of an older session
+    private fun close(sessionId: String) {
+        scope.launch { timed("close_session") { call("close_session", JSONObject().put("session_id", sessionId)) } }
     }
 
     private fun supersede(): Int {
@@ -132,8 +200,11 @@ class CatalogFlow(
 
     private fun failed(code: String, kind: String): Load.Failed = Load.Failed(code, CatalogMessages.describe(code, kind))
 
-    private companion object {
-        fun outcome(reply: BridgeResult): String =
+    companion object {
+        /** [State.source] when the bridge chose the player. */
+        const val AUTO = "auto"
+
+        private fun outcome(reply: BridgeResult): String =
             when (reply) {
                 is BridgeResult.Ok -> "ok"
                 is BridgeResult.Failure -> "${reply.kind}/${reply.code}"

@@ -11,8 +11,14 @@ object CatalogMessages {
     )
     private val SITE_CHANGED = setOf("parse", "xhr_api_protocol_error", "xhr_players_changed", "malformed_reply")
 
+    private val SESSION_GONE = setOf("session_closed", "unknown_session", "stale_session")
+
+    /** The episode session is gone, so a retry with it would fail again; its sources must be opened anew. */
+    fun sessionGone(code: String): Boolean = code in SESSION_GONE
+
     fun describe(code: String, kind: String? = null): String =
         when {
+            code in SESSION_GONE -> "The episode's sources expired. Reload them and pick again. ($code)"
             code in ACCESS -> "Shinden blocked access (anti-bot protection). Try again later. ($code)"
             code == "network.offline" -> "No network connection. Connect and retry."
             code in NETWORK -> "Shinden did not answer properly. Check the connection and retry. ($code)"

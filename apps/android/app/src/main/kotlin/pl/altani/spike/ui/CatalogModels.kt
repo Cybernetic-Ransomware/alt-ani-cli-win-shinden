@@ -49,6 +49,37 @@ data class EpisodePage(val series: SeriesRef, val episodes: List<Episode>, val i
     }
 }
 
+/** One player of an episode; the group's URL (`source`) is left out, it is never shown or logged. */
+data class Source(val onlineId: String, val player: String, val audio: String, val subs: String, val maxRes: String?, val author: String?) {
+    val label: String
+        get() = listOfNotNull(player, "audio $audio", "subs $subs", maxRes, author).joinToString(" · ")
+
+    companion object {
+        fun parse(json: JSONObject) =
+            Source(
+                json.getString("online_id"),
+                json.getString("player"),
+                json.optString("lang_audio"),
+                json.optString("lang_subs"),
+                json.nullableString("max_res"),
+                json.nullableString("subs_author"),
+            )
+    }
+}
+
+/** The bridge's episode session: [sessionId] must go with this episode to `playback_prepare`. */
+data class SourcePage(val episode: Episode, val sessionId: String, val sources: List<Source>) {
+    companion object {
+        fun parse(episode: Episode, data: JSONObject) =
+            SourcePage(episode, data.getString("session_id"), data.getJSONArray("sources").objects().map(Source::parse))
+    }
+}
+
+/** A catalogue pick for the player; a null [onlineId] lets the bridge choose by the preferences. */
+data class PlaybackPick(val series: SeriesRef, val episode: Episode, val sessionId: String, val onlineId: String?)
+
+private fun JSONObject.nullableString(name: String): String? = if (isNull(name)) null else optString(name).ifEmpty { null }
+
 private fun reason(data: JSONObject): String? =
     if (data.optBoolean("complete", true)) null else data.optString("incomplete_reason").ifEmpty { "unknown" }
 

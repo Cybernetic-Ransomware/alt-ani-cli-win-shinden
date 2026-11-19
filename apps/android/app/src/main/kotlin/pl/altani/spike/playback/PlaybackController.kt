@@ -106,7 +106,14 @@ class PlaybackController(
         }
     }
 
-    fun start(series: JSONObject, episode: JSONObject, criteria: JSONObject? = null): Job =
+    /** [sessionId] reuses an episode session the caller opened; [onlineId] plays that player even outside the criteria. */
+    fun start(
+        series: JSONObject,
+        episode: JSONObject,
+        criteria: JSONObject? = null,
+        sessionId: String? = null,
+        onlineId: String? = null,
+    ): Job =
         uiScope.launch {
             stopSession()
             val started = generation
@@ -124,6 +131,8 @@ class PlaybackController(
             }) { write, result -> _writes.update { it + (write to result) } }
             val args = JSONObject().put("playback_session", playbackSession).put("series", series).put("episode", episode)
             criteria?.let { args.put("criteria", it) }
+            sessionId?.let { args.put("session_id", it) }
+            onlineId?.let { args.put("online_id", it) }
             prepare(args)
         }
 

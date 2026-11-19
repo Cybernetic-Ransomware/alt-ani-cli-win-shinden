@@ -67,17 +67,18 @@ fun CatalogScreen(catalog: CatalogViewModel, playback: PlaybackViewModel, onFull
                 Button(onClick = { flow.search(query) }, enabled = query.isNotBlank()) { Text("Search") }
             }
         }
-        player?.takeIf { mode == PlaybackViewModel.Mode.CATALOG }?.let { PlayerPanel(it, playback, onFullscreen) }
+        player?.takeIf { mode == PlaybackViewModel.Mode.CATALOG }?.let { PlayerPanel(it, playback, flow, onFullscreen) }
         val series = state.series
-        if (series == null) {
-            SearchResults(state.search, flow)
-        } else {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = flow::back) { Text("Back") }
-                Text(series.title, style = MaterialTheme.typography.titleMedium)
+        val episode = state.episode
+        when {
+            series == null -> SearchResults(state.search, flow)
+            episode == null -> {
+                Header(series.title, flow)
+                Episodes(state.episodes, flow)
             }
-            Episodes(state.episodes, state.episode, flow) { picked ->
-                flow.pickEpisode(picked)?.let { (ref, episode) -> playback.playCatalog(ref, episode) }
+            else -> {
+                Header("${series.title} · ${episode.label}. ${episode.title}", flow)
+                Sources(state.sources, state.source, flow) { picked -> flow.pickSource(picked)?.let(playback::playCatalog) }
             }
         }
     }
@@ -85,7 +86,7 @@ fun CatalogScreen(catalog: CatalogViewModel, playback: PlaybackViewModel, onFull
 
 @UnstableApi
 @Composable
-private fun PlayerPanel(controller: PlaybackController, playback: PlaybackViewModel, onFullscreen: (Boolean) -> Unit) {
+private fun PlayerPanel(controller: PlaybackController, playback: PlaybackViewModel, flow: CatalogFlow, onFullscreen: (Boolean) -> Unit) {
     val state by controller.state.collectAsStateWithLifecycle()
     val seen by playback.evidence.snapshot.collectAsStateWithLifecycle()
     CatalogPlayerView(controller, fullscreen = false, onFullscreen, Modifier.fillMaxWidth().height(200.dp))
@@ -105,7 +106,11 @@ private fun PlayerPanel(controller: PlaybackController, playback: PlaybackViewMo
     state.error?.let { code ->
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(CatalogMessages.describe(code), color = MaterialTheme.colorScheme.error, modifier = Modifier.weight(1f))
-            OutlinedButton(onClick = playback::retryCatalog) { Text("Retry") }
+            if (CatalogMessages.sessionGone(code)) {
+                OutlinedButton(onClick = flow::reloadSources) { Text("Reload sources") }
+            } else {
+                OutlinedButton(onClick = playback::retryCatalog) { Text("Retry") }
+            }
         }
     }
 }
@@ -155,7 +160,7 @@ private fun SearchResults(load: Load<SearchPage>, flow: CatalogFlow) {
 }
 
 @Composable
-private fun Episodes(load: Load<EpisodePage>, chosen: Episode?, flow: CatalogFlow, onPick: (Episode) -> Unit) {
+private fun Episodes(load: Load<EpisodePage>, flow: CatalogFlow) {
     when (load) {
         Load.Idle -> Unit
         Load.Loading -> Busy("Loading episodes…")
@@ -166,16 +171,49 @@ private fun Episodes(load: Load<EpisodePage>, chosen: Episode?, flow: CatalogFlo
             page.incompleteReason?.let { Note("Episode list incomplete ($it): the oldest episodes may be missing.") }
             LazyColumn {
                 items(page.episodes.sortedBy { it.number }) { episode ->
-                    val weight = if (episode == chosen) FontWeight.Bold else FontWeight.Normal
                     Text(
                         "${episode.label}. ${episode.title}",
-                        fontWeight = weight,
-                        modifier = Modifier.fillMaxWidth().clickable { onPick(episode) }.padding(vertical = 12.dp),
+                        modifier = Modifier.fillMaxWidth().clickable { flow.openEpisode(episode) }.padding(vertical = 12.dp),
                     )
                     HorizontalDivider()
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun Sources(load: Load<SourcePage>, chosen: String?, flow: CatalogFlow, onPick: (Source?) -> Unit) {
+    when (load) {
+        Load.Idle -> Unit
+        Load.Loading -> Busy("Loading sources…")
+        is Load.Failed -> Failure(load, flow)
+        is Load.Ready -> {
+            val page = load.value
+            if (page.sources.isEmpty()) return Text("No players listed for this episode.")
+            LazyColumn {
+                item { SourceRow("Auto (by preferences)", chosen == CatalogFlow.AUTO) { onPick(null) } }
+                items(page.sources) { source -> SourceRow(source.label, chosen == source.onlineId) { onPick(source) } }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SourceRow(label: String, chosen: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        fontWeight = if (chosen) FontWeight.Bold else FontWeight.Normal,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
+    )
+    HorizontalDivider()
+}
+
+@Composable
+private fun Header(title: String, flow: CatalogFlow) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = flow::back) { Text("Back") }
+        Text(title, style = MaterialTheme.typography.titleMedium)
     }
 }
 

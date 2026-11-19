@@ -63,6 +63,23 @@ class FakeCalls {
                     .put("incomplete_reason", if (complete) JSONObject.NULL else "http_error"),
             )
 
+        fun sources(sessionId: String, vararg ids: String) =
+            BridgeResult.Ok(
+                JSONObject()
+                    .put("session_id", sessionId)
+                    .put("episode", JSONObject())
+                    .put(
+                        "sources",
+                        JSONArray(
+                            ids.map {
+                                JSONObject().put("online_id", it).put("player", "cda").put("lang_audio", "jp").put("lang_subs", "pl")
+                                    .put("max_res", "1080p").put("date_added", JSONObject.NULL).put("subs_author", "Example Subs")
+                                    .put("source", "https://subs.example/")
+                            },
+                        ),
+                    ),
+            )
+
         fun failure(code: String, kind: String = "unavailable") = BridgeResult.Failure(code, kind, true, JSONObject())
     }
 }

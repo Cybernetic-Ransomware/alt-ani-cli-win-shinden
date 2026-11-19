@@ -16,6 +16,7 @@ import pl.altani.spike.ui.FakeCalls.Companion.episodes
 import pl.altani.spike.ui.FakeCalls.Companion.failure
 import pl.altani.spike.ui.FakeCalls.Companion.hit
 import pl.altani.spike.ui.FakeCalls.Companion.hits
+import pl.altani.spike.ui.FakeCalls.Companion.sources
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class CatalogFlowTest {
@@ -67,7 +68,7 @@ class CatalogFlowTest {
     }
 
     @Test
-    fun `choosing a series sends its reference and plays the listing's series`() = runTest {
+    fun `choosing a series sends its reference and lists its episodes`() = runTest {
         val flow = flow()
         listed(flow, "1")
         val chosen = flow.state.value.search.ready().hits.single()
@@ -81,10 +82,7 @@ class CatalogFlowTest {
 
         val page = flow.state.value.episodes.ready()
         assertEquals(listOf("2", "1", "12.5"), page.episodes.map { it.label })
-        val (series, episode) = flow.pickEpisode(page.episodes[1])!!
-        assertEquals(page.series, series)
-        assertEquals(1L, episode.toJson().get("number"))
-        assertEquals(episode, flow.state.value.episode)
+        assertEquals(1L, page.episodes[1].toJson().get("number"))
     }
 
     @Test
@@ -231,7 +229,146 @@ class CatalogFlowTest {
         fake.last("episodes").answer(episodes("1", 1))
         runCurrent()
 
-        assertNull(flow.pickEpisode(Episode(7.0, "Ep 7", "https://shinden.pl/episode/9/view/7")))
+        flow.openEpisode(Episode(7.0, "Ep 7", "https://shinden.pl/episode/9/view/7"))
+        runCurrent()
         assertNull(flow.state.value.episode)
+        assertEquals(0, fake.calls.count { it.method == "open_episode" })
+    }
+
+    private fun TestScope.episodeListed(flow: CatalogFlow, vararg numbers: Number) {
+        listed(flow, "1")
+        flow.selectSeries(flow.state.value.search.ready().hits.single())
+        runCurrent()
+        fake.last("episodes").answer(episodes("1", *numbers))
+        runCurrent()
+    }
+
+    private fun TestScope.opened(flow: CatalogFlow, index: Int, session: String, vararg ids: String) {
+        flow.openEpisode(flow.state.value.episodes.ready().episodes[index])
+        runCurrent()
+        fake.last("open_episode").answer(sources(session, *ids))
+        runCurrent()
+    }
+
+    private fun closed(): List<String> = fake.calls.filter { it.method == "close_session" }.map { it.args.getString("session_id") }
+
+    @Test
+    fun `an episode lists its sources and a pick carries the session to the player`() = runTest {
+        val flow = flow()
+        episodeListed(flow, 1, 2)
+        flow.openEpisode(flow.state.value.episodes.ready().episodes[0])
+        runCurrent()
+        assertEquals(Load.Loading, flow.state.value.sources)
+        assertEquals(1L, fake.last("open_episode").args.getJSONObject("episode").get("number"))
+        fake.last("open_episode").answer(sources("s1", "11", "12"))
+        runCurrent()
+
+        val page = flow.state.value.sources.ready()
+        assertEquals(listOf("11", "12"), page.sources.map { it.onlineId })
+        assertEquals("cda · audio jp · subs pl · 1080p · Example Subs", page.sources[0].label)
+
+        val chosen = flow.pickSource(page.sources[1])!!
+        assertEquals(PlaybackPick(flow.state.value.episodes.ready().series, page.episode, "s1", "12"), chosen)
+        assertEquals("12", flow.state.value.source)
+        val auto = flow.pickSource(null)!!
+        assertNull(auto.onlineId)
+        assertEquals("s1", auto.sessionId)
+        assertEquals(CatalogFlow.AUTO, flow.state.value.source)
+        assertTrue("the played session stays open", closed().isEmpty())
+    }
+
+    @Test
+    fun `a session nobody uses is closed, the played one is kept`() = runTest {
+        val flow = flow()
+        episodeListed(flow, 1, 2, 3)
+        opened(flow, 0, "s1", "11")
+        flow.pickSource(null)
+        opened(flow, 1, "s2", "21")
+        assertTrue("s1 is still playing", closed().isEmpty())
+
+        opened(flow, 2, "s3", "31")
+        assertEquals(listOf("s2"), closed())
+
+        flow.pickSource(null)
+        runCurrent()
+        assertEquals("s1 left the player", listOf("s2", "s1"), closed())
+
+        flow.back()
+        runCurrent()
+        assertEquals("s3 still plays after Back", listOf("s2", "s1"), closed())
+    }
+
+    @Test
+    fun `a sources reply that lost the race is closed and never shown`() = runTest {
+        val flow = flow()
+        episodeListed(flow, 1, 2)
+        fake.ignoreCancel = true
+        val (first, second) = flow.state.value.episodes.ready().episodes
+        flow.openEpisode(first)
+        runCurrent()
+        val stale = fake.last("open_episode")
+        flow.openEpisode(second)
+        runCurrent()
+        val fresh = fake.last("open_episode")
+
+        stale.answer(sources("old", "1"))
+        runCurrent()
+        fresh.answer(sources("new", "2"))
+        runCurrent()
+
+        assertEquals("new", flow.state.value.sources.ready().sessionId)
+        assertEquals(second, flow.state.value.episode)
+        assertEquals(listOf("old"), closed())
+    }
+
+    @Test
+    fun `a session closed by the bridge is reopened once, other sessions are ignored`() = runTest {
+        val flow = flow()
+        episodeListed(flow, 1)
+        opened(flow, 0, "s1", "11")
+
+        flow.onSessionClosed("unrelated")
+        runCurrent()
+        assertEquals(1, fake.calls.count { it.method == "open_episode" })
+
+        flow.onSessionClosed("s1")
+        runCurrent()
+        assertEquals(Load.Loading, flow.state.value.sources)
+        assertEquals(2, fake.calls.count { it.method == "open_episode" })
+        assertTrue("the bridge already closed it", closed().isEmpty())
+        fake.last("open_episode").answer(sources("s2", "11"))
+        runCurrent()
+        assertEquals("s2", flow.state.value.sources.ready().sessionId)
+    }
+
+    @Test
+    fun `back from sources returns to episodes, cancel and retry work on the sources call`() = runTest {
+        val flow = flow()
+        episodeListed(flow, 1)
+        val episode = flow.state.value.episodes.ready().episodes.single()
+        flow.openEpisode(episode)
+        runCurrent()
+        flow.cancel()
+        runCurrent()
+        assertTrue(fake.last("open_episode").cancelled)
+        assertNull(flow.state.value.episode)
+        assertTrue(flow.state.value.series != null)
+
+        flow.openEpisode(episode)
+        runCurrent()
+        fake.last("open_episode").answer(failure("xhr_access_blocked"))
+        runCurrent()
+        assertEquals("xhr_access_blocked", (flow.state.value.sources as Load.Failed).code)
+        flow.retry()
+        runCurrent()
+        assertEquals(3, fake.calls.count { it.method == "open_episode" })
+
+        fake.last("open_episode").answer(sources("s1", "11"))
+        runCurrent()
+        flow.back()
+        runCurrent()
+        assertEquals(Load.Idle, flow.state.value.sources)
+        assertTrue(flow.state.value.episodes is Load.Ready)
+        assertEquals(listOf("s1"), closed())
     }
 }

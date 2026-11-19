@@ -30,6 +30,15 @@ class CatalogMessagesTest {
     }
 
     @Test
+    fun `an expired episode session asks for fresh sources instead of a retry`() {
+        listOf("session_closed", "unknown_session", "stale_session").forEach {
+            assertTrue(it, CatalogMessages.sessionGone(it))
+            says(it, "closed", "Reload")
+        }
+        assertTrue(!CatalogMessages.sessionGone("no_stream"))
+    }
+
+    @Test
     fun `unknown codes fall back on their kind and otherwise on the code alone`() {
         says("xhr_something_new", "unavailable", "unavailable", "xhr_something_new")
         says("brand_new", "access", "blocked")

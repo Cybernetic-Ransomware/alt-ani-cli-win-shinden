@@ -55,7 +55,7 @@ class PlaybackViewModel(app: Application) : AndroidViewModel(app) {
     }
     val mode: StateFlow<Mode?> = arbiter.mode
 
-    private var lastPick: Pair<SeriesRef, Episode>? = null
+    private var lastPick: PlaybackPick? = null
 
     /** Configures the server, then search → episodes → `playback_begin` → `playback_prepare` → Media3. */
     fun playControlled(scenario: JSONObject, criteria: JSONObject? = null, local: Boolean = false, episodeIndex: Int = 0): Job =
@@ -85,22 +85,22 @@ class PlaybackViewModel(app: Application) : AndroidViewModel(app) {
             }.join()
         }
 
-    fun playCatalog(series: SeriesRef, episode: Episode): Job =
+    fun playCatalog(pick: PlaybackPick): Job =
         onMain {
-            lastPick = series to episode
+            lastPick = pick
             arbiter.launch(Mode.CATALOG) { ticket ->
                 val player = catalogPlayer()
                 // the previous media goes first, so none of its frames or positions count for this attempt
                 player.close()
                 evidence.reset()
                 if (!ticket.current) return@launch
-                add("catalog start episode ${episode.label}")
-                player.start(series.toJson(), episode.toJson()).join()
+                add("catalog start episode ${pick.episode.label} source=${if (pick.onlineId == null) "auto" else "chosen"}")
+                player.start(pick.series.toJson(), pick.episode.toJson(), sessionId = pick.sessionId, onlineId = pick.onlineId).join()
             }.join()
         }
 
     fun retryCatalog() {
-        lastPick?.let { (series, episode) -> playCatalog(series, episode) }
+        lastPick?.let(::playCatalog)
     }
 
     fun onViewAttached(recreated: Boolean) {

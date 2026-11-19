@@ -64,11 +64,16 @@ seek, so do not touch the player while it runs.
 
 ## Catalog tab
 
-The app opens on **Catalog**: search → series → episodes → episode, on the real Shinden through the process's bridge
+The app opens on **Catalog**: search → series → episodes → sources, on the real Shinden through the process's bridge
 (never the controlled server), with playback by the same `PlaybackController` as the controlled flow. **Tech** keeps the
 technical buttons and the controlled playback; starting one flow closes the other's player. The device's network
 changes reach the engine as `network_set`; on mobile data the player asks for consent per episode. The engine is created
 without FlareSolverr, so a Cloudflare block shows as an access error.
+
+An episode opens with `open_episode` and lists its players; **Auto** lets the bridge choose by the preferences, a
+listed player is played even outside them. Both reuse that episode session for `playback_prepare`. A failed player
+leaves the list on screen for another pick; a session the bridge closed (e.g. after a network change) is reopened once,
+and an expired one offers **Reload sources** instead of Retry. Sessions neither listed nor playing are closed.
 
 The status line separates three things: the bridge answered (lists appear), a stream was resolved (`stream: online
 <variant>`), and Media3 really played (`media3: confirmed` — at least 3 s of position progress in this attempt plus a
