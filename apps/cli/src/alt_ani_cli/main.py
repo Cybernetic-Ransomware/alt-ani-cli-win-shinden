@@ -116,6 +116,10 @@ def main(argv: Sequence[str] | None = None) -> None:  # noqa: C901
         diagnostics.session_end("interrupted", None)
         progress.warn(_PROG["interrupted"])
         sys.exit(130)
+    except EOFError:
+        diagnostics.session_end("input_closed", None)
+        progress.warn(_PROG["input_closed"])
+        sys.exit(1)
     except ShindenXhrError as exc:
         diagnostics.session_end("error", type(exc).__name__)
         progress.error(shinden_api.stop_message(exc))

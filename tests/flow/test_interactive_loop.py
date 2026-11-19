@@ -209,6 +209,55 @@ class TestInteractiveFlow:
         assert all(f"/xhr/{picked['player'].online_id}/" in url for url in xhr_urls)
 
 
+class _AskedAgain(Exception):
+    pass
+
+
+def _screen_of(prompt: str) -> str:
+    return next(name for prefix, name in _PROMPTS if prompt.startswith(prefix))
+
+
+_PROMPTS = (("Co chcesz zrobić?", "start"), ("Czego szukasz", "query"), ("Wybierz serię", "series"))
+
+
+@pytest.mark.unit
+class TestFallbackMenusInTheLoop:
+    """The numbered fallback (no prompt_toolkit console) driven through the real screen loop."""
+
+    @pytest.fixture(autouse=True)
+    def _fallback(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+
+    @pytest.fixture
+    def searchable(self, transport, shinden_html):
+        transport.route(lambda request: request.url == _SEARCH_URL, shinden_html("search_frieren.html"))
+        with patch("alt_ani_cli.flow.handlers._prefetch_series_metadata", return_value={}):
+            yield transport
+
+    def test_ctrl_c_on_the_start_menu_exits_like_esc(self, make_engine, cli_paths, transport):
+        with patch("builtins.input", side_effect=[KeyboardInterrupt(), _AskedAgain()]) as mock_input:
+            run_interactive(CliOptions(), make_engine(), cli_paths)
+        assert mock_input.call_count == 1
+        assert transport.requests == []
+
+    def test_ctrl_c_on_the_series_list_goes_back_to_the_query(self, make_engine, cli_paths, searchable):
+        answers = ["1", "frieren", KeyboardInterrupt(), "", "", _AskedAgain()]
+        with patch("builtins.input", side_effect=answers) as mock_input:
+            run_interactive(CliOptions(), make_engine(), cli_paths)
+        screens = [_screen_of(call.args[0]) for call in mock_input.call_args_list]
+        assert screens == ["start", "query", "series", "query", "start"]
+        assert [request.params for request in searchable.requests] == [{"search": "frieren"}]
+
+    def test_eof_on_the_series_list_ends_the_session_without_reprompting(self, make_engine, cli_paths, searchable):
+        with (
+            patch("builtins.input", side_effect=["1", "frieren", EOFError(), _AskedAgain()]) as mock_input,
+            pytest.raises(EOFError),
+        ):
+            run_interactive(CliOptions(), make_engine(), cli_paths)
+        assert [_screen_of(call.args[0]) for call in mock_input.call_args_list] == ["start", "query", "series"]
+        assert len(searchable.requests) == 1
+
+
 @pytest.mark.unit
 class TestDownloadResumeBackToSearchRegression:
     def test_back_from_download_resume_to_search_clears_download_mode(self, make_engine, cli_paths):
