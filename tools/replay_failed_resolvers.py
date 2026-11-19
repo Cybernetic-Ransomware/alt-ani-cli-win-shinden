@@ -24,6 +24,7 @@ from alt_ani_cli.ui import progress
 from alt_ani_core import extract
 from alt_ani_core.diagnostics import host_of_url
 from alt_ani_core.errors import AntiBotError, NoStreamError, ShindenError, ShindenXhrError
+from alt_ani_core.rules import xhr as xhr_rules
 from alt_ani_core.rules.failure import classify_exception, http_status_of
 from alt_ani_core.shinden import api as shinden_api
 from alt_ani_core.shinden import episode as shinden_episode
@@ -345,8 +346,8 @@ def _replay_resolve(client: HttpSession, transport: Transport, case: ReplayCase,
             http_status=http_status_of(exc),
         )
         outcome = _finalize(case, now, exc)
-        if isinstance(exc, ShindenXhrError) and shinden_api.xhr_outcome(exc) is not shinden_api.XhrOutcome.NEXT_PLAYER:
-            outcome = replace(outcome, xhr_stop=shinden_api.stop_message(exc))
+        if isinstance(exc, ShindenXhrError) and xhr_rules.xhr_outcome(exc) is not xhr_rules.XhrOutcome.NEXT_PLAYER:
+            outcome = replace(outcome, xhr_stop=xhr_rules.stop_message(exc))
         return outcome
     except Exception as exc:
         now = _NowSnapshot(ok=False, host=None, harness_error=True)

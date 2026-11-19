@@ -4,7 +4,7 @@ from alt_ani_core.config import SHINDEN_API_BASE, SHINDEN_XHR_BASE
 from alt_ani_core.errors import ParseError, ShindenXhrError, SourcesExhaustedError
 from alt_ani_core.events import SourceAttemptFailed, XhrFallback
 from alt_ani_core.models import FallbackPolicy
-from alt_ani_core.shinden.api import XhrOutcome, xhr_outcome
+from alt_ani_core.rules.xhr import XhrOutcome, xhr_outcome
 from alt_ani_core.testing import FakeResponse, RecordingCancel
 
 from .support import (

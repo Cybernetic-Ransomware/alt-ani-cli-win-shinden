@@ -40,11 +40,11 @@ from alt_ani_core.models import (
     SeriesMetadata,
     SeriesRef,
 )
+from alt_ani_core.rules import xhr as xhr_rules
 from alt_ani_core.rules.episode_range import parse_range
 from alt_ani_core.rules.pin import find_pinned, player_fingerprint
 from alt_ani_core.services.engine import Engine
 from alt_ani_core.services.episode_session import EpisodeSession
-from alt_ani_core.shinden import api as shinden_api
 from alt_ani_core.shinden import episode as shinden_episode
 
 _PROG = CONTENT["progress"]
@@ -91,7 +91,7 @@ def _reload_players(state: FlowState, ep: EpisodeRow) -> ScreenResult:
     return Screen.EPISODE_DISPATCH
 
 
-def _prefetch_player_sources(state: FlowState) -> shinden_api.XhrOutcome | None:
+def _prefetch_player_sources(state: FlowState) -> xhr_rules.XhrOutcome | None:
     session = _session(state, state.current_ep)
     known = session.known_sources
     players = [p for p in state.players if p.online_id not in known]
@@ -101,8 +101,8 @@ def _prefetch_player_sources(state: FlowState) -> shinden_api.XhrOutcome | None:
         stop = session.probe_hosts(players)
     if stop is None:
         return None
-    progress.warn(_PROG["prefetch_stopped"].format(reason=shinden_api.stop_message(stop)))
-    return shinden_api.xhr_outcome(stop)
+    progress.warn(_PROG["prefetch_stopped"].format(reason=xhr_rules.stop_message(stop)))
+    return xhr_rules.xhr_outcome(stop)
 
 
 def _sorted_by_date_desc(hits: list[SeriesHit], metadata: dict[str, SeriesMetadata]) -> list[SeriesHit]:
@@ -452,7 +452,7 @@ def handle_episode_dispatch(state: FlowState) -> ScreenResult:
     elif len(players) == 1:
         return _auto_pick_player(state, players[0])
 
-    if args.show_sources and _prefetch_player_sources(state) is shinden_api.XhrOutcome.PLAYERS_CHANGED:
+    if args.show_sources and _prefetch_player_sources(state) is xhr_rules.XhrOutcome.PLAYERS_CHANGED:
         return _reload_players(state, ep)
 
     return Screen.PLAYER_PICK
@@ -515,8 +515,8 @@ def handle_resolve_stream(state: FlowState) -> ScreenResult:
         resolved = _resolve_chosen(state, _session(state, ep), chosen)
     except ShindenXhrError as exc:
         # shared-API failure, not this player's: keep it pickable and leave any retry to the user
-        progress.error(shinden_api.stop_message(exc))
-        if shinden_api.xhr_outcome(exc) is shinden_api.XhrOutcome.PLAYERS_CHANGED:
+        progress.error(xhr_rules.stop_message(exc))
+        if xhr_rules.xhr_outcome(exc) is xhr_rules.XhrOutcome.PLAYERS_CHANGED:
             # the shown list is stale: reload this episode's page instead of offering ids that are gone
             return _reload_players(state, ep)
         return Screen.PLAYER_PICK

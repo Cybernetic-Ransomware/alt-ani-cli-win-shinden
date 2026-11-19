@@ -12,8 +12,9 @@ from alt_ani_core.errors import (
 from alt_ani_core.events import PhaseFinished, PhaseStarted, SourceAttemptFailed
 from alt_ani_core.models import ExtractionFailure, FallbackPolicy, PlayerEntry, PlayerSource, Purpose, SourceFilter
 from alt_ani_core.rules.health import HostState, Signal
+from alt_ani_core.rules.xhr import XhrOutcome, xhr_outcome
 from alt_ani_core.services.episode_session import MAX_FRESH_RESOLVES
-from alt_ani_core.shinden.api import XhrOutcome, xhr_outcome
+from alt_ani_core.shinden import api as shinden_api
 from alt_ani_core.testing import FakeResponse, RecordingCancel, RecordingSink
 
 from .support import (
@@ -625,11 +626,7 @@ class TestProbeHosts:
         assert session.probe_hosts([a, b]) is None
         assert set(session.known_sources) == {b.online_id}
 
-        from alt_ani_core.services import episode_session
-
-        monkeypatch.setattr(
-            episode_session.shinden_api, "resolve_embed", lambda *_a, **_k: (_ for _ in ()).throw(AntiBotError("blocked"))
-        )
+        monkeypatch.setattr(shinden_api, "resolve_embed", lambda *_a, **_k: (_ for _ in ()).throw(AntiBotError("blocked")))
         assert session.probe_hosts([c]) is None
         assert set(session.known_sources) == {b.online_id}
 

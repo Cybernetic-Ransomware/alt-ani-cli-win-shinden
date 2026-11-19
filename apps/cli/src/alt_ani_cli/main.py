@@ -29,8 +29,8 @@ from alt_ani_core.errors import (
 )
 from alt_ani_core.history.sqlite import SqliteHistory
 from alt_ani_core.redaction import redact_text
+from alt_ani_core.rules import xhr as xhr_rules
 from alt_ani_core.services.engine import Engine
-from alt_ani_core.shinden import api as shinden_api
 from alt_ani_core.transport.api import HttpStatusError, TransportError
 from alt_ani_core.transport.curl import CurlTransport
 
@@ -122,7 +122,7 @@ def main(argv: Sequence[str] | None = None) -> None:  # noqa: C901
         sys.exit(1)
     except ShindenXhrError as exc:
         diagnostics.session_end("error", type(exc).__name__)
-        progress.error(shinden_api.stop_message(exc))
+        progress.error(xhr_rules.stop_message(exc))
         sys.exit(1)
     except HttpStatusError as exc:
         diagnostics.session_end("error", type(exc).__name__)

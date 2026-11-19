@@ -151,3 +151,202 @@ class TestFailureClassification:
         described = describe(exc)
         assert (described["code"], described["kind"]) == (code, kind)
         assert described["kind"] in KINDS
+
+
+_RETRY_LATER = "Automatic attempts stopped — you can retry later by picking a player manually."
+_STOPPED = "Automatic attempts stopped."
+_RELOAD = "Automatic attempts stopped — reload the episode to see the current players."
+_HTTP_STATUS = {"category": "http_error", "reason": "http_status"}
+_API_ERROR = {"category": "http_error", "reason": "api_error"}
+_LOAD, _SHOW, _REFRESH = "player_load", "player_show", "token_refresh"
+_CHANGED = {"stage": _REFRESH, "category": "player_list_changed"}
+
+_XHR_MATRIX = [
+    pytest.param(
+        {"stage": _LOAD, "http_status": 403, **_HTTP_STATUS},
+        "xhr_access_blocked",
+        False,
+        f"shinden blocked access to its player API on player_load (HTTP 403). {_RETRY_LATER}",
+        id="403",
+    ),
+    pytest.param(
+        {"stage": _LOAD, "http_status": 401, **_HTTP_STATUS},
+        "xhr_access_blocked",
+        False,
+        f"shinden blocked access to its player API on player_load (HTTP 401). {_RETRY_LATER}",
+        id="401",
+    ),
+    pytest.param(
+        {"stage": _LOAD, "http_status": 429, "retry_after": 7, **_HTTP_STATUS},
+        "xhr_access_blocked",
+        False,
+        f"shinden blocked access to its player API on player_load (HTTP 429). {_RETRY_LATER} The server asks to wait 7 s.",
+        id="429_retry_after",
+    ),
+    pytest.param(
+        {"stage": _LOAD, "http_status": 503, **_HTTP_STATUS},
+        "xhr_service_unavailable",
+        True,
+        f"shinden player API is unavailable on player_load (HTTP 503). {_RETRY_LATER}",
+        id="503",
+    ),
+    pytest.param(
+        {"stage": _SHOW, "http_status": 503, "api_code": "ochrona_godz", **_API_ERROR},
+        "xhr_access_blocked",
+        False,
+        f"shinden blocked access to its player API on player_show (HTTP 503, code=ochrona_godz). {_RETRY_LATER}",
+        id="503_block_code",
+    ),
+    pytest.param(
+        {"stage": _LOAD, "http_status": 200, "api_code": "invalid_token", **_API_ERROR},
+        "xhr_access_blocked",
+        False,
+        f"shinden blocked access to its player API on player_load (HTTP 200, code=invalid_token). {_RETRY_LATER}",
+        id="200_invalid_token",
+    ),
+    pytest.param(
+        {"stage": _LOAD, "http_status": 500, "api_code": "brak_playera", **_API_ERROR},
+        "xhr_service_unavailable",
+        True,
+        f"shinden player API is unavailable on player_load (HTTP 500, code=brak_playera). {_RETRY_LATER}",
+        id="500_unknown_code",
+    ),
+    pytest.param(
+        {"stage": _LOAD, "http_status": 400, "api_code": "brak_playera", **_API_ERROR},
+        "xhr_api_protocol_error",
+        False,
+        f"shinden player API returned an unexpected response on player_load (HTTP 400, code=brak_playera). {_STOPPED}",
+        id="400_unknown_code",
+    ),
+    pytest.param(
+        {"stage": _LOAD, "http_status": 404, "api_code": "brak_playera", **_API_ERROR},
+        "xhr_next_player",
+        False,
+        f"shinden player API returned an unexpected response on player_load (HTTP 404, code=brak_playera). {_STOPPED}",
+        id="404_unknown_code",
+    ),
+    pytest.param(
+        {"stage": _SHOW, "category": "timeout", "reason": "transport"},
+        "xhr_service_unavailable",
+        True,
+        f"shinden player API is unavailable on player_show (timeout). {_RETRY_LATER}",
+        id="timeout",
+    ),
+    pytest.param(
+        {"stage": _SHOW, "category": "network_error", "reason": "transport"},
+        "xhr_service_unavailable",
+        True,
+        f"shinden player API is unavailable on player_show (network_error). {_RETRY_LATER}",
+        id="network_error",
+    ),
+    pytest.param(
+        {**_CHANGED, "reason": "player_not_listed"},
+        "xhr_players_changed",
+        False,
+        f"The player list of this episode changed after the token refresh (reason=player_not_listed). {_RELOAD}",
+        id="player_not_listed",
+    ),
+    pytest.param(
+        {**_CHANGED, "reason": "player_is_honeypot"},
+        "xhr_players_changed",
+        False,
+        f"The player list of this episode changed after the token refresh (reason=player_is_honeypot). {_RELOAD}",
+        id="player_is_honeypot",
+    ),
+    pytest.param(
+        {"stage": _REFRESH, "http_status": 404, **_HTTP_STATUS},
+        "xhr_api_protocol_error",
+        False,
+        f"shinden player API returned an unexpected response on token_refresh (HTTP 404). {_STOPPED}",
+        id="refresh_404",
+    ),
+    pytest.param(
+        {"stage": _REFRESH, "http_status": 503, **_HTTP_STATUS},
+        "xhr_service_unavailable",
+        True,
+        f"shinden player API is unavailable on token_refresh (HTTP 503). {_RETRY_LATER}",
+        id="refresh_503",
+    ),
+    pytest.param(
+        {**_CHANGED, "reason": "player_not_listed", "http_status": 403},
+        "xhr_access_blocked",
+        False,
+        f"shinden blocked access to its player API on token_refresh (reason=player_not_listed). {_RETRY_LATER}",
+        id="refresh_403_players_changed",
+    ),
+    pytest.param(
+        {"stage": _SHOW, "category": "no_stream_url", "reason": "no_iframe", "http_status": 200},
+        "xhr_next_player",
+        False,
+        f"shinden player API returned an unexpected response on player_show (reason=no_iframe). {_STOPPED}",
+        id="no_iframe",
+    ),
+    pytest.param(
+        {"stage": _LOAD, "http_status": 404, **_HTTP_STATUS},
+        "xhr_next_player",
+        False,
+        f"shinden player API returned an unexpected response on player_load (HTTP 404). {_STOPPED}",
+        id="404",
+    ),
+    pytest.param(
+        {"stage": _LOAD, "http_status": 410, **_HTTP_STATUS},
+        "xhr_next_player",
+        False,
+        f"shinden player API returned an unexpected response on player_load (HTTP 410). {_STOPPED}",
+        id="410",
+    ),
+    pytest.param(
+        {"stage": _LOAD, "category": "parser_drift", "reason": "wait_above_limit", "http_status": 200},
+        "xhr_api_protocol_error",
+        False,
+        f"shinden player API returned an unexpected response on player_load (reason=wait_above_limit). {_STOPPED}",
+        id="wait_above_limit",
+    ),
+    pytest.param(
+        {"stage": _LOAD, "category": "xhr_context_invalid", "reason": "context_missing"},
+        "xhr_api_protocol_error",
+        False,
+        f"shinden player API returned an unexpected response on player_load (reason=context_missing). {_STOPPED}",
+        id="context_missing",
+    ),
+]
+
+
+class TestXhrErrorDescription:
+    """Literal expectations, never derived from xhr_outcome, so any change to the rule surfaces as a contract change."""
+
+    @pytest.mark.parametrize(("fields", "code", "retryable", "message"), _XHR_MATRIX)
+    def test_full_description(self, fields, code, retryable, message):
+        described = describe(core_errors.ShindenXhrError("raw server SECRET", **fields))
+        assert described == {
+            "code": code,
+            "kind": "unavailable",
+            "retryable": retryable,
+            "message": message,
+            "params": {
+                "stage": fields["stage"],
+                "api_code": fields.get("api_code"),
+                "http_status": fields.get("http_status"),
+                "retry_after": fields.get("retry_after"),
+                "reason": fields["reason"],
+            },
+        }
+        assert "SECRET" not in json.dumps(described)
+
+    def test_matrix_covers_every_outcome(self):
+        assert {case.values[1] for case in _XHR_MATRIX} == {
+            "xhr_access_blocked",
+            "xhr_service_unavailable",
+            "xhr_api_protocol_error",
+            "xhr_players_changed",
+            "xhr_next_player",
+        }
+
+    def test_unexpected_exception_reports_only_its_type(self):
+        assert describe(RuntimeError("https://x/?auth=token")) == {
+            "code": "internal",
+            "kind": "internal",
+            "retryable": False,
+            "message": "RuntimeError",
+            "params": {},
+        }

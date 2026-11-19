@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from alt_ani_core.errors import NoStreamError, ShindenXhrError
+from alt_ani_core.errors import NoStreamError
 from alt_ani_core.services import episode_session
 from alt_ani_core.shinden import search
 from alt_ani_core.testing import FakeResponse, make_stream
@@ -586,11 +586,3 @@ class TestPlatformPieces:
 
         assert describe(HttpStatusError(503))["retryable"] is True
         assert describe(HttpStatusError(404))["retryable"] is False
-
-    def test_xhr_error_mapping_uses_outcome(self):
-        from alt_ani_bridge.errors import describe
-
-        err = ShindenXhrError("x", stage="player_show", category="timeout", reason="transport")
-        described = describe(err)
-        assert described["code"] == "xhr_service_unavailable"
-        assert described["retryable"] is True

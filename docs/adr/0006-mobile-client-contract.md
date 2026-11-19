@@ -21,7 +21,8 @@ The method, DTO, error and event reference is [`CONTRACT.md`](../../apps/android
 
 Domain rules stay in the engine: choosing a local copy (`rules.criteria.item_matches`), why nothing matched
 (`no_match_reason`), the next episode and selections (`rules.episodes`), which job actions apply (`rules.job_state.
-available_actions`), the stream gate (`rules.network.stream_allowed`) and playback preparation
+available_actions`), the stream gate (`rules.network.stream_allowed`), how a player API failure ends the operation
+(`rules.xhr.xhr_outcome`, `stop_message`) and playback preparation
 (`services.playback.PlaybackService`). The bridge parses and validates input, calls the engine, maps DTOs and errors,
 and owns handles, the runtime and events. `tests/architecture` allowlists the engine modules the bridge may import and
 forbids `sqlite3` and private names.

@@ -4,7 +4,6 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from enum import StrEnum
 from typing import NoReturn
 from urllib.parse import quote, urlsplit
 
@@ -22,83 +21,23 @@ from alt_ani_core.errors import ShindenError, ShindenXhrError
 from alt_ani_core.messages import MESSAGES as EXCEPTIONS
 from alt_ani_core.models import EmbedURL
 from alt_ani_core.rules.failure import CATEGORY_NO_STREAM_URL, CATEGORY_PARSER_DRIFT, classify_exception
+from alt_ani_core.rules.xhr import STAGE_LOAD, STAGE_REFRESH, STAGE_SHOW, xhr_detail
 from alt_ani_core.shinden import xhr as shinden_xhr
 from alt_ani_core.shinden.xhr import BACKEND_API4, BACKEND_NEW, EpisodeXhr
 from alt_ani_core.transport.api import HttpSession, TransportError
 
 _API = EXCEPTIONS["api"]
 
-STAGE_LOAD = "player_load"
-STAGE_SHOW = "player_show"
-STAGE_REFRESH = "token_refresh"
-
 CATEGORY_PLAYERS_CHANGED = "player_list_changed"
 CATEGORY_CONTEXT_INVALID = "xhr_context_invalid"
-_PLAYERS_CHANGED_REASONS = frozenset({"player_not_listed", "player_is_honeypot"})
-
-# Protection and auth states: the API refuses this client, not this player.
-ACCESS_BLOCK_CODES = frozenset({"turnstile", "auth_required", "invalid_token", "konto_robot", "vpnp_limit", "ochrona_godz"})
 
 _WAIT_TEXT_RE = re.compile(r"\d{1,6}")
 _API_CODE_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
-_TRANSPORT_CATEGORIES = frozenset({"timeout", "network_error"})
-
-
-class XhrOutcome(StrEnum):
-    NEXT_PLAYER = "next_player"
-    ACCESS_BLOCKED = "access_blocked"
-    SERVICE_UNAVAILABLE = "service_unavailable"
-    API_PROTOCOL_ERROR = "api_protocol_error"
-    PLAYERS_CHANGED = "players_changed"
-
-
-def xhr_outcome(err: ShindenXhrError) -> XhrOutcome:
-    """Fallback policy only; classification already happened when ``err`` was raised."""
-    status = err.http_status
-    if err.api_code in ACCESS_BLOCK_CODES or status in (401, 403, 429):
-        return XhrOutcome.ACCESS_BLOCKED
-    if err.category in _TRANSPORT_CATEGORIES or (status is not None and status >= 500):
-        return XhrOutcome.SERVICE_UNAVAILABLE
-    if err.reason in _PLAYERS_CHANGED_REASONS:
-        return XhrOutcome.PLAYERS_CHANGED
-    if err.stage == STAGE_REFRESH:
-        # the episode page backs every player, so a refresh failure (even a 404) is never one player's
-        return XhrOutcome.API_PROTOCOL_ERROR
-    if err.category == CATEGORY_NO_STREAM_URL or status in (404, 410):
-        return XhrOutcome.NEXT_PLAYER
-    # no api_code is known to be source-specific, so an unrecognised one stops rather than walks on
-    return XhrOutcome.API_PROTOCOL_ERROR
-
-
-def _detail(err: ShindenXhrError) -> str:
-    parts = []
-    if err.http_status is not None and err.category == "http_error":
-        parts.append(f"HTTP {err.http_status}")
-    if err.api_code is not None:
-        parts.append(f"code={err.api_code}")
-    if err.category in _TRANSPORT_CATEGORIES:
-        parts.append(err.category)
-    elif err.reason not in ("http_status", "api_error"):
-        parts.append(f"reason={err.reason}")
-    return ", ".join(parts)
-
-
-def stop_message(err: ShindenXhrError) -> str:
-    """User-facing text built from local templates only — never the server's error.message."""
-    key = {
-        XhrOutcome.ACCESS_BLOCKED: "xhr_access_blocked",
-        XhrOutcome.SERVICE_UNAVAILABLE: "xhr_unavailable",
-        XhrOutcome.PLAYERS_CHANGED: "xhr_players_changed",
-    }.get(xhr_outcome(err), "xhr_protocol")
-    msg = _API[key].format(stage=err.stage, detail=_detail(err))
-    if err.retry_after is not None:
-        msg = f"{msg} {_API['retry_after_hint'].format(seconds=err.retry_after)}"
-    return msg
 
 
 def _xhr_error(online_id: str, *, stage: str, category: str, reason: str, **fields) -> ShindenXhrError:
     err = ShindenXhrError("", stage=stage, category=category, reason=reason, **fields)
-    err.args = (_API["xhr_failed"].format(stage=stage, online_id=repr(online_id), detail=_detail(err)),)
+    err.args = (_API["xhr_failed"].format(stage=stage, online_id=repr(online_id), detail=xhr_detail(err)),)
     return err
 
 

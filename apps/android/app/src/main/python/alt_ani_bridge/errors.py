@@ -27,7 +27,7 @@ from alt_ani_core.errors import (
 )
 from alt_ani_core.history.database import STORE_ERRORS
 from alt_ani_core.redaction import redact_text
-from alt_ani_core.shinden import api as shinden_api
+from alt_ani_core.rules.xhr import XhrOutcome, stop_message, xhr_outcome
 from alt_ani_core.transport.api import HttpStatusError, TransportError
 
 INVALID_INPUT = "invalid_input"
@@ -99,12 +99,12 @@ def _error(
 
 
 def _xhr(exc: ShindenXhrError) -> dict[str, Any]:
-    outcome = shinden_api.xhr_outcome(exc)
+    outcome = xhr_outcome(exc)
     return _error(
         f"xhr_{outcome.value}",
         UNAVAILABLE,
-        shinden_api.stop_message(exc),
-        retryable=outcome is shinden_api.XhrOutcome.SERVICE_UNAVAILABLE,
+        stop_message(exc),
+        retryable=outcome is XhrOutcome.SERVICE_UNAVAILABLE,
         stage=exc.stage,
         api_code=exc.api_code,
         http_status=exc.http_status,

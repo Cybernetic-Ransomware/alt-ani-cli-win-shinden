@@ -10,6 +10,7 @@ from alt_ani_core.errors import ShindenError, ShindenXhrError
 from alt_ani_core.events import EventSink, XhrFallback
 from alt_ani_core.models import EmbedURL, EpisodeListing, EpisodeRow, PlayerEntry, SearchResults, SeriesMetadata, SeriesRef
 from alt_ani_core.providers.api import url_matches
+from alt_ani_core.rules import xhr as xhr_rules
 from alt_ani_core.shinden import api as shinden_api
 from alt_ani_core.shinden import metadata as shinden_metadata
 from alt_ani_core.shinden import search as shinden_search
@@ -40,7 +41,7 @@ class ShindenEmbeds:
         )
 
     def stops_operation(self, exc: ShindenError) -> bool:
-        return isinstance(exc, ShindenXhrError) and shinden_api.xhr_outcome(exc) is not shinden_api.XhrOutcome.NEXT_PLAYER
+        return isinstance(exc, ShindenXhrError) and xhr_rules.xhr_outcome(exc) is not xhr_rules.XhrOutcome.NEXT_PLAYER
 
     def diag(self) -> dict:
         xhr = self.xhr

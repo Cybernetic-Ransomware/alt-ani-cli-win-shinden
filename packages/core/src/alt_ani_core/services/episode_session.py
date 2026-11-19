@@ -43,9 +43,9 @@ from alt_ani_core.models import (
 )
 from alt_ani_core.redaction import redact_text
 from alt_ani_core.rules import ranking
+from alt_ani_core.rules import xhr as xhr_rules
 from alt_ani_core.rules.filtering import filter_players
 from alt_ani_core.rules.health import HealthTransition, Signal, classify_failure
-from alt_ani_core.shinden import api as shinden_api
 
 if TYPE_CHECKING:
     from alt_ani_core.providers.api import EpisodeEmbeds
@@ -421,7 +421,7 @@ def _failure_fields(exc: ShindenError) -> dict:
     if isinstance(exc, ShindenXhrError):
         fields.update(layer=exc.layer, category=exc.category, http_status=exc.http_status)
         fields.update({name: getattr(exc, name) for name in _XHR_FAILURE_FIELDS})
-        fields["xhr_outcome"] = shinden_api.xhr_outcome(exc).value
+        fields["xhr_outcome"] = xhr_rules.xhr_outcome(exc).value
     elif isinstance(exc, AntiBotError):
         fields.update(layer="shinden_api", category="anti_bot")
     return fields

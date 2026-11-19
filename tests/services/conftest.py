@@ -7,6 +7,7 @@ import pytest
 
 from alt_ani_core import diagnostics
 from alt_ani_core.services import episode_session
+from alt_ani_core.shinden import api as shinden_api
 from alt_ani_core.testing import FakeTransport, make_stream
 
 from .support import EPISODE, EPISODE_URL, TEST_TOKEN, route_xhr
@@ -82,7 +83,7 @@ def diag(monkeypatch):
 @pytest.fixture
 def embed_seam(monkeypatch):
     mock = MagicMock(name="resolve_embed")
-    monkeypatch.setattr(episode_session.shinden_api, "resolve_embed", mock)
+    monkeypatch.setattr(shinden_api, "resolve_embed", mock)
     return mock
 
 

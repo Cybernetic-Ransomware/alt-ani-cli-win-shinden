@@ -73,6 +73,7 @@ BRIDGE_CORE_ALLOWLIST = {
     "alt_ani_core.rules.episodes",
     "alt_ani_core.rules.job_state",
     "alt_ani_core.rules.network",
+    "alt_ani_core.rules.xhr",
     "alt_ani_core.services.engine",
     "alt_ani_core.services.episode_session",
     "alt_ani_core.services.offline",
@@ -80,7 +81,6 @@ BRIDGE_CORE_ALLOWLIST = {
     "alt_ani_core.services.offline.library",
     "alt_ani_core.services.offline.sources",
     "alt_ani_core.services.playback",
-    "alt_ani_core.shinden",
     "alt_ani_core.shinden.xhr",
     "alt_ani_core.state",
     "alt_ani_core.storage.api",
@@ -90,8 +90,6 @@ BRIDGE_CORE_ALLOWLIST = {
 }
 # from history.database only the error tuple; SQL stays in the stores
 BRIDGE_HISTORY_NAMES = {"alt_ani_core.history.database": {"STORE_ERRORS"}}
-# exact pre-existing violations per file, so a new or a removed one fails; follow-up task from the 2026-11-19 audit
-BRIDGE_KNOWN_VIOLATIONS = {"errors.py": {"alt_ani_core.shinden.api"}}
 
 # package → engine packages it must not import
 LAYERS = {
@@ -314,13 +312,33 @@ def _from_imports(path: Path) -> list[tuple[str, str]]:
 class TestBridgeUsesTheEngineContract:
     @pytest.mark.parametrize("path", _files(BRIDGE), ids=lambda p: p.relative_to(BRIDGE).as_posix())
     def test_only_allowlisted_engine_modules(self, path):
-        outside = _engine_modules(path) - BRIDGE_CORE_ALLOWLIST
-        known = BRIDGE_KNOWN_VIOLATIONS.get(path.relative_to(BRIDGE).as_posix(), set())
-        assert outside - known == set(), "not on BRIDGE_CORE_ALLOWLIST"
-        assert known - outside == set(), "no longer imported: delete it from BRIDGE_KNOWN_VIOLATIONS"
+        assert _engine_modules(path) - BRIDGE_CORE_ALLOWLIST == set(), "not on BRIDGE_CORE_ALLOWLIST"
 
-    def test_known_violations_name_existing_files(self):
-        assert all((BRIDGE / name).is_file() for name in BRIDGE_KNOWN_VIOLATIONS)
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "from alt_ani_core.shinden import api as shinden_api\n",
+            "import alt_ani_core.shinden.api\n",
+            "from alt_ani_core.shinden.api import xhr_outcome\n",
+            "def f():\n    from alt_ani_core.shinden import api\n",
+            "def f():\n    import alt_ani_core.shinden.api as shinden_api\n",
+        ],
+    )
+    def test_provider_api_import_is_rejected(self, tmp_path, source):
+        path = tmp_path / "any_bridge_module.py"
+        path.write_text(source, encoding="utf-8")
+        assert _engine_modules(path) - BRIDGE_CORE_ALLOWLIST
+
+    def test_xhr_rule_imports_without_provider_or_native_modules(self):
+        script = (
+            "import sys\n"
+            "import alt_ani_core.rules.xhr\n"
+            "heavy = ('alt_ani_core.shinden', 'alt_ani_core.dom', 'alt_ani_core.providers', 'alt_ani_core.services',"
+            " 'alt_ani_core.transport.curl', 'curl_cffi', 'selectolax', 'yt_dlp', 'sqlite3')\n"
+            "print(','.join(sorted(n for n in sys.modules if any(n == h or n.startswith(h + '.') for h in heavy))))\n"
+        )
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+        assert result.stdout.strip() == ""
 
     @pytest.mark.parametrize("path", _files(BRIDGE), ids=lambda p: p.relative_to(BRIDGE).as_posix())
     def test_no_sql_and_no_private_engine_names(self, path):
