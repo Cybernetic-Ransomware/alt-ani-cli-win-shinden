@@ -13,7 +13,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from alt_ani_core.cancel import CancelToken
+from alt_ani_core.errors import InvalidTransitionError
 from alt_ani_core.history import database
+from alt_ani_core.history.library import SqliteLibraryStore
 from alt_ani_core.history.local import open_local_state
 from alt_ani_core.history.ownership import DELETE_LOCK_SUFFIX, ExecutorOwnership, lock_path
 from alt_ani_core.history.preferences import SqlitePreferencesStore
@@ -752,3 +754,147 @@ class TestEvidenceLostThroughARestart:
         media = tmp_path / "library" / waiting.partial.locator.key / "media.mp4"
         assert sha256_path(media) == hashlib.sha256(body).hexdigest()
         assert _published(tmp_path) == []
+
+
+@pytest.mark.unit
+class TestVerifyDuringDelete:
+    @staticmethod
+    def _marking_store(crash: Crashed, item_id: str, method: str, *, before_real: bool = True) -> FsFileStore:
+        """A store whose ``method`` lets another connection mark the item deleting at that exact point of verify."""
+        store = FsFileStore(crash.tmp / "library")
+        real = getattr(store, method)
+        other = open_local_state(crash.tmp / "history.db")
+
+        def marking(*args, **kwargs):
+            if before_real:
+                other.library.mark_deleting([item_id])
+                return real(*args, **kwargs)
+            value = real(*args, **kwargs)
+            other.library.mark_deleting([item_id])
+            return value
+
+        setattr(store, method, marking)
+        return store
+
+    def test_a_delete_between_the_read_and_marking_missing_is_reported_and_finishes(self, tmp_path):
+        crash, item = _available_item(tmp_path)
+        crash.target_path().unlink()
+        service = LibraryService(crash.state.library, self._marking_store(crash, item.id, "stat"))
+        (result,) = service.verify([item.id], deep=True)
+        assert (result.kind, result.code) == (ResultKind.SKIPPED, "deleting")
+        deleting = crash.state.library.get(item.id)
+        assert deleting.status is ItemStatus.DELETING
+        assert crash_service(crash).finish_delete(deleting).kind is ResultKind.OK
+        assert crash.state.library.items() == []
+
+    def test_a_delete_during_the_digest_of_a_returned_file_does_not_restore_it(self, tmp_path):
+        crash, item = _available_item(tmp_path)
+        crash.state.library.mark_missing(item.id)
+        service = LibraryService(crash.state.library, self._marking_store(crash, item.id, "digest"))
+        (result,) = service.verify([item.id], deep=True)
+        assert (result.kind, result.code) == (ResultKind.SKIPPED, "deleting")
+        assert crash.state.library.get(item.id).status is ItemStatus.DELETING
+        assert crash.target_path().read_bytes() == BODY
+        assert crash_service(crash).finish_delete(crash.state.library.get(item.id)).kind is ResultKind.OK
+        assert not crash.target_path().exists()
+
+    def test_a_delete_finished_during_the_digest_leaves_nothing_to_restore(self, tmp_path):
+        crash, item = _available_item(tmp_path)
+        crash.state.library.mark_missing(item.id)
+        store = FsFileStore(tmp_path / "library")
+        real_digest = store.digest
+        deleter = LibraryService(open_local_state(tmp_path / "history.db").library, FsFileStore(tmp_path / "library"))
+        outcome = {}
+
+        def digest_then_delete(locator, cancel):
+            digest = real_digest(locator, cancel)
+            runner = threading.Thread(target=lambda: outcome.setdefault("delete", deleter.delete([item.id])))
+            runner.start()
+            runner.join(10)
+            return digest
+
+        store.digest = digest_then_delete
+        (result,) = LibraryService(crash.state.library, store).verify([item.id], deep=True)
+        assert outcome["delete"][0].kind is ResultKind.OK
+        assert (result.kind, result.code) == (ResultKind.FAILED, "state.unknown_item")
+        assert crash.state.library.items() == []
+        assert not crash.target_path().exists()
+
+    def test_the_executor_starts_while_another_process_deletes_an_item_recovery_verifies(self, tmp_path, monkeypatch):
+        crash, item = _available_item(tmp_path)
+        crash.target_path().unlink()
+        other = open_local_state(tmp_path / "history.db")
+        real_stat = FsFileStore.stat
+        marked = threading.Event()
+
+        def stat_racing_a_delete(self, locator):
+            if locator == item.spec.locator and not marked.is_set():
+                marked.set()
+                other.library.mark_deleting([item.id])
+            return real_stat(self, locator)
+
+        monkeypatch.setattr(FsFileStore, "stat", stat_racing_a_delete)
+        queue, state, _ = make_queue(tmp_path, FakeSources([], {}))
+        report = queue.start()
+        try:
+            assert marked.is_set()
+            assert item.id not in report.marked_missing
+            assert queue.running
+        finally:
+            assert queue.close()
+        assert state.library.get(item.id).status is ItemStatus.DELETING
+
+    def test_any_other_refused_transition_is_not_hidden(self, tmp_path, monkeypatch):
+        crash, item = _available_item(tmp_path)
+        crash.target_path().unlink()
+
+        def refused(self, item_id):
+            raise InvalidTransitionError("refused").coded("state.invalid_transition", item_id=item_id)
+
+        monkeypatch.setattr(SqliteLibraryStore, "mark_missing", refused)
+        with pytest.raises(InvalidTransitionError):
+            crash_service(crash).verify([item.id])
+        assert crash.state.library.get(item.id).status is ItemStatus.AVAILABLE
+
+    def test_two_concurrent_verifications_agree(self, tmp_path):
+        crash, item = _available_item(tmp_path)
+        crash.target_path().unlink()
+        both_read = threading.Barrier(2, timeout=10)
+        results: dict[int, list] = {}
+
+        def verifier(index: int) -> None:
+            store = FsFileStore(tmp_path / "library")
+            real_stat = store.stat
+
+            def stat_together(locator):
+                both_read.wait()
+                return real_stat(locator)
+
+            store.stat = stat_together
+            service = LibraryService(open_local_state(tmp_path / "history.db").library, store)
+            results[index] = service.verify([item.id], deep=True)
+
+        runners = [threading.Thread(target=verifier, args=(i,)) for i in range(2)]
+        for runner in runners:
+            runner.start()
+        for runner in runners:
+            runner.join(15)
+        assert [(r.kind, r.code) for i in (0, 1) for r in results[i]] == [(ResultKind.FAILED, "missing")] * 2
+        assert crash.state.library.get(item.id).status is ItemStatus.MISSING
+
+    def test_a_cancel_at_a_conflicting_digest_records_nothing(self, tmp_path):
+        crash, item = _available_item(tmp_path)
+        crash.state.library.mark_missing(item.id)
+        cancel = CancelToken()
+        store = self._marking_store(crash, item.id, "digest")
+        marking = store.digest
+
+        def cancel_then_digest(locator, token):
+            cancel.cancel()
+            return marking(locator, token)
+
+        store.digest = cancel_then_digest
+        results = LibraryService(crash.state.library, store).verify([item.id, "other"], deep=True, cancel=cancel)
+        assert [(r.kind, r.code) for r in results] == [(ResultKind.FAILED, "cancelled"), (ResultKind.NOT_ATTEMPTED, None)]
+        assert crash.state.library.get(item.id).status is ItemStatus.DELETING
+        assert crash.target_path().read_bytes() == BODY

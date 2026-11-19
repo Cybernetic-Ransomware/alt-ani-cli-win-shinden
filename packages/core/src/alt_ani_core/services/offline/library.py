@@ -120,6 +120,16 @@ class LibraryService:
                 results.append(ItemResult(item_id, ResultKind.FAILED, exc.code))
             except StorageError as exc:
                 results.append(ItemResult(item_id, ResultKind.FAILED, exc.code))
+            except InvalidTransitionError:
+                # a delete marked the item after it was read and the store refused the change; any other refusal is no race
+                try:
+                    current = self._library.get(item_id)
+                except UnknownRecordError as exc:
+                    results.append(ItemResult(item_id, ResultKind.FAILED, exc.code))
+                    continue
+                if current.status is not ItemStatus.DELETING:
+                    raise
+                results.append(ItemResult(item_id, ResultKind.SKIPPED, current.status.value))
             except OperationCancelled:
                 # a digest was interrupted before anything was recorded: the item is unchanged
                 return [*results, ItemResult(item_id, ResultKind.FAILED, "cancelled"), *_not_attempted(ids[index + 1 :])]

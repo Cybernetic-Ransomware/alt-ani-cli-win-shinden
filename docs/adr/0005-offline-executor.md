@@ -153,10 +153,11 @@ directory under the root is only reported (`OrphanFound`).
 
 Deleting is per item (`mark_deleting` → remove → `forget`); the check, removal and `forget` hold one OS lock beside the
 database (`<db>.delete-lock`), shared by every process, and re-read the row under it. A deep verification compares the
-SHA-256 of an available copy too and marks a mismatch missing. A failed removal keeps the row `deleting` for a retry; a
-file that no longer is the recorded copy is left in place and reported. Exports are streamed copies (never links) into
-a temporary file, fsynced, then published without replacing anything (numbered on conflict, or refused). Watch state
-is never touched. Bulk operations report each item.
+SHA-256 of an available copy too and marks a mismatch missing. A verification whose change the store refuses because a
+delete marked the item meanwhile reports it `deleting` and leaves it to that delete. A failed removal keeps the row
+`deleting` for a retry; a file that no longer is the recorded copy is left in place and reported. Exports are streamed
+copies (never links) into a temporary file, fsynced, then published without replacing anything (numbered on conflict, or
+refused). Watch state is never touched. Bulk operations report each item.
 
 Stage 3 additions ([ADR-0006](0006-mobile-client-contract.md)): exports go through `ExportTarget.create(name,
 on_conflict) -> ExportWriter(write, commit, abort)`, with `DirectoryExportTarget` for paths; a cancel before `commit`
