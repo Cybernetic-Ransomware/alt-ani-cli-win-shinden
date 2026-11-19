@@ -1,6 +1,7 @@
 """Cloudflare clearance for shinden.pl: a disk cache plus an optional FlareSolverr round-trip."""
 
 import json
+import math
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -25,11 +26,25 @@ def _cache_file(cache_dir: Path) -> Path:
     return cache_dir / _CACHE_NAME
 
 
+def _finite(raw: object) -> float | None:
+    """A JSON number as a finite float; bools, non-numbers, NaN, infinities and overflowing ints give None."""
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        return None
+    try:
+        value = float(raw)
+    except OverflowError:
+        return None
+    return value if math.isfinite(value) else None
+
+
 def load_cached(cache_dir: Path) -> Clearance | None:
     try:
         data = json.loads(_cache_file(cache_dir).read_text(encoding="utf-8"))
-        if time.time() < data.get("expires", 0) - _EXPIRY_MARGIN:
-            return Clearance(data["cf_clearance"], data["user_agent"])
+        cf, user_agent, expires = data["cf_clearance"], data["user_agent"], _finite(data.get("expires", 0))
+        if not (isinstance(cf, str) and cf and isinstance(user_agent, str) and expires is not None):
+            return None
+        if time.time() < expires - _EXPIRY_MARGIN:
+            return Clearance(cf, user_agent)
     except Exception:  # nosec B110
         pass
     return None
@@ -56,19 +71,34 @@ def fetch_via_flaresolverr(solver_url: str, cache_dir: Path) -> Clearance | None
     except Exception:
         return None
 
-    if data.get("status") != "ok":
+    parsed = _parse_solution(data)
+    if parsed is None:
         return None
+    clearance, expires = parsed
+    save_cached(cache_dir, clearance, expires)
+    return clearance
 
-    sol = data.get("solution", {})
+
+def _parse_solution(data: object) -> tuple[Clearance, float] | None:
+    """The clearance and its expiry from a FlareSolverr reply; any malformed field means no clearance."""
+    if not isinstance(data, dict) or data.get("status") != "ok":
+        return None
+    sol = data.get("solution")
+    if not isinstance(sol, dict):
+        return None
     user_agent = sol.get("userAgent", "")
-    for cookie in sol.get("cookies", []):
-        if cookie.get("name") == "cf_clearance":
-            expires = float(cookie.get("expires", -1))
+    cookies = sol.get("cookies", [])
+    if not isinstance(user_agent, str) or not isinstance(cookies, list):
+        return None
+    for cookie in cookies:
+        if isinstance(cookie, dict) and cookie.get("name") == "cf_clearance":
+            value = cookie.get("value")
+            expires = _finite(cookie.get("expires", -1))
+            if not isinstance(value, str) or not value or expires is None:
+                return None
             if expires < 0:
                 expires = time.time() + 3600
-            clearance = Clearance(cookie["value"], user_agent)
-            save_cached(cache_dir, clearance, expires)
-            return clearance
+            return Clearance(value, user_agent), expires
     return None
 
 

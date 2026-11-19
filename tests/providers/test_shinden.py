@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -79,6 +79,17 @@ class TestShindenProvider:
         assert profile.name == "shinden"
         assert "cf_clearance" not in profile.cookies
         assert "_rnd" in profile.cookies
+
+    def test_malformed_solver_response_yields_the_plain_profile(self, tmp_path):
+        resp = MagicMock()
+        resp.read.return_value = b'{"status": "ok", "solution": null}'
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=resp):
+            profile = _provider().session_profile(AccessConfig(flaresolverr_url="http://localhost:8191"), tmp_path)
+
+        assert set(profile.cookies) == {"_rnd"}
+        assert "User-Agent" not in profile.headers
 
     def test_series_url_parses_as_before(self):
         ref = _provider().series_from_url("https://shinden.pl/titles/12-one-piece/episodes")
