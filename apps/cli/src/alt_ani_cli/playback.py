@@ -2,7 +2,7 @@
 
 from alt_ani_cli.args import CliOptions
 from alt_ani_cli.content import CONTENT
-from alt_ani_cli.player import mpv
+from alt_ani_cli.player import mpv, vlc
 from alt_ani_cli.player.runner import PlayResult
 from alt_ani_cli.ui import progress
 from alt_ani_core import diagnostics
@@ -25,6 +25,15 @@ def playback_confirmed(result: PlayResult, no_detach: bool) -> bool:
     if not no_detach:
         return True  # detached mode can't measure rc/elapsed; keep the prior behavior
     return result.rc == 0 and result.elapsed >= _FAST_EXIT_THRESHOLD_SEC
+
+
+def warn_unsupported_headers(variant: StreamVariant, kind: str) -> None:
+    """Names only: header values can carry tokens."""
+    if kind != "vlc":
+        return
+    dropped = vlc.unsupported_headers(variant.headers)
+    if dropped:
+        progress.warn(_PROG["vlc_headers_dropped"].format(names=", ".join(dropped)))
 
 
 def report_playback(result: PlayResult, options: CliOptions, title: str) -> None:
@@ -55,17 +64,21 @@ def report_playback(result: PlayResult, options: CliOptions, title: str) -> None
 
 def print_debug(stream: Stream, chosen: StreamVariant, embed: EmbedURL) -> None:
     from rich.table import Table
+    from rich.text import Text
+
+    def field(label: str, value: str) -> Text:
+        return Text.assemble((label, "bold"), " ", value)
 
     con = progress._get()
-    con.print(f"\n[bold]Embed URL:[/bold] {redact_text(embed.url)}")
-    con.print(f"[bold]Direct URL:[/bold] {redact_text(chosen.url)}")
-    con.print(f"[bold]Protocol:[/bold] {chosen.protocol.value}")
-    con.print(f"[bold]Ext:[/bold] {chosen.container or 'm3u8'}")
+    con.print(Text.assemble("\n", field("Embed URL:", redact_text(embed.url))))
+    con.print(field("Direct URL:", redact_text(chosen.url)))
+    con.print(field("Protocol:", chosen.protocol.value))
+    con.print(field("Ext:", chosen.container or "m3u8"))
 
     if chosen.headers:
         t = Table("Header", "Value", title="HTTP headers")
         for k, v in redact_headers(dict(chosen.headers)).items():
-            t.add_row(k, v)
+            t.add_row(Text(k), Text(v))
         con.print(t)
 
     labelled = [v for v in stream.variants if v.label]
@@ -73,5 +86,5 @@ def print_debug(stream: Stream, chosen: StreamVariant, embed: EmbedURL) -> None:
         t = Table("Quality", "URL", title="Available qualities")
         for variant in sorted(labelled, key=lambda v: v.label):
             u = redact_text(variant.url)
-            t.add_row(variant.label, u[:80] + "..." if len(u) > 80 else u)
+            t.add_row(Text(variant.label), Text(u[:80] + "..." if len(u) > 80 else u))
         con.print(t)

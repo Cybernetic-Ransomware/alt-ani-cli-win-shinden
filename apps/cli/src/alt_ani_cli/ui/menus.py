@@ -4,8 +4,8 @@ InquirerPy (prompt_toolkit) fails in git-bash with TERM=xterm-256color on
 Windows because it tries to use the Win32 console API via xterm emulation.
 In that environment we fall back to a simple numbered list + input().
 
-All functions return None when the user presses ESC (InquirerPy) or an empty
-Enter (numbered fallback), signalling "go back".
+All functions return None when the user presses ESC or Ctrl+C (InquirerPy), or an
+empty Enter or Ctrl+C (numbered fallback), signalling "go back". EOF propagates.
 """
 
 import re
@@ -13,6 +13,8 @@ from collections.abc import Sequence
 from contextlib import suppress
 from typing import Literal
 from urllib.parse import urlparse
+
+from rich.text import Text
 
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.ui import progress
@@ -152,7 +154,9 @@ def _run_keyed_picker(
                 idx = int(raw) - 1
                 if 0 <= idx < len(keys):
                     return keys[idx]
-            except ValueError, KeyboardInterrupt:
+            except KeyboardInterrupt:
+                return None
+            except ValueError:
                 pass
             print(fallback_invalid)
     from InquirerPy import inquirer
@@ -205,7 +209,9 @@ def _numbered_pick(items: list, label_fn, prompt: str):
             idx = int(raw) - 1
             if 0 <= idx < len(items):
                 return items[idx]
-        except ValueError, KeyboardInterrupt:
+        except KeyboardInterrupt:
+            return None
+        except ValueError:
             pass
         print(_FB["invalid_number"].format(n=len(items)))
 
@@ -231,7 +237,9 @@ def _numbered_pick_multi(items: list, label_fn, prompt: str) -> list | None:
             valid = sorted(i for i in indices if 0 <= i < len(items))
             if valid:
                 return [items[i] for i in valid]
-        except ValueError, KeyboardInterrupt:
+        except KeyboardInterrupt:
+            return None
+        except ValueError:
             pass
         print(_FB["invalid_numbers"].format(n=len(items)))
 
@@ -279,7 +287,7 @@ def show_modal_text(title: str, body: str) -> None:
     """Render a blocking modal panel (description or tags) and wait for Enter."""
     progress.rule(title)
     progress.output(body)
-    progress.output(f"\n[dim]{_M['series']['press_any_key']}[/dim]")
+    progress.output(Text.assemble("\n", (_M["series"]["press_any_key"], "dim")))
     with suppress(EOFError, KeyboardInterrupt):
         input()
 
@@ -637,7 +645,10 @@ def prompt_search_query() -> str | None:
 
     if not _use_inquirer():
         while True:
-            raw = input(_sq["fallback_prompt"]).strip()
+            try:
+                raw = input(_sq["fallback_prompt"]).strip()
+            except KeyboardInterrupt:
+                return None
             if not raw:
                 return None
             return raw
@@ -668,7 +679,10 @@ def prompt_url() -> str | None:
 
     if not _use_inquirer():
         while True:
-            raw = input(_u["fallback_prompt"]).strip()
+            try:
+                raw = input(_u["fallback_prompt"]).strip()
+            except KeyboardInterrupt:
+                return None
             if not raw:
                 return None
             if _valid(raw):

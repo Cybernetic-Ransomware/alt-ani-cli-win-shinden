@@ -154,6 +154,23 @@ class TestHandleRunActionPlaybackReporting:
         mock_play.assert_called_once_with(STREAM.default, kind=kind, title="Fate — Odcinek 1", no_detach=True)
         mock_report.assert_called_once_with(PlayResult(rc=0, elapsed=5.0), state.options, "Fate — Odcinek 1")
 
+    @pytest.mark.parametrize(("vlc", "warned"), [(True, True), (False, False)])
+    def test_vlc_is_warned_about_dropped_headers_before_launch(self, vlc, warned):
+        state = _play_state(no_detach=True, vlc=vlc)
+        state.resolved = resolved_for(PLAYER, make_stream(headers={"Origin": "https://o.example"}), EMBED)
+        order: list[str] = []
+        with (
+            patch("alt_ani_cli.ui.progress.warn", side_effect=lambda msg: order.append(f"warn:{msg}")),
+            patch(
+                "alt_ani_cli.flow.handlers.player_runner.play",
+                side_effect=lambda *a, **kw: order.append("play") or PlayResult(rc=0, elapsed=5.0),
+            ),
+            patch("alt_ani_cli.flow.handlers.playback.report_playback"),
+        ):
+            handle_run_action(state)
+        assert order[-1] == "play"
+        assert any("Origin" in entry for entry in order[:-1]) is warned
+
     @pytest.mark.parametrize(
         ("quality", "url"),
         [(None, "https://cdn.example.com/1080.m3u8"), ("480p", "https://cdn.example.com/480.m3u8")],

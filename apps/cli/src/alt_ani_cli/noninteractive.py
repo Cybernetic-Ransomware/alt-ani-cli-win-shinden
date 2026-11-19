@@ -140,6 +140,7 @@ def run(options: CliOptions, engine: Engine, cli_paths: CliPaths) -> None:  # no
         elif options.debug:
             playback.print_debug(resolved.stream, variant, resolved.embed)
         else:
+            playback.warn_unsupported_headers(variant, options.player_kind)
             result = player_runner.play(variant, kind=options.player_kind, title=title, no_detach=options.no_detach)
             playback.report_playback(result, options, title)
             if playback.playback_confirmed(result, options.no_detach):

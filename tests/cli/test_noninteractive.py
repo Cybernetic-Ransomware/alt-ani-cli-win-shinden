@@ -361,6 +361,13 @@ class TestNoninteractiveWatch:
         assert actions.play.call_args.kwargs["kind"] == "vlc"
         assert actions.play.call_args.kwargs["no_detach"] is True
 
+    def test_vlc_is_warned_about_dropped_headers(self, engine, actions, cli_paths, console):
+        actions.extract.return_value = make_stream(headers={"Origin": "https://o.example"})
+        run(options(vlc=True), engine, cli_paths)
+
+        assert any("Origin" in message and "o.example" not in message for message in console.of("warn"))
+        actions.play.assert_called_once()
+
     def test_unconfirmed_attached_playback_is_not_recorded(self, engine, history, actions, cli_paths, console):
         actions.play.return_value = MagicMock(rc=0, elapsed=0.5)
 

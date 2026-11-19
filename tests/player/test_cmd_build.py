@@ -7,6 +7,8 @@ import pytest
 from alt_ani_cli.player import build_command, mpv
 from alt_ani_cli.player.mpv import build as build_mpv
 from alt_ani_cli.player.vlc import build as build_vlc
+from alt_ani_cli.player.vlc import unsupported_headers
+from alt_ani_core.config import USER_AGENT
 from alt_ani_core.models import StreamProtocol, StreamVariant
 
 
@@ -157,6 +159,48 @@ class TestBuildVlc:
 
     def test_uses_variant_user_agent(self):
         assert "--http-user-agent=TestUA" in build_vlc(_stream(), title="X")
+
+    @pytest.mark.parametrize(
+        ("ua_name", "referer_name"),
+        [("user-agent", "referer"), ("USER-AGENT", "REFERER"), ("User-agent", "ReFeReR")],
+    )
+    def test_header_names_are_matched_case_insensitively(self, ua_name, referer_name):
+        cmd = build_vlc(_stream(headers={ua_name: "UA1", referer_name: "https://r.example/"}), title="X")
+        assert "--http-user-agent=UA1" in cmd
+        assert "--http-referrer=https://r.example/" in cmd
+
+    def test_default_user_agent_when_absent(self):
+        cmd = build_vlc(_stream(headers={"Referer": "https://r.example/"}), title="X")
+        assert f"--http-user-agent={USER_AGENT}" in cmd
+
+    def test_no_referrer_when_absent(self):
+        assert not any(arg.startswith("--http-referrer") for arg in build_vlc(_stream(headers={}), title="X"))
+
+    def test_extra_headers_add_no_vlc_options(self):
+        headers = {"user-agent": "UA1", "referer": "https://r.example/", "Origin": "https://o.example", "X-A": "1"}
+        cmd = build_vlc(_stream(url="https://cdn.example.com/v.m3u8", headers=headers), title="Show [1]")
+        assert cmd == [
+            "vlc.exe",
+            "https://cdn.example.com/v.m3u8",
+            "--play-and-exit",
+            "--meta-title=Show [1]",
+            "--http-user-agent=UA1",
+            "--http-referrer=https://r.example/",
+        ]
+
+    def test_origin_is_never_sent_as_referrer(self):
+        cmd = build_vlc(_stream(headers={"Origin": "https://o.example"}), title="X")
+        assert not any("o.example" in arg for arg in cmd)
+
+
+@pytest.mark.unit
+class TestVlcUnsupportedHeaders:
+    def test_lists_only_headers_vlc_cannot_send(self):
+        headers = {"USER-AGENT": "u", "referer": "r", "Origin": "o", "X-Token": "t"}
+        assert unsupported_headers(headers) == ["Origin", "X-Token"]
+
+    def test_empty_when_only_standard_headers(self):
+        assert unsupported_headers({"User-Agent": "u", "Referer": "r"}) == []
 
 
 @pytest.mark.unit

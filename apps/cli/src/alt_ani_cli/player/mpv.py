@@ -1,11 +1,11 @@
 import os
 import shutil
 import sys
-from collections.abc import Mapping
 from pathlib import Path
 
 from alt_ani_cli import paths
 from alt_ani_cli.content import EXCEPTIONS_PL
+from alt_ani_cli.player.headers import get_header
 from alt_ani_core.config import USER_AGENT
 from alt_ani_core.errors import PlayerNotFoundError
 from alt_ani_core.models import StreamVariant
@@ -37,11 +37,6 @@ if sys.platform == "win32":
 _STANDARD_HEADERS = {"user-agent", "referer"}
 
 
-def _get_header(headers: Mapping[str, str], name: str) -> str | None:
-    lname = name.lower()
-    return next((v for k, v in headers.items() if k.lower() == lname), None)
-
-
 def _escape_header_value(value: str) -> str:
     # --http-header-fields is a comma-separated mpv list option; an unescaped comma would corrupt it.
     return value.replace(",", "\\,")
@@ -53,9 +48,9 @@ def build(stream: StreamVariant, *, title: str, no_detach: bool = False) -> list
         path,
         stream.url,
         f"--force-media-title={title}",
-        f"--user-agent={_get_header(stream.headers, 'User-Agent') or USER_AGENT}",
+        f"--user-agent={get_header(stream.headers, 'User-Agent') or USER_AGENT}",
     ]
-    referer = _get_header(stream.headers, "Referer")
+    referer = get_header(stream.headers, "Referer")
     if referer:
         cmd.append(f"--referrer={referer}")
     extra_headers = {k: v for k, v in stream.headers.items() if k.lower() not in _STANDARD_HEADERS}
