@@ -13,7 +13,7 @@ from alt_ani_core.config import SHINDEN_XHR_BASE
 from alt_ani_core.errors import AntiBotError, ParseError
 from alt_ani_core.events import XhrFallback
 from alt_ani_core.models import PlayerSource, Purpose, SourceFilter
-from alt_ani_core.shinden import api as shinden_api
+from alt_ani_core.rules import xhr as xhr_rules
 from alt_ani_core.transport.api import TransportTimeout
 
 from .support import (
@@ -304,8 +304,8 @@ class TestPrefetchPlayerSources:
             patch("alt_ani_cli.ui.progress.warn") as mock_warn,
         ):
             outcome = _prefetch_player_sources(state)
-        assert outcome is shinden_api.XhrOutcome.ACCESS_BLOCKED
-        mock_warn.assert_called_once_with(_PROG["prefetch_stopped"].format(reason=shinden_api.stop_message(stop)))
+        assert outcome is xhr_rules.XhrOutcome.ACCESS_BLOCKED
+        mock_warn.assert_called_once_with(_PROG["prefetch_stopped"].format(reason=xhr_rules.stop_message(stop)))
 
     def test_refuses_a_session_of_another_episode(self):
         state = make_state(targets=[EP1, EP2], ep_idx=1, players=[PLAYER], session=FakeEpisodeSession(EP1, [PLAYER]))
@@ -474,7 +474,7 @@ class TestEpisodeXhrState:
             patch("alt_ani_cli.ui.progress.warn") as mock_warn,
         ):
             outcome = _prefetch_player_sources(state)
-        assert outcome is shinden_api.XhrOutcome.ACCESS_BLOCKED
+        assert outcome is xhr_rules.XhrOutcome.ACCESS_BLOCKED
         assert shinden.page_gets(EP1) == 2
         assert set(session.known_sources) == {first.online_id}
         text = mock_warn.call_args.args[0]

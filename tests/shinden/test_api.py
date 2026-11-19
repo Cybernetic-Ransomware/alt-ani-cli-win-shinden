@@ -15,8 +15,9 @@ from alt_ani_core.errors import OperationCancelled, ShindenXhrError
 from alt_ani_core.events import SourceAttemptFailed
 from alt_ani_core.models import EpisodeRow
 from alt_ani_core.providers.shinden import ShindenEmbeds
+from alt_ani_core.rules.xhr import XhrOutcome, stop_message, xhr_outcome
 from alt_ani_core.services.episode_session import EpisodeSession
-from alt_ani_core.shinden.api import XhrOutcome, resolve_embed, stop_message, xhr_outcome
+from alt_ani_core.shinden.api import resolve_embed
 from alt_ani_core.shinden.xhr import BACKEND_API4, BACKEND_NEW, EpisodeXhr, EpisodeXhrContext
 from alt_ani_core.testing import RecordingCancel
 from alt_ani_core.transport.api import NetworkError, TransportError, TransportTimeout

@@ -4,9 +4,9 @@ from alt_ani_core.cancel import NEVER
 from alt_ani_core.config import AccessConfig
 from alt_ani_core.errors import AccessBlockedError, NoStreamError, ShindenXhrError, SourcesExhaustedError
 from alt_ani_core.models import ResolvedStream, SourceAttempt
+from alt_ani_core.rules import xhr as xhr_rules
 from alt_ani_core.services.offline.interaction import SCOPE_HOST, SCOPE_SHINDEN, InteractionNeeded
 from alt_ani_core.services.offline.sources import EngineSources, SourceUnavailable, _SessionSources
-from alt_ani_core.shinden import api as shinden_api
 
 from .support import episode, player, progressive
 
@@ -59,13 +59,13 @@ class TestSessionSources:
         assert exc.value.transient
 
     def test_shinden_api_outage_is_transient_with_its_retry_after(self, monkeypatch):
-        monkeypatch.setattr(shinden_api, "xhr_outcome", lambda _e: shinden_api.XhrOutcome.SERVICE_UNAVAILABLE)
+        monkeypatch.setattr(xhr_rules, "xhr_outcome", lambda _e: xhr_rules.XhrOutcome.SERVICE_UNAVAILABLE)
         with pytest.raises(SourceUnavailable) as exc:
             _SessionSources(_Session(_xhr(False))).resolve(player("1"), fresh=False, cancel=NEVER)
         assert exc.value.transient and exc.value.retry_after == 40
 
     def test_blocked_xhr_asks_for_interaction(self, monkeypatch):
-        monkeypatch.setattr(shinden_api, "xhr_outcome", lambda _e: shinden_api.XhrOutcome.ACCESS_BLOCKED)
+        monkeypatch.setattr(xhr_rules, "xhr_outcome", lambda _e: xhr_rules.XhrOutcome.ACCESS_BLOCKED)
         with pytest.raises(InteractionNeeded) as exc:
             _SessionSources(_Session(_xhr(False))).resolve(player("1"), fresh=False, cancel=NEVER)
         assert exc.value.scope == SCOPE_SHINDEN

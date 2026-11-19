@@ -10,11 +10,11 @@ from alt_ani_core.config import AccessConfig
 from alt_ani_core.errors import AccessBlockedError, ShindenError, ShindenXhrError, SourcesExhaustedError
 from alt_ani_core.models import EpisodeRow, FallbackPolicy, PlayerEntry, Stream
 from alt_ani_core.rules import ranking
+from alt_ani_core.rules import xhr as xhr_rules
 from alt_ani_core.rules.conditions import flaresolverr_allowed
 from alt_ani_core.services.engine import Engine
 from alt_ani_core.services.episode_session import EpisodeSession
 from alt_ani_core.services.offline.interaction import SCOPE_HOST, SCOPE_SHINDEN, InteractionGrant, InteractionNeeded
-from alt_ani_core.shinden import api as shinden_api
 from alt_ani_core.state import NetworkKind
 
 _INTERACTION_ERRORS = {"JavaScriptRequiredError"}
@@ -62,11 +62,11 @@ class _SessionSources:
                 raise InteractionNeeded(SCOPE_HOST, host=host, online_id=entry.online_id) from None
             raise SourceUnavailable("exhausted") from None
         except ShindenXhrError as exc:
-            outcome = shinden_api.xhr_outcome(exc)
-            if outcome is shinden_api.XhrOutcome.ACCESS_BLOCKED:
+            outcome = xhr_rules.xhr_outcome(exc)
+            if outcome is xhr_rules.XhrOutcome.ACCESS_BLOCKED:
                 raise InteractionNeeded(SCOPE_SHINDEN) from None
             # the shared API stopping (rate limit, outage) is not this source's fault: try again later
-            transient = outcome is not shinden_api.XhrOutcome.NEXT_PLAYER
+            transient = outcome is not xhr_rules.XhrOutcome.NEXT_PLAYER
             raise SourceUnavailable("shinden_api", transient=transient, retry_after=exc.retry_after) from None
         except AccessBlockedError:
             raise InteractionNeeded(SCOPE_SHINDEN) from None
