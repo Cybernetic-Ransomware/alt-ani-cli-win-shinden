@@ -764,6 +764,26 @@ class TestRefreshStageOutcome:
 
 
 @pytest.mark.unit
+class TestNextPlayerStopMessage:
+    @pytest.mark.parametrize(
+        "fields",
+        [{"http_status": 404}, {"stage": "player_show", "category": "no_stream_url", "reason": "no_iframe"}],
+        ids=["404", "no_iframe"],
+    )
+    def test_has_its_own_text(self, fields):
+        err = _xhr_error(**fields)
+        assert xhr_outcome(err) is XhrOutcome.NEXT_PLAYER
+        msg = stop_message(err)
+        assert "another player" in msg
+        assert err.stage in msg
+        assert "unexpected response" not in msg
+        assert "Automatic attempts stopped" not in msg
+
+    def test_keeps_the_wait_hint(self):
+        assert "The server asks to wait 9 s." in stop_message(_xhr_error(http_status=404, retry_after=9))
+
+
+@pytest.mark.unit
 class TestTarget:
     def test_api4_goes_to_the_legacy_endpoint(self):
         client = _client(_resp(text="5"), _resp(text=_IFRAME_HTML))

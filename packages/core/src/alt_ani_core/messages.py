@@ -15,6 +15,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "xhr_unavailable": "shinden player API is unavailable on {stage} ({detail}). Automatic attempts stopped — you can "
         "retry later by picking a player manually.",
         "xhr_protocol": "shinden player API returned an unexpected response on {stage} ({detail}). Automatic attempts stopped.",
+        "xhr_next_player": "This player did not work on {stage} ({detail}) — you can try another player.",
         "retry_after_hint": "The server asks to wait {seconds} s.",
         "no_iframe": "player_show returned no iframe for online_id={online_id} ({length} characters). Try setting "
         "ALT_ANI_CLI_ANTIBOT_DELAY=7",

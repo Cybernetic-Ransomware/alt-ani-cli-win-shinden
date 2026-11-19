@@ -65,6 +65,7 @@ def stop_message(err: ShindenXhrError) -> str:
         XhrOutcome.ACCESS_BLOCKED: "xhr_access_blocked",
         XhrOutcome.SERVICE_UNAVAILABLE: "xhr_unavailable",
         XhrOutcome.PLAYERS_CHANGED: "xhr_players_changed",
+        XhrOutcome.NEXT_PLAYER: "xhr_next_player",
     }.get(xhr_outcome(err), "xhr_protocol")
     msg = _API[key].format(stage=err.stage, detail=xhr_detail(err))
     if err.retry_after is not None:

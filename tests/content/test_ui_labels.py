@@ -170,6 +170,7 @@ _API_PLACEHOLDERS = {
     "xhr_access_blocked": ("{stage}", "{detail}"),
     "xhr_unavailable": ("{stage}", "{detail}"),
     "xhr_protocol": ("{stage}", "{detail}"),
+    "xhr_next_player": ("{stage}", "{detail}"),
     "retry_after_hint": ("{seconds}",),
     "no_iframe": ("{online_id}", "{length}"),
     "unexpected_iframe_src": ("{online_id}",),

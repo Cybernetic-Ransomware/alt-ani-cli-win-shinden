@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 # Hardcoded guest token: base64(_guest_:0,5,21000000,255,4174293644)
 # URL-encoded so it's safe to drop straight into query strings.
@@ -24,6 +24,12 @@ HTTP_TIMEOUT_SEC = 30.0
 YTDLP_SOCKET_TIMEOUT_SEC = 30.0
 
 XhrBackendName = Literal["new", "api4"]
+XHR_BACKEND_NAMES: tuple[XhrBackendName, ...] = get_args(XhrBackendName)
+
+
+def xhr_backend_name(value: str) -> XhrBackendName | None:
+    name = value.strip().lower()
+    return name if name in XHR_BACKEND_NAMES else None
 
 
 @dataclass(frozen=True)
