@@ -5,6 +5,7 @@ from contextlib import closing
 import pytest
 
 from alt_ani_core.errors import HistoryVersionError
+from alt_ani_core.history.database import STORE_DEFECTS, STORE_ERRORS, is_contention
 from alt_ani_core.history.sqlite import SCHEMA_VERSION, SqliteHistory
 from alt_ani_core.history.store import LegacySeries
 from alt_ani_core.models import SeriesRef
@@ -388,3 +389,41 @@ class TestImportLegacy:
         store.import_legacy([_legacy(last_ep=2.0)], {"done": "yes"})
         assert [e.last_ep for e in store.watch_entries()] == [2.0]
         assert store.meta("done") == "yes"
+
+
+@pytest.mark.unit
+class TestStoreErrorKinds:
+    def test_a_lock_another_connection_holds_is_contention(self, tmp_path):
+        path = tmp_path / "kinds.db"
+        with (
+            closing(sqlite3.connect(path, isolation_level=None)) as holder,
+            closing(sqlite3.connect(path, timeout=0, isolation_level=None)) as waiter,
+        ):
+            holder.execute("BEGIN IMMEDIATE")
+            with pytest.raises(sqlite3.OperationalError) as caught:
+                waiter.execute("BEGIN IMMEDIATE")
+        assert is_contention(caught.value)
+        assert not isinstance(caught.value, STORE_DEFECTS)
+
+    def test_a_constraint_violation_is_a_defect(self, tmp_path):
+        with closing(sqlite3.connect(tmp_path / "kinds.db")) as conn:
+            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+            conn.execute("INSERT INTO t VALUES (1)")
+            with pytest.raises(sqlite3.IntegrityError) as caught:
+                conn.execute("INSERT INTO t VALUES (1)")
+        assert isinstance(caught.value, STORE_DEFECTS)
+        assert not is_contention(caught.value)
+
+    def test_a_file_that_is_no_database_is_neither(self, tmp_path):
+        path = tmp_path / "kinds.db"
+        path.write_bytes(b"not a database at all" * 100)
+        with closing(sqlite3.connect(path)) as conn, pytest.raises(sqlite3.DatabaseError) as caught:
+            conn.execute("SELECT * FROM sqlite_master")
+        assert isinstance(caught.value, STORE_ERRORS)
+        assert not is_contention(caught.value) and not isinstance(caught.value, STORE_DEFECTS)
+
+    def test_a_locked_table_counts_as_contention_and_an_uncoded_error_does_not(self):
+        locked = sqlite3.OperationalError("database table is locked")
+        locked.sqlite_errorcode = sqlite3.SQLITE_LOCKED
+        assert is_contention(locked)
+        assert not is_contention(sqlite3.OperationalError("database is locked"))

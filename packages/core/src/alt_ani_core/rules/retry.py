@@ -44,6 +44,15 @@ def transient(retry_count: int, code: str, /, *, retry_after: float | None = Non
     return Outcome(Action.DEFER, JobError(code, _params(**params)), delay_sec=delay)
 
 
+def store_busy() -> Outcome:
+    """Another process kept the database locked: back to the queue without spending one of the job's retries."""
+    return Outcome(Action.DEFER, JobError("store.busy"), delay_sec=BACKOFF_SEC[0], counts=False)
+
+
+def store_unavailable(retry_count: int) -> Outcome:
+    return transient(retry_count, "store.unavailable")
+
+
 _TRANSIENT_HTTP = {408, 425, 429, 500, 502, 503, 504}
 
 

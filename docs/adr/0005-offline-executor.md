@@ -48,9 +48,17 @@ collected). Stop checks are separate from persistence: every progress callback a
 attempt's cancel token; progress is written at most every 2 s; durable checkpoints every 5 s or 32 MiB. Without store
 reads for 10 s (any read of a pass, preferences included) the executor stops transfers it can no longer confirm are
 allowed. An outcome write that still fails after its bounded retries stays with the scheduler, which keeps the slot and
-retries it every pass until the store accepts it. An attempt whose I/O does not end within `2 × socket timeout + 10 s`
-keeps its slot; the process exit releases ownership and the next start recovers it. `close` releases ownership only once
-the scheduler loop and every attempt's I/O have ended; otherwise it returns `False` and may be called again to wait.
+retries it every pass until the store accepts it. Store calls inside an attempt (reserving the target, recording a
+validator or a complete file's evidence, entering `finalizing`) get the same bounded retries, cut short by a stop; past
+them the attempt ends before anything is published: a lock another connection holds (`SQLITE_BUSY`/`SQLITE_LOCKED`)
+defers it 30 s as `store.busy` without spending a retry, any other store failure defers it as `store.unavailable` and
+spends one, and an error of the calling code (constraint, programming, interface) fails it as `executor.unexpected`.
+Evidence that could not be recorded is written together with that outcome, before the job can be claimed again, so the
+next attempt publishes the file instead of downloading it; if the outcome stays unwritten until the process ends, the
+file stays in its work area untouched and the restarted job waits for a source decision. An attempt whose I/O does not
+end within `2 × socket timeout + 10 s` keeps its slot; the process exit releases ownership and the next start recovers
+it. `close` releases ownership only once the scheduler loop and every attempt's I/O have ended; otherwise it returns
+`False` and may be called again to wait.
 
 `defer` (schema 3) returns a running attempt to the queue with a `not_before` and spends one of three automatic
 retries (30 s, 2 min, 10 min); user actions (`retry`, `resume`, `choose_source`) reset the budget. A stop pending

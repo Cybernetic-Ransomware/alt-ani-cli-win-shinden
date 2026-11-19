@@ -1,29 +1,35 @@
 """Store outages, shutdown, concurrent deletes and the condition bookkeeping between scheduler passes."""
 
+import hashlib
+import itertools
 import sqlite3
 import subprocess
 import sys
 import textwrap
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from alt_ani_core.cancel import CancelToken
+from alt_ani_core.history import database
 from alt_ani_core.history.local import open_local_state
 from alt_ani_core.history.ownership import DELETE_LOCK_SUFFIX, ExecutorOwnership, lock_path
 from alt_ani_core.history.preferences import SqlitePreferencesStore
 from alt_ani_core.history.queue import SqliteDownloadQueue
+from alt_ani_core.rules.resume import KIND_COMPLETE, KIND_HTTP, checkpoint_of
 from alt_ani_core.services.offline.attempt import Context
 from alt_ani_core.services.offline.events import StoreUnavailable
 from alt_ani_core.services.offline.interaction import Grants
 from alt_ani_core.services.offline.library import LibraryService, ResultKind
 from alt_ani_core.services.offline.network import StaticNetwork
 from alt_ani_core.services.offline.scheduler import Scheduler
-from alt_ani_core.state import DownloadCriteria, ItemStatus, JobState, NetworkKind, WaitReason
-from alt_ani_core.storage.fs import FsFileStore
+from alt_ani_core.state import DownloadCriteria, ItemStatus, JobState, NetworkKind, PartialTransfer, WaitReason
+from alt_ani_core.storage.fs import FsFileStore, sha256_path
 from alt_ani_core.testing import RecordingSink
 
+from .servers import Resource, ServerState, random_body, serve
 from .support import SERIES, FakeSources, GatedTransfer, episode, fast_config, make_queue, player, progressive, wait_for
 from .test_recovery import BODY, Crashed
 
@@ -44,6 +50,79 @@ def _failing(monkeypatch, cls, name: str) -> threading.Event:
 
     monkeypatch.setattr(cls, name, wrapper)
     return failing
+
+
+def _store_error(kind: str) -> sqlite3.Error:
+    """Raised the way SQLite raises it: ``sqlite_errorcode`` is what tells a held lock from a broken file."""
+    error: sqlite3.Error
+    if kind == "busy":
+        error, error.sqlite_errorcode = sqlite3.OperationalError("database is locked"), sqlite3.SQLITE_BUSY
+    elif kind == "ioerr":
+        error, error.sqlite_errorcode = sqlite3.OperationalError("disk I/O error"), sqlite3.SQLITE_IOERR
+    elif kind == "uncoded":
+        error = sqlite3.OperationalError("database is locked")
+    else:
+        error, error.sqlite_errorcode = sqlite3.IntegrityError("constraint failed"), sqlite3.SQLITE_CONSTRAINT
+    return error
+
+
+class _Fault:
+    """Matching calls of one store method raise: the first ``times`` of them, and every one while ``held`` is set."""
+
+    def __init__(self, monkeypatch, cls, name: str, kind: str = "busy", *, times: int = 0, when=None) -> None:
+        self.held = threading.Event()
+        self.raised = 0
+        self._remaining = times
+        self._lock = threading.Lock()
+        real = getattr(cls, name)
+
+        def wrapper(obj, *args, **kwargs):
+            if when is None or when(*args, **kwargs):
+                with self._lock:
+                    fire = self.held.is_set() or self._remaining > 0
+                    if fire:
+                        self._remaining = max(self._remaining - 1, 0)
+                        self.raised += 1
+                if fire:
+                    raise _store_error(kind)
+            return real(obj, *args, **kwargs)
+
+        monkeypatch.setattr(cls, name, wrapper)
+
+
+def _validator_kind(_attempt_id: str, partial: PartialTransfer, *_rest) -> str:
+    if partial.validator is None:
+        return "none"
+    if partial.validator.kind == KIND_COMPLETE:
+        return "evidence"
+    return "validator" if checkpoint_of(partial.validator) == (0, 0) else "checkpoint"
+
+
+def _set_partial_with(kind: str):
+    return lambda *args, **kwargs: _validator_kind(*args, **kwargs) == kind
+
+
+def _published(tmp_path) -> list:
+    return [p for p in (tmp_path / "library").rglob("*") if p.is_file() and ".work" not in p.relative_to(tmp_path).parts]
+
+
+def _evidence_kind(job) -> str | None:
+    return job.partial.validator.kind if job.partial and job.partial.validator else None
+
+
+@pytest.fixture
+def thread_errors(monkeypatch) -> list[BaseException]:
+    """Exceptions that escaped any thread's target; an attempt must end every path inside ``run``."""
+    errors: list[BaseException] = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: errors.append(args.exc_value))
+    return errors
+
+
+def _past_wall():
+    """Far behind the database's clock but an hour later at each reading, so every deferral is due at the next pass."""
+    readings = itertools.count()
+    start = datetime.now(UTC) - timedelta(days=36500)
+    return lambda: start + timedelta(hours=next(readings))
 
 
 def _available_item(tmp_path):
@@ -303,3 +382,373 @@ class TestConditionBookkeeping:
             assert (current.state, current.wait_reason) == (JobState.WAITING, WaitReason.NETWORK)
         finally:
             owner.release()
+
+
+@pytest.mark.unit
+class TestStoreFailureDuringAttempt:
+    @pytest.mark.parametrize(
+        ("name", "when"),
+        [
+            ("episode_of", None),
+            ("set_partial", _set_partial_with("none")),
+            ("set_partial", _set_partial_with("validator")),
+            ("set_partial", _set_partial_with("evidence")),
+            ("set_target", None),
+            ("begin_finalize", None),
+        ],
+        ids=["episode_of", "partial", "validator", "evidence", "set_target", "begin_finalize"],
+    )
+    def test_one_held_lock_is_retried_in_place_and_the_job_completes_unchanged(
+        self, tmp_path, monkeypatch, thread_errors, name, when
+    ):
+        fault = _Fault(monkeypatch, SqliteDownloadQueue, name, times=1, when=when)
+        gate = GatedTransfer()
+        gate.release.set()
+        queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=gate)
+        (job,) = queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
+        queue.start()
+        try:
+            wait_for(lambda: state.queue.get(job.id).state in (JobState.COMPLETED, JobState.FAILED))
+        finally:
+            assert queue.close()
+        final = state.queue.get(job.id)
+        assert fault.raised == 1
+        assert (final.state, final.retry_count, final.last_error) == (JobState.COMPLETED, 0, None)
+        assert gate.calls == 1
+        assert len(_published(tmp_path)) == 1
+        assert state.library.get(final.offline_item_id).status is ItemStatus.AVAILABLE
+        assert thread_errors == []
+
+    def test_a_lock_sqlite_really_reports_is_retried_in_place(self, tmp_path, monkeypatch):
+        busy_timeout = database.BUSY_TIMEOUT_MS
+        monkeypatch.setattr(database, "BUSY_TIMEOUT_MS", 20)
+        holder = sqlite3.connect(tmp_path / "history.db", isolation_level=None, check_same_thread=False)
+        seen: list[sqlite3.Error] = []
+        real = SqliteDownloadQueue.set_target
+
+        def locked_once(self, *args):
+            if seen:
+                return real(self, *args)
+            holder.execute("BEGIN IMMEDIATE")
+            try:
+                return real(self, *args)
+            except sqlite3.OperationalError as exc:
+                seen.append(exc)
+                raise
+            finally:
+                holder.execute("ROLLBACK")
+
+        monkeypatch.setattr(SqliteDownloadQueue, "set_target", locked_once)
+        gate = GatedTransfer()
+        gate.release.set()
+        queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=gate)
+        (job,) = queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
+
+        def ended() -> bool:
+            # with the shortened busy timeout this poll may meet a commit of the executor itself
+            try:
+                return state.queue.get(job.id).state in (JobState.COMPLETED, JobState.FAILED)
+            except sqlite3.OperationalError:
+                return False
+
+        queue.start()
+        try:
+            wait_for(ended)
+        finally:
+            assert queue.close()
+            holder.close()
+        monkeypatch.setattr(database, "BUSY_TIMEOUT_MS", busy_timeout)
+        final = state.queue.get(job.id)
+        assert (final.state, final.retry_count) == (JobState.COMPLETED, 0)
+        assert seen and database.is_contention(seen[0])
+
+    def test_a_lock_past_every_retry_requeues_the_job_later_without_spending_a_retry(self, tmp_path, monkeypatch):
+        sink = RecordingSink()
+        fault = _Fault(monkeypatch, SqliteDownloadQueue, "set_target")
+        fault.held.set()
+        gate = GatedTransfer()
+        gate.release.set()
+        queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=gate, events=sink)
+        (job,) = queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
+        before = datetime.now(UTC)
+        queue.start()
+        try:
+            wait_for(lambda: state.queue.get(job.id).state is JobState.QUEUED and state.queue.get(job.id).last_error)
+            wait_for(lambda: queue._scheduler.active == [])
+            deferred = state.queue.get(job.id)
+        finally:
+            assert queue.close()
+        assert (deferred.last_error.code, deferred.retry_count) == ("store.busy", 0)
+        delay = (datetime.fromisoformat(deferred.not_before) - before).total_seconds()
+        assert 29 <= delay <= 60
+        assert deferred.partial is not None and _evidence_kind(deferred) == KIND_COMPLETE
+        assert (tmp_path / "library" / deferred.partial.locator.key / "media.mp4").is_file()
+        assert deferred.target is None and _published(tmp_path) == []
+        assert [e.operation for e in sink.of(StoreUnavailable)] == ["set_target"]
+        assert gate.calls == 1
+
+    def test_a_lasting_lock_never_spends_the_retry_budget_and_the_job_completes_once_it_lifts(self, tmp_path, monkeypatch):
+        sink = RecordingSink()
+        fault = _Fault(monkeypatch, SqliteDownloadQueue, "begin_finalize")
+        fault.held.set()
+        gate = GatedTransfer()
+        gate.release.set()
+        queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=gate, events=sink, wall=_past_wall())
+        (job,) = queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
+        queue.start()
+        try:
+            wait_for(lambda: len(sink.of(StoreUnavailable)) >= 3)
+            assert state.queue.get(job.id).retry_count == 0
+            fault.held.clear()
+            wait_for(lambda: state.queue.get(job.id).state is JobState.COMPLETED)
+        finally:
+            fault.held.clear()
+            assert queue.close()
+        final = state.queue.get(job.id)
+        assert final.retry_count == 0
+        # the evidence was recorded before the lock: every later attempt published from it instead of downloading again
+        assert gate.calls == 1
+        assert len(_published(tmp_path)) == 1
+
+    @pytest.mark.parametrize("kind", ["ioerr", "uncoded"])
+    def test_a_store_that_keeps_failing_otherwise_spends_retries_and_then_fails(self, tmp_path, monkeypatch, kind):
+        fault = _Fault(monkeypatch, SqliteDownloadQueue, "set_target", kind)
+        fault.held.set()
+        gate = GatedTransfer()
+        gate.release.set()
+        queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=gate, wall=_past_wall())
+        (job,) = queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
+        queue.start()
+        try:
+            wait_for(lambda: state.queue.get(job.id).state is JobState.FAILED)
+        finally:
+            fault.held.clear()
+            assert queue.close()
+        final = state.queue.get(job.id)
+        assert (final.last_error.code, final.retry_count) == ("store.unavailable", 3)
+        assert final.partial is not None and _published(tmp_path) == []
+
+    @pytest.mark.parametrize(
+        ("name", "when"),
+        [("set_target", None), ("set_partial", _set_partial_with("validator"))],
+        ids=["set_target", "validator"],
+    )
+    def test_a_defect_is_not_retried_and_fails_the_job(self, tmp_path, monkeypatch, thread_errors, name, when):
+        fault = _Fault(monkeypatch, SqliteDownloadQueue, name, "defect", times=1, when=when)
+        gate = GatedTransfer()
+        gate.release.set()
+        queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=gate)
+        (job,) = queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
+        queue.start()
+        try:
+            wait_for(lambda: state.queue.get(job.id).state is JobState.FAILED)
+        finally:
+            assert queue.close()
+        assert fault.raised == 1
+        assert state.queue.get(job.id).last_error.code == "executor.unexpected"
+        assert thread_errors == []
+
+    def test_a_validator_the_store_refuses_ends_the_attempt_without_a_raw_store_error(
+        self, tmp_path, monkeypatch, thread_errors
+    ):
+        fault = _Fault(monkeypatch, SqliteDownloadQueue, "set_partial", times=2, when=_set_partial_with("validator"))
+        gate = GatedTransfer()
+        gate.release.set()
+        queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=gate, wall=_past_wall())
+        (job,) = queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
+        queue.start()
+        try:
+            wait_for(lambda: state.queue.get(job.id).state in (JobState.COMPLETED, JobState.FAILED))
+        finally:
+            assert queue.close()
+        final = state.queue.get(job.id)
+        assert fault.raised == fast_config().store_retries
+        assert (final.state, final.retry_count, final.last_error.code) == (JobState.COMPLETED, 0, "store.busy")
+        # the first attempt ended inside the validator callback; nothing durable was recorded, so the second started afresh
+        assert gate.calls == 2 and gate.resumed == [False]
+        assert len(_published(tmp_path)) == 1
+        assert thread_errors == []
+
+    def test_a_pause_while_the_store_is_locked_settles_as_paused(self, tmp_path, monkeypatch):
+        fault = _Fault(monkeypatch, SqliteDownloadQueue, "set_target")
+        fault.held.set()
+        gate = GatedTransfer()
+        gate.release.set()
+        # retries outlasting every wait below: only a retry wait the stop cuts short ends them in time
+        config = fast_config(store_retries=1000, store_retry_delay_sec=0.05)
+        queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=gate, config=config)
+        (job,) = queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
+        queue.start()
+        try:
+            wait_for(lambda: fault.raised >= 1)
+            state.queue.pause(job.id)
+            wait_for(lambda: state.queue.get(job.id).state is JobState.PAUSED)
+            wait_for(lambda: queue._scheduler.active == [])
+        finally:
+            fault.held.clear()
+            assert queue.close()
+        final = state.queue.get(job.id)
+        assert final.retry_count == 0 and final.partial is not None
+        assert final.partial.locator not in {r.locator for r in state.queue.pending_removals()}
+
+    def test_a_shutdown_while_the_store_is_locked_returns_the_job_unspent_and_a_restart_publishes_it(
+        self, tmp_path, monkeypatch, thread_errors
+    ):
+        fault = _Fault(monkeypatch, SqliteDownloadQueue, "begin_finalize")
+        fault.held.set()
+        gate = GatedTransfer()
+        gate.release.set()
+        # retries outlasting every wait below: only a retry wait the stop cuts short ends them in time
+        config = fast_config(store_retries=1000, store_retry_delay_sec=0.05)
+        queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=gate, config=config)
+        (job,) = queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
+        queue.start()
+        wait_for(lambda: fault.raised >= 1)
+        (attempt,) = queue._scheduler.active
+        started = time.monotonic()
+        assert queue.close()
+        assert time.monotonic() - started < 5
+        assert attempt.io_ended and attempt.done
+        stopped = state.queue.get(job.id)
+        assert (stopped.state, stopped.last_error.code, stopped.retry_count) == (JobState.QUEUED, "executor.shutdown", 0)
+        fault.held.clear()
+        again = GatedTransfer()
+        queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=again)
+        queue.start()
+        try:
+            wait_for(lambda: state.queue.get(job.id).state is JobState.COMPLETED)
+        finally:
+            assert queue.close()
+        assert again.calls == 0 and len(_published(tmp_path)) == 1
+        assert thread_errors == []
+
+    def test_an_outcome_the_store_refuses_through_close_is_recovered_at_the_next_start(self, tmp_path, monkeypatch):
+        sink = RecordingSink()
+        faults = [_Fault(monkeypatch, SqliteDownloadQueue, n) for n in ("begin_finalize", "defer", "ack_stopped")]
+        for fault in faults:
+            fault.held.set()
+        gate = GatedTransfer()
+        gate.release.set()
+        queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=gate, events=sink)
+        (job,) = queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
+        queue.start()
+        wait_for(lambda: "defer" in [e.operation for e in sink.of(StoreUnavailable)])
+        (attempt,) = queue._scheduler.active
+        assert attempt.io_ended and not attempt.done
+        assert queue.close()
+        assert state.queue.get(job.id).state is JobState.RUNNING
+        for fault in faults:
+            fault.held.clear()
+        again = GatedTransfer()
+        queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=again)
+        report = queue.start()
+        try:
+            assert report.requeued == (job.id,)
+            wait_for(lambda: state.queue.get(job.id).state is JobState.COMPLETED)
+        finally:
+            assert queue.close()
+        assert state.queue.get(job.id).retry_count == 0
+        assert again.calls == 0 and len(_published(tmp_path)) == 1
+
+    def test_evidence_the_store_refused_is_recorded_with_the_outcome_and_the_file_is_published_without_a_download(
+        self, tmp_path, monkeypatch, thread_errors
+    ):
+        sink = RecordingSink()
+        evidence = _Fault(monkeypatch, SqliteDownloadQueue, "set_partial", when=_set_partial_with("evidence"))
+        evidence.held.set()
+        gate = GatedTransfer()
+        gate.release.set()
+        queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=gate, events=sink, wall=_past_wall())
+        (job,) = queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
+        queue.start()
+        try:
+            wait_for(lambda: "defer" in [e.operation for e in sink.of(StoreUnavailable)])
+            (attempt,) = queue._scheduler.active
+            assert attempt.io_ended and not attempt.done
+            assert state.queue.get(job.id).state is JobState.RUNNING
+            evidence.held.clear()
+            wait_for(lambda: state.queue.get(job.id).state is JobState.COMPLETED)
+        finally:
+            evidence.held.clear()
+            assert queue.close()
+        final = state.queue.get(job.id)
+        assert final.retry_count == 0
+        assert gate.calls == 1 and len(_published(tmp_path)) == 1
+        assert thread_errors == []
+
+    @pytest.mark.parametrize("restart", [False, True])
+    def test_evidence_recorded_before_an_outcome_the_store_refuses_still_spares_the_download(
+        self, tmp_path, monkeypatch, restart
+    ):
+        sink = RecordingSink()
+        # the attempt's own evidence write runs out of retries; the first try of the outcome then records it
+        retries = fast_config().store_retries
+        _Fault(monkeypatch, SqliteDownloadQueue, "set_partial", times=retries, when=_set_partial_with("evidence"))
+        defer = _Fault(monkeypatch, SqliteDownloadQueue, "defer")
+        defer.held.set()
+        gate, again = GatedTransfer(), GatedTransfer()
+        gate.release.set()
+        queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=gate, events=sink, wall=_past_wall())
+        (job,) = queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
+        queue.start()
+        try:
+            wait_for(lambda: "defer" in [e.operation for e in sink.of(StoreUnavailable)])
+            (attempt,) = queue._scheduler.active
+            recorded = state.queue.get(job.id)
+            assert (recorded.state, _evidence_kind(recorded)) == (JobState.RUNNING, KIND_COMPLETE)
+            assert attempt.io_ended and not attempt.done
+            if restart:
+                assert queue.close()
+                defer.held.clear()
+                queue, state, _ = make_queue(tmp_path, _gated_sources(), transfer=again, wall=_past_wall())
+                assert queue.start().requeued == (job.id,)
+            defer.held.clear()
+            wait_for(lambda: state.queue.get(job.id).state is JobState.COMPLETED)
+        finally:
+            defer.held.clear()
+            assert queue.close()
+        assert state.queue.get(job.id).retry_count == 0
+        assert (gate.calls, again.calls) == (1, 0)
+        assert len(_published(tmp_path)) == 1
+
+
+@pytest.mark.loopback
+class TestEvidenceLostThroughARestart:
+    def test_the_complete_file_survives_and_the_job_waits_for_a_decision(self, tmp_path, monkeypatch):
+        """The documented limit: without recorded evidence a restart cannot finalise, but nothing is removed."""
+        body = random_body(200_000)
+        server = ServerState()
+        server.resources["/v.mp4"] = Resource(body, '"body-v1"')
+        sink = RecordingSink()
+        with serve(server) as url:
+            sources = FakeSources([player("1")], {"1": lambda _f: progressive(f"{url}/v.mp4")})
+            faults = [
+                _Fault(monkeypatch, SqliteDownloadQueue, "set_partial", when=_set_partial_with("evidence")),
+                _Fault(monkeypatch, SqliteDownloadQueue, "defer"),
+                _Fault(monkeypatch, SqliteDownloadQueue, "ack_stopped"),
+            ]
+            for fault in faults:
+                fault.held.set()
+            queue, state, _ = make_queue(tmp_path, sources, events=sink)
+            (job,) = queue.enqueue(SERIES, [episode(1)], DownloadCriteria()).added
+            queue.start()
+            wait_for(lambda: "defer" in [e.operation for e in sink.of(StoreUnavailable)])
+            assert queue.close()
+            for fault in faults:
+                fault.held.clear()
+            interrupted = state.queue.get(job.id)
+            assert interrupted.state is JobState.RUNNING and _evidence_kind(interrupted) == KIND_HTTP
+            queue, state, _ = make_queue(tmp_path, sources)
+            queue.start()
+            try:
+                waiting = wait_for(
+                    lambda: (j := state.queue.get(job.id)).state is JobState.WAITING and j,
+                )
+            finally:
+                assert queue.close()
+        assert (waiting.wait_reason, waiting.last_error.code) == (WaitReason.SOURCE_DECISION, "resume.impossible")
+        assert waiting.partial.locator == interrupted.partial.locator
+        assert waiting.partial.locator not in {r.locator for r in state.queue.pending_removals()}
+        media = tmp_path / "library" / waiting.partial.locator.key / "media.mp4"
+        assert sha256_path(media) == hashlib.sha256(body).hexdigest()
+        assert _published(tmp_path) == []
