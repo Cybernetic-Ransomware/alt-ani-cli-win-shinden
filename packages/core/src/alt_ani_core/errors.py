@@ -19,7 +19,7 @@ class ShindenError(Exception):
 
 
 class AntiBotError(ShindenError):
-    """shinden API returned 403 or empty iframe — guest token likely expired."""
+    """No longer raised by the engine (a 403 or missing iframe is a ShindenXhrError); kept because callers still catch it."""
 
 
 class ShindenXhrError(ShindenError):
@@ -64,7 +64,7 @@ class JavaScriptRequiredError(UnsupportedHostError):
 
 
 class PlayerNotFoundError(ShindenError):
-    """mpv / vlc executable not found on PATH."""
+    """The CLI's mpv/VLC executable is missing, or (``episode.player_not_listed``) a provider has no such player."""
 
 
 class ParseError(ShindenError):

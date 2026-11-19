@@ -77,9 +77,9 @@ Run without arguments for an interactive wizard (search → select series → pi
 | `-c`, `--continue` | Resume from watch history (with `-d`: resume from download history — first episode not yet downloaded) |
 | `-d`, `--download` | Download instead of playing |
 | `-D`, `--delete-history` | Clear watch and download history and exit |
-| `-e RANGE` | Episode number or range: `5`, `1-5`, `-1` (last), `1 5 7` |
-| `-q QUALITY` | Quality: `best`, `worst`, `1080p`, `720p` … (default: interactive menu) |
-| `-S N` | Auto-select N-th search result (1-based, skips menus) |
+| `-e`, `--episode RANGE` | Episode number or range: `5`, `1-5`, `-1` (last), `"1 5 7"` (quote a list, or its numbers after the first are read as the query) |
+| `-q`, `--quality QUALITY` | Quality: `best`, `worst`, `1080p`, `720p` … (default: interactive menu; `best` with `-S` or when stdin is not a terminal) |
+| `-S`, `--select-nth N` | Auto-select N-th search result (1-based, skips menus) |
 | `-v`, `--vlc` | Use VLC instead of mpv |
 | `--no-detach` | Run player in foreground (blocks terminal) |
 | `--debug` | Print stream URLs, do not launch player |
@@ -90,6 +90,7 @@ Run without arguments for an interactive wizard (search → select series → pi
 | `--show-sources` | Interactive mode only — resolve and show each player's real host in the picker (slow: ~7 s per player due to antibot delay) |
 | `--cookies-file PATH` | Netscape cookies file (for age-gated content) |
 | `--cookies-browser NAME` | Extract cookies from browser (`chrome`, `firefox`, …) |
+| `-V`, `--version` | Print the version and exit |
 
 ### Examples
 
@@ -146,7 +147,7 @@ Failed players are marked with `✗` and can be retried interactively.
 | Variable | Description |
 |----------|-------------|
 | `ALT_ANI_CLI_FLARESOLVERR_URL` | FlareSolverr URL for Cloudflare bypass (e.g. `http://localhost:8191`) |
-| `ANI_CLI_PLAYER` | Full path to mpv/mpvnet executable |
+| `ANI_CLI_PLAYER` | Full path to the player executable: mpv/mpv.net, or VLC when `-v` is used |
 | `ALT_ANI_CLI_ANTIBOT_DELAY` | Seconds to wait between API calls (default: `5.0`) |
 | `ALT_ANI_CLI_XHR_BACKEND` | Player API backend: `new` (shinden.pl/xhr with the episode page token, default) or `api4` (legacy guest endpoint) |
 
@@ -179,8 +180,8 @@ A uv workspace; architecture and layer rules are described in [ADR-0002](docs/ad
 |------|------------|
 | `packages/core` | `alt-ani-core` — the engine: Shinden integration, extractors, downloads, history. No terminal, no desktop paths |
 | `apps/cli` | `alt-ani-cli-win` — this CLI: arguments, menus, mpv/VLC, paths, Polish texts |
-| `apps/android` | Feasibility spike and `alt_ani_bridge`, a JSON facade over the engine ([ADR-0003](docs/adr/0003-android-feasibility.md)); not built by CI |
-| `tests` | One suite for the workspace, including `tests/architecture` (layer rules) and `tests/bridge` |
+| `apps/android` | Android app (Catalog tab: search → episode → Media3 playback on the engine; Tech tab: diagnostics) and `alt_ani_bridge`, a JSON facade over the engine ([ADR-0003](docs/adr/0003-android-feasibility.md)); not built or tested by CI |
+| `tests` | One Python suite for the workspace, including `tests/architecture` (layer rules) and `tests/bridge`; the Android Kotlin tests are run with Gradle ([apps/android/README.md](apps/android/README.md)) |
 
 One-time setup:
 
@@ -202,7 +203,9 @@ just replay-failures "PATH_TO_LOG"  # replay resolve_result failures from a diag
 ## Supported video hosts
 
 Native extractors: mp4upload, streamtape, dood, Lycoris Cafe, Vidara/Viewdara, Playmate, Uqload, Flyf,
-streamwish/filemoon/morencius family (JWPlayer), CDA, sibnet, VK.
+streamwish/filemoon/morencius family (JWPlayer).
+
+CDA, sibnet and VK go straight to yt-dlp, which supports them natively (CDA embed URLs are rewritten first).
 
 Lycoris Cafe embeds are resolved through the host API and expose the available direct qualities (`1080p`, `720p`, `480p`) plus `source-mkv` when the API provides it.
 

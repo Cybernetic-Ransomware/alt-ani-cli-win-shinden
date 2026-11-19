@@ -12,7 +12,7 @@ import org.junit.Assume.assumeTrue
 import pl.altani.spike.bridge.BridgeEndpoint
 import pl.altani.spike.controlled.ControlledEnvironment
 
-/** Skips without the controlled server, or fails when the runner gets `-e controlledServer required` (CI). */
+/** Skips without the controlled server, or fails when the runner gets `-e controlledServer required`. */
 fun requireControlledServer() {
     val reachable = runCatching { ControlledEnvironment.serverLog() }.isSuccess
     if (InstrumentationRegistry.getArguments().getString("controlledServer") == "required") {

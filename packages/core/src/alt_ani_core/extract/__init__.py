@@ -57,7 +57,7 @@ class HostRule:
 
 HOST_RULES: dict[str, HostRule] = {
     # pure JS SPA — no video URL in initial HTML, requires a browser;
-    # fail fast instead of wasting 5 s antibot + HTTP roundtrip
+    # fail fast instead of an HTTP round trip that cannot find a stream (the antibot wait is already spent)
     "bysesukior.com": HostRule("unsupported", reason="js_only_host"),
     "www.bysesukior.com": HostRule("unsupported", reason="js_only_host"),
     "voe.sx": HostRule("unsupported", reason="js_only_host"),

@@ -68,7 +68,7 @@ class TestExceptionTranslation:
         err = exc_info.value
         assert type(err) is expected
         assert err.url == _URL
-        # the curl message embeds the request URL, so the original exception must not stay reachable
+        # the curl message embeds the request URL, so it must not be chained into the traceback (__context__ still holds it)
         assert err.__cause__ is None
         assert err.__suppress_context__ is True
 
