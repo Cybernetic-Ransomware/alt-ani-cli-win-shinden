@@ -131,6 +131,10 @@ class TestDownloadOptions:
         )
         assert sink.events[0] == DownloadStarted(title="Show", episode_label="5.5", directory=str(tmp_path))
 
+    def test_fractional_episode_keeps_the_dot_in_the_file_name(self, fake_ydl, tmp_path):
+        download.run(_hls(), EpisodeRow(number=10.5, title="Ep", url="https://shinden.pl/episode/10"), _SERIES, tmp_path)
+        assert _FakeYDL.instances[-1].final_path == tmp_path / "Show - ep10.5.mp4"
+
 
 @pytest.mark.unit
 class TestRetryPolicy:

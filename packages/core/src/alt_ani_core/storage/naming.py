@@ -32,7 +32,8 @@ def publish_key(series_id: str, series_title: str, episode_label: str, extension
     sid = safe_component(series_id, "series", limit=32)
     title = safe_component(series_title, f"series-{sid}", limit=80)
     folder = f"{title} [{sid}]"
-    label = safe_component(episode_label, "0", limit=16)
+    # safe_component drops dots, which would collapse "10.5" into "105"
+    label = safe_component(episode_label.replace(".", "_"), "0", limit=16)
     suffix = f" ({attempt})" if attempt > 1 else ""
     stem = _truncate(f"{title} - ep{label}", MAX_COMPONENT_BYTES - len(suffix) - 9).strip(" .")
     return f"{folder}/{stem}{suffix}.{safe_extension(extension)}"
