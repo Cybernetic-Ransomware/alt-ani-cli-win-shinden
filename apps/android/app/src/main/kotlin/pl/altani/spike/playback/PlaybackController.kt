@@ -20,6 +20,7 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import pl.altani.spike.bridge.BridgeResult
 import pl.altani.spike.bridge.BridgeRuntime
+import pl.altani.spike.bridge.DeviceNetwork
 
 /** One player for the life of its ViewModel, so rotation never interrupts it; main thread only. */
 @UnstableApi
@@ -34,6 +35,8 @@ class PlaybackController(
     // false only for the T9 trial, which drives the gate itself and measures Media3 without the controller's help
     private val manageGate: Boolean = true,
     stuckBufferingTimeoutMs: Int? = null,
+    // the device's own network: closes the gate before the bridge hears of a change, and vetoes every opening
+    private val deviceNetwork: StateFlow<String>? = null,
 ) {
     enum class Phase { IDLE, PREPARING, PLAYING, PAUSED, BUFFERING, WAITING_CONSENT, REFRESHING, ENDED, STOPPED }
 
@@ -102,6 +105,7 @@ class PlaybackController(
             uiScope.launch { bridge.events.events.collect(::onEvent) }
             // a resync may have skipped the consent notice or a network change
             uiScope.launch { bridge.events.resync.collect { syncNetwork() } }
+            deviceNetwork?.let { device -> uiScope.launch { device.collect(::onDeviceNetwork) } }
             bridge.events.start()
         }
     }
@@ -126,6 +130,8 @@ class PlaybackController(
             if (begin !is BridgeResult.Ok) return@launch stop(begin)
             val playbackSession = begin.data.getJSONObject("playback_session")
             session = playbackSession
+            // a bridge still on Wi-Fi would hand out a stream; it must not load on the device's mobile data
+            if (deviceHolds()) closeGate()
             reporter = PositionReporter(bridge.scope, playbackSession, { method, args ->
                 bridge.call(method, args, mutation = true)
             }) { write, result -> _writes.update { it + (write to result) } }
@@ -300,12 +306,24 @@ class PlaybackController(
     }
 
     private fun applyNetwork(kind: String) {
-        when (kind) {
-            "wifi" -> openGate()
-            "cellular" -> if (consented) openGate() else closeGate()
-            "offline" -> closeGate()
+        when (DeviceNetwork.stricter(kind, deviceNetwork?.value)) {
+            DeviceNetwork.WIFI -> openGate()
+            DeviceNetwork.CELLULAR -> if (consented) openGate() else closeGate()
+            DeviceNetwork.OFFLINE -> closeGate()
         }
     }
+
+    /** Holding needs no answer from the bridge; releasing asks it, since its network_set may not have landed yet. */
+    private fun onDeviceNetwork(kind: String) {
+        if (session == null) return
+        if (DeviceNetwork.holds(kind, consented)) {
+            closeGate()
+        } else if (!gate.isOpen) {
+            uiScope.launch { syncNetwork() }
+        }
+    }
+
+    private fun deviceHolds(): Boolean = deviceNetwork?.value?.let { DeviceNetwork.holds(it, consented) } == true
 
     private fun closeGate() {
         if (session == null || !gate.isOpen) return
@@ -316,7 +334,7 @@ class PlaybackController(
     }
 
     private fun openGate() {
-        if (gate.isOpen) return
+        if (gate.isOpen || deviceHolds()) return
         gate.open()
         _state.update { it.copy(consentRequired = false) }
         log("player transfers resumed")

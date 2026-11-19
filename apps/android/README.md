@@ -66,9 +66,15 @@ seek, so do not touch the player while it runs.
 
 The app opens on **Catalog**: search → series → episodes → sources, on the real Shinden through the process's bridge
 (never the controlled server), with playback by the same `PlaybackController` as the controlled flow. **Tech** keeps the
-technical buttons and the controlled playback; starting one flow closes the other's player. The device's network
-changes reach the engine as `network_set`; on mobile data the player asks for consent per episode. The engine is created
+technical buttons and the controlled playback; starting one flow closes the other's player. The engine is created
 without FlareSolverr, so a Cloudflare block shows as an access error.
+
+The device's network changes reach the engine as `network_set`; a failed or unanswered call (15 s) is sent again after
+1 s, doubling up to 30 s, until the engine takes it or the device moves on. The catalogue player does not wait for that:
+mobile data or offline on the device closes its transfer gate at once, and the gate opens only when the device and the
+bridge both allow it (Wi-Fi, or mobile data with the per-episode consent), so a late `network_set` never lets a stream
+load over LTE. A VPN counts by the transport it reports and, when it reports none, as mobile data unless the system
+calls it unmetered.
 
 Search results come by **Best match**, computed on the device: exact title, then titles starting with the query, whole
 words, substring, all words anywhere; ties go TV, ONA, OVA, film, special, then by title. **Newest first** reads the
@@ -82,7 +88,8 @@ and an expired one offers **Reload sources** instead of Retry. Sessions neither 
 
 The status line separates three things: the bridge answered (lists appear), a stream was resolved (`stream: online
 <variant>`), and Media3 really played (`media3: confirmed` — at least 3 s of position progress in this attempt plus a
-rendered first frame for video). `PLAYING` alone is not a confirmation.
+rendered first frame for video, audio output reported by Media3 for audio only). `PLAYING` alone is not a
+confirmation.
 
 Turning the device sideways while the catalogue plays shows the player alone on the screen, without system bars; an
 error or the mobile-data consent keeps the regular layout so the message stays visible. The player's fullscreen button

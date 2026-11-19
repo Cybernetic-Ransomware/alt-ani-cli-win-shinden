@@ -36,10 +36,12 @@ class PlaybackEvidenceTest {
     }
 
     @Test
-    fun `audio only is confirmed by progress once the tracks are known`() {
+    fun `audio only needs progress, known tracks and audio actually advancing`() {
         play(0, 4_000)
         assertFalse("tracks unknown", evidence.snapshot.value.confirmed)
         evidence.onTracks(hasVideo = false)
+        assertFalse("position alone, no audio output", evidence.snapshot.value.confirmed)
+        evidence.onAudioAdvancing()
         assertTrue(evidence.snapshot.value.confirmed)
     }
 

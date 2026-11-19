@@ -114,7 +114,13 @@ class PlaybackViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun catalogPlayer(): PlaybackController =
-        _catalogController.value ?: PlaybackController(application, application.bridge, viewModelScope, ::add).also {
+        _catalogController.value ?: PlaybackController(
+            application,
+            application.bridge,
+            viewModelScope,
+            ::add,
+            deviceNetwork = application.networkSync.kind,
+        ).also {
             it.player.addAnalyticsListener(EvidenceListener())
             sampleProgress(it)
             _catalogController.value = it

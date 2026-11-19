@@ -5,7 +5,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
-/** What Media3 actually did in one attempt; `PLAYING` alone proves nothing, so playback is confirmed by progress and a frame. */
+/** What Media3 actually did in one attempt; `PLAYING` alone proves nothing, so playback needs progress and output: a frame or audio. */
 class PlaybackEvidence(private val requiredProgressMs: Long = REQUIRED_PROGRESS_MS) {
     data class Snapshot(
         val attempt: Int = 0,
@@ -17,7 +17,7 @@ class PlaybackEvidence(private val requiredProgressMs: Long = REQUIRED_PROGRESS_
         val requiredProgressMs: Long = REQUIRED_PROGRESS_MS,
     ) {
         val confirmed: Boolean
-            get() = tracksKnown && progressedMs >= requiredProgressMs && (firstFrame || !hasVideo)
+            get() = tracksKnown && progressedMs >= requiredProgressMs && (if (hasVideo) firstFrame else audioAdvancing)
     }
 
     private val _snapshot = MutableStateFlow(Snapshot(requiredProgressMs = requiredProgressMs))

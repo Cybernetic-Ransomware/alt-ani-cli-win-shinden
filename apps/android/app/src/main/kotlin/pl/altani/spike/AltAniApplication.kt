@@ -11,6 +11,7 @@ import java.io.File
 import org.json.JSONObject
 import pl.altani.spike.bridge.BridgeRuntime
 import pl.altani.spike.bridge.ChaquopyEndpoint
+import pl.altani.spike.bridge.DeviceNetwork
 import pl.altani.spike.bridge.NetworkSync
 import pl.altani.spike.controlled.ControlledEnvironment
 
@@ -37,7 +38,8 @@ class AltAniApplication : Application() {
             scope = bridge.scope,
             engineRequested = { bridge.engineRequested },
             send = { kind -> bridge.call("network_set", JSONObject().put("kind", kind), mutation = true) },
-        ) { Log.i(TAG, it) }
+            log = { Log.i(TAG, it) },
+        )
     }
 
     /** Debug builds only: the technical screen's controlled playback, separate from [bridge] and its database. */
@@ -55,7 +57,7 @@ class AltAniApplication : Application() {
             object : ConnectivityManager.NetworkCallback() {
                 override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) = networkSync.update(kindOf(caps))
 
-                override fun onLost(network: Network) = networkSync.update(OFFLINE)
+                override fun onLost(network: Network) = networkSync.update(DeviceNetwork.OFFLINE)
             },
         )
     }
@@ -67,14 +69,18 @@ class AltAniApplication : Application() {
 
     private companion object {
         const val TAG = "AltAniNetwork"
-        const val OFFLINE = "offline"
 
         fun kindOf(caps: NetworkCapabilities?): String =
-            when {
-                caps == null -> OFFLINE
-                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
-                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) -> "wifi"
-                else -> OFFLINE
+            if (caps == null) {
+                DeviceNetwork.OFFLINE
+            } else {
+                DeviceNetwork.classify(
+                    internet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
+                    cellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
+                    wifiOrEthernet = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET),
+                    notMetered = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
+                )
             }
     }
 }
