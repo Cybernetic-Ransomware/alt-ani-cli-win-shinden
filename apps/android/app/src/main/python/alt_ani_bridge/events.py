@@ -1,8 +1,4 @@
-"""Refresh signals, not a change log: a numbered ring per runtime, a revision watcher and per-listener push threads.
-
-A published event is stored as JSON text, so nothing can change it after its ``seq`` is assigned. Intermediate states
-may be skipped; a client resynchronises with head -> snapshots -> cursor and ignores signals not newer than it knows.
-"""
+"""Refresh signals, not a change log: states may be skipped, so a client resyncs with head -> snapshots -> cursor."""
 
 import contextvars
 import json

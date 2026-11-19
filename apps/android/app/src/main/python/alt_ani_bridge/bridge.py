@@ -229,8 +229,7 @@ class Bridge:
             engine = Engine(config, transport=transport, history=history, events=runtime.sink)
             engine_id = uuid.uuid4().hex
             entry = EngineEntry(engine_id=engine_id, engine=engine, runtime=runtime, access=access, transport=transport)
-            # a runtime_close may have finished while the engine was being built; a late handle must not outlive it.
-            # The delivery thread starts only once the handle is registered, so every close sees it in ending_pushes.
+            # a runtime_close may have run during the build; registering before delivery starts lets every close see it
             with self.lock:
                 current = self._runtimes.get(runtime.config.db_path) is runtime and not runtime.closing
                 if current:
