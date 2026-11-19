@@ -156,6 +156,7 @@ class TestFailureClassification:
 _RETRY_LATER = "Automatic attempts stopped — you can retry later by picking a player manually."
 _STOPPED = "Automatic attempts stopped."
 _RELOAD = "Automatic attempts stopped — reload the episode to see the current players."
+_NEXT = "— you can try another player."
 _HTTP_STATUS = {"category": "http_error", "reason": "http_status"}
 _API_ERROR = {"category": "http_error", "reason": "api_error"}
 _LOAD, _SHOW, _REFRESH = "player_load", "player_show", "token_refresh"
@@ -222,7 +223,7 @@ _XHR_MATRIX = [
         {"stage": _LOAD, "http_status": 404, "api_code": "brak_playera", **_API_ERROR},
         "xhr_next_player",
         False,
-        f"shinden player API returned an unexpected response on player_load (HTTP 404, code=brak_playera). {_STOPPED}",
+        f"This player did not work on player_load (HTTP 404, code=brak_playera) {_NEXT}",
         id="404_unknown_code",
     ),
     pytest.param(
@@ -278,21 +279,21 @@ _XHR_MATRIX = [
         {"stage": _SHOW, "category": "no_stream_url", "reason": "no_iframe", "http_status": 200},
         "xhr_next_player",
         False,
-        f"shinden player API returned an unexpected response on player_show (reason=no_iframe). {_STOPPED}",
+        f"This player did not work on player_show (reason=no_iframe) {_NEXT}",
         id="no_iframe",
     ),
     pytest.param(
         {"stage": _LOAD, "http_status": 404, **_HTTP_STATUS},
         "xhr_next_player",
         False,
-        f"shinden player API returned an unexpected response on player_load (HTTP 404). {_STOPPED}",
+        f"This player did not work on player_load (HTTP 404) {_NEXT}",
         id="404",
     ),
     pytest.param(
         {"stage": _LOAD, "http_status": 410, **_HTTP_STATUS},
         "xhr_next_player",
         False,
-        f"shinden player API returned an unexpected response on player_load (HTTP 410). {_STOPPED}",
+        f"This player did not work on player_load (HTTP 410) {_NEXT}",
         id="410",
     ),
     pytest.param(

@@ -37,11 +37,29 @@ def _finite(raw: object) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def _header_safe(value: str) -> bool:
+    """Both values end up in HTTP headers, so CR/LF would let them inject extra header lines."""
+    return "\r" not in value and "\n" not in value
+
+
+def _cookie_expiry(cookie: dict) -> float | None:
+    """Selenium's `expiry` wins over the legacy `expires`; any present field that is malformed rejects the cookie."""
+    raw = [cookie[key] for key in ("expiry", "expires") if key in cookie]
+    values = [value for value in map(_finite, raw) if value is not None]
+    if len(values) != len(raw):
+        return None
+    if not values or values[0] < 0:
+        return time.time() + 3600
+    return values[0]
+
+
 def load_cached(cache_dir: Path) -> Clearance | None:
     try:
         data = json.loads(_cache_file(cache_dir).read_text(encoding="utf-8"))
         cf, user_agent, expires = data["cf_clearance"], data["user_agent"], _finite(data.get("expires", 0))
         if not (isinstance(cf, str) and cf and isinstance(user_agent, str) and expires is not None):
+            return None
+        if not (_header_safe(cf) and _header_safe(user_agent)):
             return None
         if time.time() < expires - _EXPIRY_MARGIN:
             return Clearance(cf, user_agent)
@@ -88,16 +106,14 @@ def _parse_solution(data: object) -> tuple[Clearance, float] | None:
         return None
     user_agent = sol.get("userAgent", "")
     cookies = sol.get("cookies", [])
-    if not isinstance(user_agent, str) or not isinstance(cookies, list):
+    if not isinstance(user_agent, str) or not isinstance(cookies, list) or not _header_safe(user_agent):
         return None
     for cookie in cookies:
         if isinstance(cookie, dict) and cookie.get("name") == "cf_clearance":
             value = cookie.get("value")
-            expires = _finite(cookie.get("expires", -1))
-            if not isinstance(value, str) or not value or expires is None:
+            expires = _cookie_expiry(cookie)
+            if not isinstance(value, str) or not value or not _header_safe(value) or expires is None:
                 return None
-            if expires < 0:
-                expires = time.time() + 3600
             return Clearance(value, user_agent), expires
     return None
 

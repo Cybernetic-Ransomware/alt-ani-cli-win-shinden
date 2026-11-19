@@ -63,6 +63,29 @@ class TestEnvelope:
         assert reply["error"]["code"] == "bad_request"
 
 
+class TestCreateEngineXhrBackend:
+    @pytest.mark.parametrize("value", ["bogus", "new_xhr", "legacy", "auto"])
+    def test_unknown_value_is_an_invalid_input(self, client, value):
+        error = client.create(xhr_backend=value)["error"]
+        assert (error["code"], error["kind"], error["retryable"]) == ("bad_request", "invalid_input", False)
+        assert error["params"] == {"field": "xhr_backend", "problem": "unknown_value"}
+
+    def test_default_is_new(self, client):
+        assert client.create()["ok"] is True
+        assert client.bridge.engine_entry(client.engine_id).engine.config.xhr_backend == "new"
+
+    @pytest.mark.parametrize("value", ["new", "api4", " API4 ", "New"])
+    def test_accepted_value_is_passed_on_as_given(self, client, value):
+        assert client.create(xhr_backend=value)["ok"] is True
+        # normalised later by the Shinden provider, so the engine config keeps the caller's spelling
+        assert client.bridge.engine_entry(client.engine_id).engine.config.xhr_backend == value
+
+    def test_non_string_keeps_the_type_error(self, client):
+        error = client.create(xhr_backend=123)["error"]
+        assert (error["code"], error["params"]["field"]) == ("bad_request", "xhr_backend")
+        assert error["params"]["problem"] != "unknown_value"
+
+
 class TestCatalogue:
     def test_search_returns_plain_hits(self, client, tmp_path):
         client.transport.route("https://shinden.pl/series", (client.fixtures / SEARCH_HTML).read_text(encoding="utf-8"))

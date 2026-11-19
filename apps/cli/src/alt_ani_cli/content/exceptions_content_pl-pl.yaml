@@ -8,6 +8,7 @@ api:
   xhr_access_blocked: "shinden zablokował dostęp do API playerów na etapie {stage} ({detail}). Automatyczne próby wstrzymane — możesz później ręcznie wybrać playera."
   xhr_unavailable: "API playerów shinden jest niedostępne na etapie {stage} ({detail}). Automatyczne próby wstrzymane — możesz później ręcznie wybrać playera."
   xhr_protocol: "API playerów shinden zwróciło nieoczekiwaną odpowiedź na etapie {stage} ({detail}). Automatyczne próby wstrzymane."
+  xhr_next_player: "Ten player nie zadziałał na etapie {stage} ({detail}) — możesz spróbować innego playera."
   retry_after_hint: "Shinden prosi o odczekanie {seconds} s."
   no_iframe: "player_show nie zwróciło iframe dla online_id={online_id} ({length} znaków). Spróbuj ustawić ALT_ANI_CLI_ANTIBOT_DELAY=7"
   iframe_no_src: "iframe nie ma atrybutu src dla online_id={online_id}"

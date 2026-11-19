@@ -4,10 +4,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from alt_ani_core.config import SHINDEN_XHR_BASE
+from alt_ani_core.config import SHINDEN_XHR_BASE, XHR_BACKEND_NAMES
 from alt_ani_core.errors import ParseError, ShindenError
 from alt_ani_core.shinden.episode import episode_path, episode_url_from_path
-from alt_ani_core.shinden.xhr import BACKEND_API4, BACKEND_NEW, load_episode, parse_backend, read_episode
+from alt_ani_core.shinden.xhr import _BACKEND_CHOICES, BACKEND_API4, BACKEND_NEW, load_episode, parse_backend, read_episode
 
 from .conftest import EPISODE_URL, TEST_TOKEN, TRAP_ID
 
@@ -183,6 +183,9 @@ class TestParseBackend:
     def test_unknown_value_is_rejected(self, value):
         with pytest.raises(ValueError, match="ALT_ANI_CLI_XHR_BACKEND"):
             parse_backend(value)
+
+    def test_maps_exactly_the_configurable_names(self):
+        assert set(_BACKEND_CHOICES) == set(XHR_BACKEND_NAMES)
 
 
 @pytest.mark.unit

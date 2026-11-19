@@ -32,14 +32,13 @@ from alt_ani_bridge.runtime import Runtime, RuntimeConfig
 from alt_ani_bridge.schema import InputError, Reader, parse
 from alt_ani_core import diagnostics
 from alt_ani_core.cancel import CancelToken
-from alt_ani_core.config import DEFAULT_ANTIBOT_DELAY_SEC, AccessConfig, EngineConfig, XhrBackendName
+from alt_ani_core.config import DEFAULT_ANTIBOT_DELAY_SEC, AccessConfig, EngineConfig, XhrBackendName, xhr_backend_name
 from alt_ani_core.errors import EngineInterrupt, OperationCancelled
 from alt_ani_core.history.local import LocalState, open_local_state
 from alt_ani_core.history.store import HistoryStore
 from alt_ani_core.services.engine import Engine
 from alt_ani_core.services.offline import OfflineQueue
 from alt_ani_core.services.offline.sources import EngineSources, SourceProvider
-from alt_ani_core.shinden.xhr import parse_backend
 from alt_ani_core.state import NetworkKind
 from alt_ani_core.storage.api import FileStore
 from alt_ani_core.storage.fs import FsFileStore
@@ -478,10 +477,8 @@ class Bridge:
 
 def _backend(r: Reader) -> XhrBackendName:
     text = r.text("xhr_backend", "new")
-    try:
-        parse_backend(text)
-    except ValueError:
-        raise InputError("xhr_backend", "unknown_value") from None
+    if xhr_backend_name(text) is None:
+        raise InputError("xhr_backend", "unknown_value")
     return cast(XhrBackendName, text)
 
 

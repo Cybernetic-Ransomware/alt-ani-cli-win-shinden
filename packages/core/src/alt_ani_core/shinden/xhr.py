@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
-from alt_ani_core.config import SHINDEN_BASE, SHINDEN_XHR_BASE
+from alt_ani_core.config import SHINDEN_BASE, SHINDEN_XHR_BASE, XhrBackendName, xhr_backend_name
 from alt_ani_core.dom import Document
 from alt_ani_core.dom import parse as parse_html
 from alt_ani_core.messages import MESSAGES as EXCEPTIONS
@@ -16,7 +16,7 @@ from alt_ani_core.transport.api import HttpSession
 BACKEND_NEW = "new_xhr"
 BACKEND_API4 = "api4"
 
-_BACKEND_CHOICES = {"new": BACKEND_NEW, "api4": BACKEND_API4}
+_BACKEND_CHOICES: dict[XhrBackendName, str] = {"new": BACKEND_NEW, "api4": BACKEND_API4}
 
 # Base64 as served by Shinden 2.5 (verified 2026-11-10). No "%", so the raw value is URL-encoded exactly once.
 _AUTH_RE = re.compile(r"[A-Za-z0-9+/=_-]{16,4096}")
@@ -24,10 +24,10 @@ _SHINDEN_HOST = urlsplit(SHINDEN_BASE).hostname
 
 
 def parse_backend(value: str) -> str:
-    backend = _BACKEND_CHOICES.get(value.strip().lower())
-    if backend is None:
+    name = xhr_backend_name(value)
+    if name is None:
         raise ValueError(EXCEPTIONS["cli"]["invalid_xhr_backend"].format(value=repr(value)))
-    return backend
+    return _BACKEND_CHOICES[name]
 
 
 @dataclass(frozen=True)
