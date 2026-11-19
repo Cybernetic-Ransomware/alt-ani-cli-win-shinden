@@ -175,6 +175,14 @@ class TestOtherErrorHandlers:
         assert "outcome=interrupted" in diag_log()
         assert result.engine.closed
 
+    def test_closed_input_exits_1_without_a_traceback(self, run_main, console, diag_log):
+        result = run_main(_ARGV, run=_raises(EOFError()))
+
+        assert result.code == 1
+        assert console.of("warn") == ["Wejście zostało zamknięte — kończę."]
+        assert "outcome=input_closed" in diag_log()
+        assert result.engine.closed
+
     def test_network_error_is_rendered_redacted(self, run_main, console, diag_log):
         exc = NetworkError("connection reset: https://shinden.pl/x?auth=SECRET")
 

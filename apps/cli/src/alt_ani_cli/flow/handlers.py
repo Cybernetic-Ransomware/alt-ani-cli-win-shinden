@@ -655,6 +655,7 @@ def handle_run_action(state: FlowState) -> ScreenResult:
     elif args.debug or state.episode_action == "debug":
         playback.print_debug(resolved.stream, variant, resolved.embed)
     else:
+        playback.warn_unsupported_headers(variant, args.player_kind)
         result = player_runner.play(variant, kind=args.player_kind, title=title, no_detach=args.no_detach)
         playback.report_playback(result, args, title)
         completed = playback.playback_confirmed(result, args.no_detach)

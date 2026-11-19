@@ -7,6 +7,9 @@ import pytest
 from alt_ani_cli.content import CONTENT
 from alt_ani_cli.ui.menus import (
     _anchor_choice_window,
+    _ask,
+    _numbered_pick,
+    _numbered_pick_multi,
     _origin_similar,
     _run_keyed_picker,
     _run_simple_picker,
@@ -14,6 +17,8 @@ from alt_ani_cli.ui.menus import (
     confirm,
     format_player_source,
     pick_related,
+    prompt_search_query,
+    prompt_url,
     select_action,
     select_episodes,
     select_existing_download_action,
@@ -24,6 +29,7 @@ from alt_ani_cli.ui.menus import (
     select_series_from_history,
     select_series_once,
     select_start_mode,
+    show_modal_text,
 )
 from alt_ani_core.models import EpisodeRow, PlayerEntry, PlayerSource, RelatedSeries, SeriesHit, SeriesRef
 from alt_ani_core.testing import make_stream
@@ -635,3 +641,102 @@ class TestSelectExistingDownloadAction:
             patch("alt_ani_cli.ui.progress.warn"),
         ):
             assert select_existing_download_action(_EXISTING, has_remaining=True) == "cancel"
+
+
+@pytest.mark.unit
+class TestShowModalText:
+    def test_title_and_body_are_kept_verbatim(self, rich_plain):
+        with patch("builtins.input", return_value=""):
+            show_modal_text("[director's cut] Show [/x]", "Opis [/i] :joy:\n• [tag]")
+        lines = rich_plain.text.splitlines()
+        assert " [director's cut] Show [/x] " in lines[0]
+        assert lines[1:3] == ["Opis [/i] :joy:", "• [tag]"]
+        assert lines[-1] == CONTENT["menu"]["series"]["press_any_key"]
+
+    def test_footer_keeps_its_dim_style(self, rich_ansi):
+        with patch("builtins.input", return_value=""):
+            show_modal_text("t", "b")
+        assert f"\x1b[2m{CONTENT['menu']['series']['press_any_key']}\x1b[0m" in rich_ansi.text
+
+
+_ITEMS = ["a", "b", "c"]
+_FALLBACK_PICKERS = {
+    "numbered_pick": (lambda: _numbered_pick(_ITEMS, str, "P"), "b"),
+    "numbered_pick_multi": (lambda: _numbered_pick_multi(_ITEMS, str, "P"), ["b"]),
+    "keyed_picker": (
+        lambda: _run_keyed_picker([(k, k.upper()) for k in _ITEMS], prompt="P", instruction="", fallback_invalid="INVALID"),
+        "b",
+    ),
+}
+_INVALID_MARKERS = ("Wpisz", "INVALID")
+
+
+class _AskedAgain(Exception):
+    pass
+
+
+def _ctrl_c_once():
+    """Ctrl+C, then fail loudly instead of hanging if the menu prompts a second time."""
+    return [KeyboardInterrupt(), _AskedAgain()]
+
+
+@pytest.mark.unit
+class TestFallbackInterruptAndEof:
+    """The numbered fallback must follow the InquirerPy contract: Ctrl+C is "back", and closed input is not swallowed."""
+
+    @pytest.fixture(autouse=True)
+    def _fallback(self, monkeypatch):
+        monkeypatch.setattr("alt_ani_cli.ui.menus._USE_INQUIRER", False)
+
+    @pytest.mark.parametrize("picker", _FALLBACK_PICKERS)
+    def test_ctrl_c_goes_back_without_asking_again(self, picker, capsys):
+        run, _ = _FALLBACK_PICKERS[picker]
+        with patch("builtins.input", side_effect=_ctrl_c_once()) as mock_input:
+            assert run() is None
+        assert mock_input.call_count == 1
+        assert not any(marker in capsys.readouterr().out for marker in _INVALID_MARKERS)
+
+    @pytest.mark.parametrize("picker", _FALLBACK_PICKERS)
+    def test_eof_propagates_without_asking_again(self, picker):
+        run, _ = _FALLBACK_PICKERS[picker]
+        with patch("builtins.input", side_effect=EOFError) as mock_input, pytest.raises(EOFError):
+            run()
+        assert mock_input.call_count == 1
+
+    @pytest.mark.parametrize("picker", _FALLBACK_PICKERS)
+    def test_invalid_answers_are_reported_until_a_valid_one(self, picker, capsys):
+        run, expected = _FALLBACK_PICKERS[picker]
+        with patch("builtins.input", side_effect=["9", "x", "2"]) as mock_input:
+            assert run() == expected
+        assert mock_input.call_count == 3
+        out = capsys.readouterr().out
+        assert sum(out.count(marker) for marker in _INVALID_MARKERS) == 2
+
+    @pytest.mark.parametrize("prompt", [prompt_search_query, prompt_url])
+    def test_text_prompt_ctrl_c_goes_back(self, prompt):
+        with patch("builtins.input", side_effect=_ctrl_c_once()) as mock_input:
+            try:
+                result = prompt()
+            except KeyboardInterrupt:
+                pytest.fail("Ctrl+C escaped the fallback prompt instead of meaning back")
+        assert result is None
+        assert mock_input.call_count == 1
+
+    @pytest.mark.parametrize("prompt", [prompt_search_query, prompt_url])
+    def test_text_prompt_eof_propagates(self, prompt):
+        with patch("builtins.input", side_effect=EOFError) as mock_input, pytest.raises(EOFError):
+            prompt()
+        assert mock_input.call_count == 1
+
+    def test_public_menus_return_back_on_ctrl_c(self):
+        for menu in (select_start_mode, lambda: confirm("?")):
+            with patch("builtins.input", side_effect=_ctrl_c_once()):
+                assert menu() is None
+        with patch("builtins.input", side_effect=_ctrl_c_once()):
+            assert select_series_once([], prompt="P") == ("back", None)
+
+    def test_ctrl_c_matches_inquirer_back_signal(self):
+        prompt_obj = MagicMock(**{"execute.side_effect": KeyboardInterrupt})
+        assert _ask(prompt_obj) is None
+        with patch("builtins.input", side_effect=_ctrl_c_once()):
+            assert _numbered_pick(_ITEMS, str, "P") is None

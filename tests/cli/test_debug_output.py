@@ -7,7 +7,13 @@ import pytest
 from rich.console import Console
 
 from alt_ani_cli.args import CliOptions
-from alt_ani_cli.playback import episode_title, playback_confirmed, print_debug, report_playback
+from alt_ani_cli.playback import (
+    episode_title,
+    playback_confirmed,
+    print_debug,
+    report_playback,
+    warn_unsupported_headers,
+)
 from alt_ani_cli.player import mpv
 from alt_ani_cli.player.runner import PlayResult
 from alt_ani_core.models import EmbedURL, Stream, StreamVariant
@@ -28,11 +34,11 @@ def _stream() -> Stream:
     return make_stream(_URL, headers=dict(_HEADERS), qualities=dict(_QUALITIES), ext="mp4")
 
 
-def _render(stream: Stream, variant: StreamVariant | None = None) -> str:
+def _render(stream: Stream, variant: StreamVariant | None = None, embed: EmbedURL = _EMBED) -> str:
     buf = io.StringIO()
     console = Console(file=buf, width=300, legacy_windows=False, highlight=False)
     with patch("alt_ani_cli.ui.progress._get", return_value=console):
-        print_debug(stream, variant or stream.default, _EMBED)
+        print_debug(stream, variant or stream.default, embed)
     return buf.getvalue()
 
 
@@ -81,6 +87,28 @@ class TestPrintDebugContent:
         out = _render(make_stream("https://cdn.example/plain.mp4"))
         assert "HTTP headers" not in out
         assert "Available qualities" not in out
+
+
+@pytest.mark.unit
+class TestPrintDebugRendersDataLiterally:
+    def test_urls_header_names_values_and_quality_labels_are_verbatim(self):
+        stream = make_stream(
+            "https://cdn.example/[director's cut]/[/v].mp4",
+            headers={"X-[b]Tag": "[/i] :joy:", "Referer": "https://e.example/[bold]e"},
+            qualities={"[b]1080p[/b]": "https://cdn.example/[/q].mp4"},
+        )
+        out = _render(stream, embed=EmbedURL(url="https://embed.example/[/e]", referer="https://shinden.pl/"))
+        assert "Embed URL: https://embed.example/[/e]" in out
+        assert "Direct URL: https://cdn.example/[director's cut]/[/v].mp4" in out
+        for text in ("X-[b]Tag", "[/i] :joy:", "https://e.example/[bold]e", "[b]1080p[/b]", "https://cdn.example/[/q].mp4"):
+            assert text in out
+
+    def test_labels_stay_bold(self):
+        buf = io.StringIO()
+        console = Console(file=buf, width=300, force_terminal=True, color_system="truecolor", highlight=False)
+        with patch("alt_ani_cli.ui.progress._get", return_value=console):
+            print_debug(_stream(), _stream().default, _EMBED)
+        assert "\x1b[1mEmbed URL:\x1b[0m https://embed.example" in buf.getvalue()
 
 
 @pytest.mark.unit
@@ -175,3 +203,29 @@ class TestEpisodeTitle:
     @pytest.mark.parametrize(("number", "expected"), [(3.0, "Fate — Odcinek 3"), (12.5, "Fate — Odcinek 12.5")])
     def test_whole_numbers_drop_the_fraction(self, number, expected):
         assert episode_title("Fate", number) == expected
+
+
+@pytest.mark.unit
+class TestWarnUnsupportedHeaders:
+    _HEADERS = {"user-agent": "UA-VALUE", "Referer": "https://r.example/REF", "Origin": "https://o.example/ORIGIN"}
+
+    def test_vlc_warns_with_header_names_only(self):
+        variant = make_stream(headers=self._HEADERS).default
+        with patch("alt_ani_cli.ui.progress.warn") as mock_warn:
+            warn_unsupported_headers(variant, "vlc")
+        [message] = [call.args[0] for call in mock_warn.call_args_list]
+        assert "Origin" in message
+        for value in ("o.example", "ORIGIN", "UA-VALUE", "REF", "user-agent", "Referer"):
+            assert value not in message
+
+    def test_vlc_is_silent_when_every_header_is_supported(self):
+        variant = make_stream(headers={"User-Agent": "u", "Referer": "r"}).default
+        with patch("alt_ani_cli.ui.progress.warn") as mock_warn:
+            warn_unsupported_headers(variant, "vlc")
+        mock_warn.assert_not_called()
+
+    def test_mpv_is_never_warned(self):
+        variant = make_stream(headers=self._HEADERS).default
+        with patch("alt_ani_cli.ui.progress.warn") as mock_warn:
+            warn_unsupported_headers(variant, "mpv")
+        mock_warn.assert_not_called()

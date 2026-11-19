@@ -66,6 +66,8 @@ progress:
   downloaded_all: "Wszystkie dostępne odcinki są już pobrane ({title})."
   history_cleared: "Historia wyczyszczona."
   interrupted: "Przerwano przez użytkownika."
+  input_closed: "Wejście zostało zamknięte — kończę."
+  vlc_headers_dropped: "VLC nie przekaże nagłówków HTTP: {names} — jeśli odtwarzanie nie ruszy, użyj mpv."
   http_error: "Błąd HTTP {status} — {url}"
   cloudflare_hint: "Shinden jest chroniony przez Cloudflare. Uruchom FlareSolverr i ustaw ALT_ANI_CLI_FLARESOLVERR_URL=http://localhost:8191"
   flaresolverr_unreachable: "FlareSolverr skonfigurowany ({url}), ale niedostępny — żądania mogą być blokowane przez Cloudflare."
