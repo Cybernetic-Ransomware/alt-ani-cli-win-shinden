@@ -60,6 +60,10 @@ cd alt-ani-cli-win-shinden
 uv sync --no-group dev
 ```
 
+`uv sync` installs `alt-ani-cli` into the project's `.venv`, not onto `PATH`. Run it from the repository with
+`uv run alt-ani-cli …`, or activate the environment first (`.venv\Scripts\Activate.ps1`) to type `alt-ani-cli`
+directly as in the examples below.
+
 ## Usage
 
 ```
