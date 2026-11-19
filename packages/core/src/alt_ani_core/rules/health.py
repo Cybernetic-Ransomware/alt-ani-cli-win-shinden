@@ -61,7 +61,7 @@ class HealthTransition:
     evidence_expired: bool
 
 
-# Mirrors extract/common.py's CATEGORY_* constants; duplicated (not imported) so health.py stays extract-independent.
+# Keyed by the category strings of rules/failure.py (re-exported by extract/common.py) and classify_exception.
 _CATEGORY_EFFECTS: dict[str, _LayerEffect] = {
     "no_stream_url": _LayerEffect.FILE,
     "parser_drift": _LayerEffect.SOFT,

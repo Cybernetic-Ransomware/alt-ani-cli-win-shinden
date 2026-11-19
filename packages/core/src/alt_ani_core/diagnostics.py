@@ -3,8 +3,8 @@
 Never sent over the network — written to a plain-text file under
 the directory given to ``configure``. Every public function here accepts only
 already-redacted primitives (hosts, exception class names, ids, titles,
-numbers) — never a raw URL, header dict, or exception message — so redaction
-is enforced by the function signatures, not by caller discipline.
+numbers) — never a raw URL, header dict, or exception message. The parameters are
+plain ``str``, so this is the callers' contract; ``_emit`` does not redact.
 """
 
 import logging

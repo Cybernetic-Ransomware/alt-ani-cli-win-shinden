@@ -6,8 +6,8 @@ context for every logged ``resolve_result ok=False``, reopens the logged episode
 without any UI, player launch, history update, or download. The XHR backend comes from
 ``--xhr-backend``, else ``ALT_ANI_CLI_XHR_BACKEND``; each case gets its own episode page and token.
 Never prints a full embed/stream URL, header, cookie, or token -- only hostnames
-(via ``diagnostics._host_of_url``) and exception class names, matching the redaction discipline
-already enforced by ``diagnostics.py``.
+(via ``diagnostics.host_of_url``) and exception class names, matching the redaction contract
+of ``diagnostics.py``.
 """
 
 from __future__ import annotations

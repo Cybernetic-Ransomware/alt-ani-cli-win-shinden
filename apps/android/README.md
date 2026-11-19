@@ -1,11 +1,13 @@
-# Android feasibility spike
+# Android app
 
-Not a product: one technical screen that loads the shared engine (`packages/core`) and the JSON bridge
-(`app/src/main/python/alt_ani_bridge`) through Chaquopy, plays media through Media3 and prints what works on the
-device. Results and the D1 decision (path A) are in [ADR-0003](../../docs/adr/0003-android-feasibility.md).
-Nothing in CI builds it.
+The app loads the shared engine (`packages/core`) and the JSON bridge (`app/src/main/python/alt_ani_bridge`) through
+Chaquopy and plays media through Media3. It has two tabs: [Catalog](#catalog-tab) (search → episode → playback on real
+Shinden) and Tech, the original feasibility screen that prints what works on the device. The feasibility results and
+the D1 decision (path A) are in [ADR-0003](../../docs/adr/0003-android-feasibility.md). Nothing in CI builds or tests
+it.
 
-The bridge itself is covered on the desktop by `tests/bridge/` (no Android toolchain needed).
+The bridge itself is covered on the desktop by `tests/bridge/` (no Android toolchain needed); `just test` runs only
+the Python suite.
 
 ## Flavors
 
@@ -31,6 +33,14 @@ Static 16 KB check of every native library, including the ones nested in Chaquop
 
 ```powershell
 uv run python tools/android/check_native_libs.py apps/android/app/build/outputs/apk/device/debug/app-device-debug.apk
+```
+
+## JVM unit tests
+
+The Kotlin unit tests (`app/src/test`) need neither a device nor Python:
+
+```powershell
+.\gradlew :app:testDeviceDebugUnitTest
 ```
 
 ## Tests on a device or emulator

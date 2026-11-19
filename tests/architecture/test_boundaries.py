@@ -90,6 +90,8 @@ BRIDGE_CORE_ALLOWLIST = {
 }
 # from history.database only the error tuple; SQL stays in the stores
 BRIDGE_HISTORY_NAMES = {"alt_ani_core.history.database": {"STORE_ERRORS"}}
+# exact pre-existing violations per file, so a new or a removed one fails; follow-up task from the 2026-11-19 audit
+BRIDGE_KNOWN_VIOLATIONS = {"errors.py": {"alt_ani_core.shinden.api"}}
 
 # package → engine packages it must not import
 LAYERS = {
@@ -138,9 +140,30 @@ def _uses(imports: set[str], module: str) -> bool:
     return any(name == module or name.startswith(module + ".") for name in imports)
 
 
+_STD_STREAMS = {"stdout", "stderr", "__stdout__", "__stderr__"}
+
+
+def _aliases_of(tree: ast.AST, module: str) -> set[str]:
+    """Names a module is bound to in a file (``import sys``, ``import sys as s``)."""
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == module
+    }
+
+
 def _core_targets(entry: str) -> list[Path]:
     target = CORE / entry
     return _files(target) if target.is_dir() else [target]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("base", [CORE, CLI, BRIDGE], ids=["core", "cli", "bridge"])
+def test_scanned_tree_is_not_empty(base):
+    """A moved directory would otherwise turn every parametrized rule over it into a silent skip."""
+    assert len(_files(base)) > 1
 
 
 @pytest.mark.unit
@@ -154,11 +177,23 @@ class TestEngineIsPortable:
     def test_no_printing_and_no_environment_access(self, path):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         offences = []
+        sys_names = _aliases_of(tree, "sys")
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"print", "input"}:
                 offences.append(f"{node.func.id}() at line {node.lineno}")
             if isinstance(node, ast.Attribute) and node.attr in {"environ", "getenv"}:
                 offences.append(f"os.{node.attr} at line {node.lineno}")
+            if isinstance(node, ast.ImportFrom) and node.module == "os":
+                offences += [f"os.{a.name} at line {node.lineno}" for a in node.names if a.name in {"environ", "getenv"}]
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr in _STD_STREAMS
+                and isinstance(node.value, ast.Name)
+                and node.value.id in sys_names
+            ):
+                offences.append(f"sys.{node.attr} at line {node.lineno}")
+            if isinstance(node, ast.ImportFrom) and node.module == "sys":
+                offences += [f"sys.{a.name} at line {node.lineno}" for a in node.names if a.name in _STD_STREAMS]
         assert not offences
 
     @pytest.mark.parametrize("module", sorted(CONFINED))
@@ -228,7 +263,9 @@ class TestApplicationsStayOnTheirSide:
                 if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                     continue
                 for inner in ast.walk(node):
-                    if isinstance(inner, ast.ImportFrom) and (inner.module or "").startswith("alt_ani_cli"):
+                    if isinstance(inner, ast.ImportFrom) and _uses({inner.module or ""}, "alt_ani_cli"):
+                        offenders.append(f"{path.relative_to(CLI)}:{inner.lineno}")
+                    if isinstance(inner, ast.Import) and _uses({a.name for a in inner.names}, "alt_ani_cli"):
                         offenders.append(f"{path.relative_to(CLI)}:{inner.lineno}")
         assert not offenders
 
@@ -247,6 +284,23 @@ class TestApplicationsStayOnTheirSide:
         assert not any("curl" in name for name in top_level)
 
 
+def _is_core_module(name: str) -> bool:
+    target = CORE.joinpath(*name.split(".")[1:])
+    return target.with_suffix(".py").is_file() or (target / "__init__.py").is_file()
+
+
+def _engine_modules(path: Path) -> set[str]:
+    """Engine modules a file imports, whether spelled ``import a.b.c``, ``from a.b import c`` or ``from a import b``."""
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            found.update(a.name for a in node.names if _uses({a.name}, "alt_ani_core"))
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and _uses({node.module or ""}, "alt_ani_core"):
+            found.add(node.module)
+            found.update(f"{node.module}.{a.name}" for a in node.names if _is_core_module(f"{node.module}.{a.name}"))
+    return found
+
+
 def _from_imports(path: Path) -> list[tuple[str, str]]:
     return [
         (node.module or "", alias.name)
@@ -260,11 +314,13 @@ def _from_imports(path: Path) -> list[tuple[str, str]]:
 class TestBridgeUsesTheEngineContract:
     @pytest.mark.parametrize("path", _files(BRIDGE), ids=lambda p: p.relative_to(BRIDGE).as_posix())
     def test_only_allowlisted_engine_modules(self, path):
-        modules = {module for module, _ in _from_imports(path) if module.startswith("alt_ani_core")}
-        modules |= {
-            name for name in _imports(path) if name.startswith("alt_ani_core") and "." not in name.removeprefix("alt_ani_core")
-        }
-        assert modules <= BRIDGE_CORE_ALLOWLIST, modules - BRIDGE_CORE_ALLOWLIST
+        outside = _engine_modules(path) - BRIDGE_CORE_ALLOWLIST
+        known = BRIDGE_KNOWN_VIOLATIONS.get(path.relative_to(BRIDGE).as_posix(), set())
+        assert outside - known == set(), "not on BRIDGE_CORE_ALLOWLIST"
+        assert known - outside == set(), "no longer imported: delete it from BRIDGE_KNOWN_VIOLATIONS"
+
+    def test_known_violations_name_existing_files(self):
+        assert all((BRIDGE / name).is_file() for name in BRIDGE_KNOWN_VIOLATIONS)
 
     @pytest.mark.parametrize("path", _files(BRIDGE), ids=lambda p: p.relative_to(BRIDGE).as_posix())
     def test_no_sql_and_no_private_engine_names(self, path):
