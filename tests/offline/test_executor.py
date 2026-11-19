@@ -58,6 +58,19 @@ class TestHappyPath:
         assert state.watch.get(job.key).opened_via is OpenedVia.PLAYER
         wait_for(lambda: not state.queue.pending_removals() or queue.start() is None)
 
+    def test_fractional_episode_is_published_under_its_own_name(self, tmp_path):
+        server = ServerState(resources={"/v.mp4": Resource(random_body(1000), '"e1"')})
+        with serve(server) as url:
+            queue, state, _ = make_queue(tmp_path, _single(url))
+            jobs = queue.enqueue(SERIES, [episode(10.5), episode(105)], DownloadCriteria()).added
+            queue.start()
+            try:
+                wait_for(lambda: all(_job_state(state, j.id) is JobState.COMPLETED for j in jobs))
+            finally:
+                assert queue.close()
+        keys = sorted(state.library.get(state.queue.get(j.id).offline_item_id).spec.locator.key for j in jobs)
+        assert keys == ["Fate Zero [7]/Fate Zero - ep105.mp4", "Fate Zero [7]/Fate Zero - ep10_5.mp4"]
+
     def test_second_executor_for_the_same_database_is_refused(self, tmp_path):
         queue, state, _ = make_queue(tmp_path, FakeSources([], {}))
         queue.start()

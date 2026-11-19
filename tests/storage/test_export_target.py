@@ -38,6 +38,15 @@ class TestDirectoryExportTarget:
         assert (tmp_path / "a.mp4").read_bytes() == b"old"
         assert sorted(p.name for p in tmp_path.iterdir()) == ["a (2).mp4", "a.mp4"]
 
+    def test_fractional_and_integer_episode_names_export_side_by_side(self, tmp_path):
+        target = fs.DirectoryExportTarget(tmp_path)
+        for name in ("Fate - ep10_5.mp4", "Fate - ep105.mp4"):
+            writer = target.create(name, on_conflict="fail")
+            writer.write(name.encode())
+            assert writer.commit() == name
+        assert (tmp_path / "Fate - ep10_5.mp4").read_bytes() == b"Fate - ep10_5.mp4"
+        assert (tmp_path / "Fate - ep105.mp4").read_bytes() == b"Fate - ep105.mp4"
+
     def test_fail_on_conflict_leaves_no_temporary(self, tmp_path):
         (tmp_path / "a.mp4").write_bytes(b"old")
         writer = fs.DirectoryExportTarget(tmp_path).create("a.mp4", on_conflict="fail")

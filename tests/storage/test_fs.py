@@ -51,6 +51,27 @@ class TestNaming:
     def test_collisions_get_a_number(self):
         assert naming.publish_key("1", "Fate", "2", "mp4", 3) == "Fate [1]/Fate - ep2 (3).mp4"
 
+    @pytest.mark.parametrize(
+        ("number", "stem"),
+        [(10.5, "ep10_5"), (105, "ep105"), (12.25, "ep12_25"), (1225, "ep1225"), (1, "ep1"), (1.0, "ep1"), (0.5, "ep0_5")],
+    )
+    def test_episode_label_keeps_the_decimal_point_distinct(self, number, stem):
+        assert naming.publish_key("1", "Fate", f"{number:g}", "mp4") == f"Fate [1]/Fate - {stem}.mp4"
+
+    @pytest.mark.parametrize(("fractional", "integer"), [(10.5, 105), (12.25, 1225), (1.5, 15)])
+    def test_fractional_and_integer_episodes_never_share_a_key(self, fractional, integer):
+        assert naming.publish_key("1", "Fate", f"{fractional:g}", "mp4") != naming.publish_key(
+            "1", "Fate", f"{integer:g}", "mp4"
+        )
+
+    def test_dots_elsewhere_are_still_removed(self):
+        assert naming.publish_key("1.2", "Dr. Stone", "10.5", "mp4") == "Dr Stone [12]/Dr Stone - ep10_5.mp4"
+
+    def test_fractional_label_survives_the_length_limit(self):
+        key = naming.publish_key("1", "ą" * 300, "10.5", "mp4", 99)
+        assert key.split("/")[1].endswith(" - ep10_5 (99).mp4")
+        assert all(len(part.encode()) <= naming.MAX_COMPONENT_BYTES for part in key.split("/"))
+
     def test_extension_is_reduced_to_ascii_alphanumerics(self):
         assert naming.safe_extension("M P4/../") == "mp4"
         assert naming.safe_extension("") == "bin"
@@ -110,6 +131,32 @@ class TestPublish:
         (store.root / first.key).parent.mkdir(parents=True)
         (store.root / first.key).write_bytes(b"x")
         assert store.allocate(NAME).key.endswith(" (2).mp4")
+
+    def test_fractional_and_integer_episodes_get_separate_files(self, store, tmp_path):
+        keys = []
+        for label in ("10.5", "105"):
+            target = store.allocate(PublishName("1", "Fate", label, "mp4"))
+            store.publish(_local(tmp_path, label.encode()), target)
+            keys.append(target.key)
+        assert keys == ["Fate [1]/Fate - ep10_5.mp4", "Fate [1]/Fate - ep105.mp4"]
+        assert [(store.root / k).read_bytes() for k in keys] == [b"10.5", b"105"]
+
+    def test_file_under_the_old_fractional_name_is_left_alone(self, store, tmp_path):
+        legacy = store.root / "Fate [1]" / "Fate - ep105.mp4"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(b"old 10.5")
+        target = store.allocate(PublishName("1", "Fate", "10.5", "mp4"))
+        store.publish(_local(tmp_path), target)
+        assert target.key == "Fate [1]/Fate - ep10_5.mp4"
+        assert legacy.read_bytes() == b"old 10.5"
+
+    def test_allocate_still_skips_a_taken_fractional_name(self, store):
+        taken = store.root / "Fate [1]" / "Fate - ep10_5.mp4"
+        taken.parent.mkdir(parents=True)
+        taken.write_bytes(b"x")
+        target = store.allocate(PublishName("1", "Fate", "10.5", "mp4"))
+        assert target.key == "Fate [1]/Fate - ep10_5 (2).mp4"
+        assert taken.read_bytes() == b"x"
 
     @pytest.mark.skipif(os.name != "posix", reason="hard links are the POSIX publish path")
     def test_file_system_without_hard_links_is_refused(self, store, monkeypatch):
