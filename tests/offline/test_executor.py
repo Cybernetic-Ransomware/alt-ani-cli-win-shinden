@@ -20,6 +20,7 @@ from alt_ani_core.state import (
     SelectionMode,
     WaitReason,
 )
+from alt_ani_core.storage.fs import WORK_DIR
 from alt_ani_core.testing import RecordingSink
 from alt_ani_core.transfer import TransferFailed
 
@@ -31,6 +32,10 @@ pytestmark = pytest.mark.loopback
 
 def _job_state(state, job_id):
     return state.queue.get(job_id).state
+
+
+def _partials(tmp_path) -> list:
+    return sorted((tmp_path / "library" / WORK_DIR).glob("*/*"))
 
 
 def _single(url: str) -> FakeSources:
@@ -49,14 +54,15 @@ class TestHappyPath:
             queue.start()
             try:
                 wait_for(lambda: _job_state(state, job.id) is JobState.COMPLETED)
+                wait_for(lambda: not state.queue.pending_removals())
             finally:
                 assert queue.close()
+        assert _partials(tmp_path) == []
         item = state.library.get(state.queue.get(job.id).offline_item_id)
         assert item.status is ItemStatus.AVAILABLE and item.spec.sha256 and item.spec.size_bytes == len(body)
         assert (tmp_path / "library" / item.spec.locator.key).read_bytes() == body
         assert item.spec.locator.key == "Fate Zero [7]/Fate Zero - ep1.mp4"
         assert state.watch.get(job.key).opened_via is OpenedVia.PLAYER
-        wait_for(lambda: not state.queue.pending_removals() or queue.start() is None)
 
     def test_fractional_episode_is_published_under_its_own_name(self, tmp_path):
         server = ServerState(resources={"/v.mp4": Resource(random_body(1000), '"e1"')})
@@ -118,13 +124,13 @@ class TestStopping:
             gate.io_done.set()
             expected = JobState.CANCELLED if action == "cancel" else JobState.PAUSED
             wait_for(lambda: _job_state(state, job.id) is expected)
+            if action == "cancel":
+                wait_for(lambda: not state.queue.pending_removals())
         finally:
             gate.release.set()
             queue.close()
-        if action == "cancel":
-            assert state.queue.pending_removals() == [] or all(
-                r.reason.value == "cancelled" for r in state.queue.pending_removals()
-            )
+        # a cancelled partial is deleted, a paused one is kept for the resume
+        assert bool(_partials(tmp_path)) is (action == "pause")
 
     def test_pause_while_resolving_the_source_ends_without_a_transfer(self, tmp_path):
         resolving = threading.Event()

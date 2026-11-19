@@ -125,8 +125,3 @@ def make_engine(tmp_path, transport, sink):
     yield _make
     for engine in engines:
         engine.close()
-
-
-@pytest.fixture
-def player_show_html():
-    return '<html><body><iframe src="//video.sibnet.ru/shell.php?videoid=1234567"></iframe></body></html>'

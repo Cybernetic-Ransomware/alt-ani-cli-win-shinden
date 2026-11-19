@@ -13,10 +13,17 @@ _SIMPLE_PACKED = (
 )
 
 
+def _decoded(html: str) -> str:
+    """Only what the decoder appended: the keys literal already holds every word, so the whole result proves nothing."""
+    result = unpack_packer(html)
+    assert result.startswith(html + "\n")
+    return result[len(html) + 1 :]
+
+
 @pytest.mark.unit
 class TestUnpackPacker:
     def test_finds_sources_url(self, fake_session):
-        assert "https://cdn.example.com/v.m3u8" in unpack_packer(_SIMPLE_PACKED)
+        assert _decoded(_SIMPLE_PACKED) == 'sources([{file:"https://cdn.example.com/v.m3u8"}]);'
 
     def test_noop_when_no_packer(self, fake_session):
         html = "<script>var x = 1;</script>"
@@ -24,8 +31,8 @@ class TestUnpackPacker:
 
     def test_appends_decoded_without_losing_original(self, fake_session):
         result = unpack_packer(_SIMPLE_PACKED)
-        assert "<script>" in result
-        assert "https://cdn.example.com/v.m3u8" in result
+        assert result.startswith(_SIMPLE_PACKED)
+        assert "https://cdn.example.com/v.m3u8" in result.removeprefix(_SIMPLE_PACKED)
 
     def test_handles_escaped_quotes_in_packed(self, fake_session):
         packed = (
@@ -33,16 +40,14 @@ class TestUnpackPacker:
             r"('0(\"1\");',10,2,'sources|https://cdn.example.com/video.m3u8'.split('|')))"
             "</script>"
         )
-        assert "https://cdn.example.com/video.m3u8" in unpack_packer(packed)
+        assert _decoded(packed) == r"sources(\"https://cdn.example.com/video.m3u8\");"
 
     def test_empty_key_keeps_word(self, fake_session):
         # Empty key at position 1 → the word "1" stays as "1"
         packed = (
             "<script>eval(function(p,a,c,k,e,d){e=function(c){return c};return p}('0 1;',10,2,'sources|'.split('|')))</script>"
         )
-        result = unpack_packer(packed)
-        assert "sources" in result
-        assert " 1;" in result or "1;" in result
+        assert _decoded(packed) == "sources 1;"
 
     def test_decodes_packer_call_without_trailing_split(self, fake_session):
         # Some hosts (morencius.com) call eval(...)('packed',base,count,'keys') without the
@@ -52,7 +57,7 @@ class TestUnpackPacker:
             "('0([{3:\"4\"}]);',10,5,'sources|x|y|file|https://cdn.example.com/no-split.m3u8|'))"
             "</script>"
         )
-        assert "https://cdn.example.com/no-split.m3u8" in unpack_packer(packed)
+        assert _decoded(packed) == 'sources([{file:"https://cdn.example.com/no-split.m3u8"}]);'
 
     def test_base_62_packer_decodes_uppercase_digit_index(self, fake_session):
         # 40 keys: index 0..39. Base-62 digit 'A' = 36, 'B' = 37, 'C' = 38 (0-9,a-z,A-Z alphabet).
@@ -64,7 +69,7 @@ class TestUnpackPacker:
             f"('{packed}',62,{len(keys)},'{'|'.join(keys)}'.split('|')))"
             "</script>"
         )
-        assert "https://cdn.example.com/hi62.m3u8" in unpack_packer(packer_html)
+        assert _decoded(packer_html) == 'sources([{file:"https://cdn.example.com/hi62.m3u8"}]);'
 
 
 @pytest.mark.unit

@@ -5,6 +5,8 @@ import subprocess
 import sys
 import threading
 
+import pytest
+
 from .conftest import SERIES, V2Client, ep, make_v2
 
 
@@ -39,15 +41,20 @@ class TestCursor:
         client.bridge.shutdown(5)
 
     def test_waiting_poll_is_cancelled(self, v2):
+        head = v2.head()
         replies: list = []
         thread = threading.Thread(
-            target=lambda: replies.append(v2.call("events_next", cursor=v2.head(), wait_ms=30000, op_id="poll-1"))
+            target=lambda: replies.append(v2.call("events_next", cursor=head, wait_ms=30000, op_id="poll-1"))
         )
         thread.start()
+        # an early cancel would be remembered and end the call before it waits, which is a different contract
         for _ in range(500):
-            if v2.bridge.cancel("poll-1"):
+            if v2.data("engine_status")["running_operations"] == 1:
                 break
             threading.Event().wait(0.01)
+        else:
+            pytest.fail("the poll never started")
+        assert v2.bridge.cancel("poll-1") is True
         thread.join(5)
         assert not thread.is_alive() and replies[0]["error"]["code"] == "cancelled"
 

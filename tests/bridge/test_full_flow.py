@@ -72,6 +72,8 @@ def test_restart_during_transfer_recovers_and_finishes(tmp_path):
             if (client.job(job["job_id"])["bytes_done"] or 0) > 0:
                 break
             time.sleep(0.01)
+        else:
+            pytest.fail("the transfer never started, so there is no restart during a transfer to test")
         assert json.loads(client.bridge.shutdown(10))["data"]["ended"]
         state.stall.set()
         again = _client(tmp_path, url)

@@ -7,6 +7,7 @@ import pytest
 
 from alt_ani_cli import legacy_history, paths
 from alt_ani_cli.content import error_text
+from alt_ani_core.config import DEFAULT_ANTIBOT_DELAY_SEC
 from alt_ani_core.errors import (
     AccessBlockedError,
     DownloadFailedError,
@@ -292,12 +293,17 @@ class TestEnvironmentChecks:
         assert "ALT_ANI_CLI_ANTIBOT_DELAY" in console.of("error")[-1]
 
     def test_valid_settings_reach_the_engine_config(self, run_main, cli_paths):
-        env = {paths.ENV_XHR_BACKEND: "api4", paths.ENV_ANTIBOT_DELAY: "0"}
+        env = {paths.ENV_XHR_BACKEND: "api4", paths.ENV_ANTIBOT_DELAY: "2.5"}
 
         result = run_main(_ARGV, env=env, run=lambda *args: None)
 
         config = result.engine.config
-        assert (config.xhr_backend, config.antibot_delay_sec, config.cache_dir) == ("api4", 0.0, cli_paths.cache_dir)
+        assert (config.xhr_backend, config.antibot_delay_sec, config.cache_dir) == ("api4", 2.5, cli_paths.cache_dir)
+
+    def test_unset_antibot_delay_reaches_the_engine_as_the_default(self, run_main):
+        result = run_main(_ARGV, env={paths.ENV_ANTIBOT_DELAY: None}, run=lambda *args: None)
+
+        assert result.engine.config.antibot_delay_sec == DEFAULT_ANTIBOT_DELAY_SEC
 
     def test_no_session_is_opened_until_the_first_request(self, run_main, transport):
         result = run_main(_ARGV, run=lambda *args: None)

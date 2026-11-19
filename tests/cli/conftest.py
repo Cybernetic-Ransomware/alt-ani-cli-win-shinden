@@ -69,9 +69,13 @@ def actions():
 def run_main(transport, console, clean_env, monkeypatch) -> Callable[..., MainResult]:
     """Runs main(argv) non-interactively on the fake transport; ``code`` is None when main returned normally."""
 
-    def _run(argv: Sequence[str], *, env: Mapping[str, str] | None = None, run: object = None) -> MainResult:
-        for name, value in (env or {}).items():
-            monkeypatch.setenv(name, value)
+    def _run(argv: Sequence[str], *, env: Mapping[str, str | None] | None = None, run: object = None) -> MainResult:
+        # main() builds its own engine, so without this every resolve sleeps the real default delay; None unsets a variable
+        for name, value in {paths.ENV_ANTIBOT_DELAY: "0", **(env or {})}.items():
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
         engines: list[Engine] = []
 
         def _engine(*args, **kwargs) -> Engine:
