@@ -93,7 +93,7 @@ fun CatalogScreen(catalog: CatalogViewModel, playback: PlaybackViewModel, onFull
         val series = state.series
         val episode = state.episode
         when {
-            series == null && state.search == Load.Idle -> Recent(state.recent, flow)
+            series == null && state.search == Load.Idle -> Recent(state.recent, state.recentError, flow)
             series == null -> SearchResults(state, flow)
             episode == null -> {
                 Header(series.title, flow)
@@ -200,8 +200,9 @@ private fun SearchResults(state: CatalogFlow.State, flow: CatalogFlow) {
 }
 
 @Composable
-private fun Recent(load: Load<List<RecentSeries>>, flow: CatalogFlow) {
+private fun Recent(load: Load<List<RecentSeries>>, refreshFailed: Load.Failed?, flow: CatalogFlow) {
     Text("Recently watched", style = MaterialTheme.typography.titleMedium)
+    refreshFailed?.let { RefreshFailed(it, flow::refreshRecent) }
     when (load) {
         Load.Idle, Load.Loading -> Busy("Loading history…")
         is Load.Failed -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -233,6 +234,7 @@ private fun LastOpened(state: CatalogFlow.State, flow: CatalogFlow) {
             OutlinedButton(onClick = flow::refreshWatch) { Text("Retry") }
         }
         is Load.Ready -> {
+            state.watchError?.let { RefreshFailed(it, flow::refreshWatch) }
             val last = load.value.lastOpened ?: return
             Text("Last opened: ${progress(last)}", style = MaterialTheme.typography.titleSmall)
             val page = (state.episodes as? Load.Ready)?.value ?: return
@@ -306,6 +308,14 @@ private fun StartChoice(state: CatalogFlow.State, flow: CatalogFlow) {
     }
     if (known?.watched == true && known.nearEnd && !state.fromStart) {
         Note("Watched to the end: resuming ends at once; pick Start over to watch it again.")
+    }
+}
+
+@Composable
+private fun RefreshFailed(failed: Load.Failed, retry: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("History not refreshed: ${failed.message}", color = MaterialTheme.colorScheme.error, modifier = Modifier.weight(1f))
+        OutlinedButton(onClick = retry) { Text("Retry") }
     }
 }
 

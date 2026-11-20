@@ -48,6 +48,9 @@ class CatalogFlow(
         // the last reads of the engine's history, on jobs of their own: they never cancel or block the path above
         val recent: Load<List<RecentSeries>> = Load.Idle,
         val watch: Load<SeriesWatch> = Load.Idle,
+        // a re-read that failed while the last good read stays on screen, so the user still sees it and can retry
+        val recentError: Load.Failed? = null,
+        val watchError: Load.Failed? = null,
         // the next pick of [episode] ignores the saved position; chosen by the user, consumed by that pick
         val fromStart: Boolean = false,
     ) {
@@ -157,6 +160,7 @@ class CatalogFlow(
                 sources = Load.Idle,
                 source = null,
                 watch = Load.Loading,
+                watchError = null,
                 fromStart = false,
             )
         }
@@ -234,7 +238,7 @@ class CatalogFlow(
         if (saved.periodic) return
         if (recentJob?.isActive == true) recentStale = true else if (_state.value.series == null) readRecent()
         if (_state.value.series?.id != saved.seriesId) return
-        if (watchJob?.isActive == true) watchStale = true else readWatch(saved.seriesId)
+        invalidateWatch(saved.seriesId)
     }
 
     fun clearSearch() {
@@ -261,11 +265,14 @@ class CatalogFlow(
     fun back() {
         supersede()
         show(null)
+        val series = _state.value.series
         if (_state.value.episode != null) {
             _state.update { it.copy(episode = null, sources = Load.Idle, source = null, fromStart = false) }
+            // a playback_begin moved the last opening without any accepted write, so no save signal came for it
+            series?.let { invalidateWatch(it.id) }
         } else if (_state.value.series != null) {
             leaveSeries()
-            _state.update { it.copy(series = null, episodes = Load.Idle, watch = Load.Idle) }
+            _state.update { it.copy(series = null, episodes = Load.Idle, watch = Load.Idle, watchError = null) }
             refreshRecent()
         }
     }
@@ -304,7 +311,9 @@ class CatalogFlow(
                 }
                 val load = reply.toLoad(RecentSeries::parsePage)
                 if (load is Load.Ready) log("watch_recent series=${load.value.size}")
-                _state.update { if (load is Load.Failed && it.recent is Load.Ready) it else it.copy(recent = load) }
+                _state.update {
+                    if (load is Load.Failed && it.recent is Load.Ready) it.copy(recentError = load) else it.copy(recent = load, recentError = null)
+                }
                 return@launch
             }
         }
@@ -324,10 +333,16 @@ class CatalogFlow(
                 }
                 val load = reply.toLoad { SeriesWatch.parse(seriesId, it) }
                 if (load is Load.Ready) log("watch_series rows=${load.value.episodes.size} last=${load.value.lastOpened != null}")
-                _state.update { if (load is Load.Failed && it.watch is Load.Ready) it else it.copy(watch = load) }
+                _state.update {
+                    if (load is Load.Failed && it.watch is Load.Ready) it.copy(watchError = load) else it.copy(watch = load, watchError = null)
+                }
                 return@launch
             }
         }
+    }
+
+    private fun invalidateWatch(seriesId: String) {
+        if (watchJob?.isActive == true) watchStale = true else readWatch(seriesId)
     }
 
     // the history of the series being left must not land on the next one

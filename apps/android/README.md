@@ -124,8 +124,10 @@ started over without that choice. Positions and the watched flag follow the engi
 
 The history is read again when its screen is shown (also after rotation or Home), after a non-periodic position or an
 end the engine accepted for that series (`accepted: true`, matched by the viewing's own `series_id`, so a late reply of
-an earlier viewing never lands on another series), and once more when a write lands while a read is in flight. History
-reads run beside the catalogue's calls: they never cancel a search or a listing, and their failure has its own Retry.
+an earlier viewing never lands on another series), on Back from the sources (a `playback_begin` moves the last opening
+without any accepted write, e.g. when `playback_prepare` then fails), and once more when such a change lands while a read
+is in flight. History reads run beside the catalogue's calls: they never cancel a search or a listing, and their failure
+has its own Retry. A failed re-read keeps the last good read on screen and says it was not refreshed, with Retry.
 
 A new start of the player first waits for the previous viewing's last position and `playback_close` to be answered
 (at most 2 s), so its `playback_begin` does not supersede that viewing before the position is kept and

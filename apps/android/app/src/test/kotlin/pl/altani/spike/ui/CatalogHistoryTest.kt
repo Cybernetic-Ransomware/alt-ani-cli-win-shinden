@@ -340,7 +340,11 @@ class CatalogHistoryTest {
         assertFalse(kept.cancelled)
         kept.answer(seriesWatch(watch("1", 1, 5_000), watch("1", 1, 5_000)))
         runCurrent()
-        assertEquals(5_000L, flow.state.value.watch.ready().lastOpened!!.positionMs)
+        // leaving the sources may follow a playback_begin, so the reply that started before it is read again
+        assertEquals(Load.Loading, flow.state.value.watch)
+        fake.last("watch_series").answer(seriesWatch(watch("1", 1, 7_000), watch("1", 1, 7_000)))
+        runCurrent()
+        assertEquals(7_000L, flow.state.value.watch.ready().lastOpened!!.positionMs)
     }
 
     @Test
@@ -359,6 +363,76 @@ class CatalogHistoryTest {
         read.answer(recent(watch("1", 3)))
         runCurrent()
         assertEquals(1, flow.state.value.recent.ready().size)
+    }
+
+    @Test
+    fun `back from sources reads the last opened episode again without any save signal`() = runTest {
+        val flow = flow()
+        opened(flow, watch("1", 3, 60_000), watch("1", 3, 60_000), numbers = arrayOf(3, 4))
+        flow.openEpisode(flow.state.value.episodes.ready().episodes[1])
+        runCurrent()
+        fake.last("open_episode").answer(sources("s1", "11"))
+        runCurrent()
+        flow.pickSource(null)
+        // playback_begin moved the last opening to 4, then playback_prepare failed before any position was written
+        flow.back()
+        runCurrent()
+        assertEquals(2, count("watch_series"))
+        fake.last("watch_series").answer(seriesWatch(watch("1", 4), watch("1", 3, 60_000), watch("1", 4)))
+        runCurrent()
+        assertEquals(4.0, flow.state.value.watch.ready().lastOpened!!.number, 0.0)
+    }
+
+    @Test
+    fun `back from sources while a read is in flight drops that reply and reads again`() = runTest {
+        val flow = flow()
+        opened(flow, watch("1", 3), watch("1", 3), numbers = arrayOf(3, 4))
+        flow.openEpisode(flow.state.value.episodes.ready().episodes[1])
+        runCurrent()
+        flow.onWatchSaved(saved("1"))
+        runCurrent()
+        val inFlight = fake.last("watch_series")
+        flow.back()
+        runCurrent()
+        assertEquals("no parallel read", 2, count("watch_series"))
+
+        inFlight.answer(seriesWatch(watch("1", 3), watch("1", 3)))
+        runCurrent()
+        assertEquals(3, count("watch_series"))
+        fake.last("watch_series").answer(seriesWatch(watch("1", 4), watch("1", 4)))
+        runCurrent()
+        assertEquals(4.0, flow.state.value.watch.ready().lastOpened!!.number, 0.0)
+    }
+
+    @Test
+    fun `a failed re-read keeps the last good read and reports the failure until a retry succeeds`() = runTest {
+        val flow = flow()
+        history(flow, watch("1", 3))
+        flow.onWatchSaved(saved("1"))
+        runCurrent()
+        fake.last("watch_recent").answer(failure("internal_error", "internal"))
+        runCurrent()
+        assertEquals(1, flow.state.value.recent.ready().size)
+        assertEquals("internal_error", flow.state.value.recentError!!.code)
+        flow.refreshRecent()
+        runCurrent()
+        fake.last("watch_recent").answer(recent(watch("1", 4)))
+        runCurrent()
+        assertNull(flow.state.value.recentError)
+
+        flow.selectSeries(flow.state.value.recent.ready().single().series)
+        runCurrent()
+        fake.last("watch_series").answer(seriesWatch(watch("1", 4), watch("1", 4)))
+        runCurrent()
+        flow.refreshWatch()
+        runCurrent()
+        fake.last("watch_series").answer(failure("internal_error", "internal"))
+        runCurrent()
+        assertEquals(4.0, flow.state.value.watch.ready().lastOpened!!.number, 0.0)
+        assertEquals("internal_error", flow.state.value.watchError!!.code)
+
+        flow.back()
+        assertNull("the failure belongs to the series left", flow.state.value.watchError)
     }
 
     @Test
