@@ -39,6 +39,8 @@ class SettingsFlow(
         val saving: Boolean = false,
         val result: SaveResult? = null,
         val conflicts: List<Conflict> = emptyList(),
+        // a save whose outcome no read has confirmed yet; Save stays blocked until a verification read succeeds
+        val unverified: SaveResult? = null,
     ) {
         val dirty: Set<PreferenceField>
             get() = if (base == null || form == null) emptySet() else form.dirty(base.values)
@@ -47,7 +49,7 @@ class SettingsFlow(
             get() = form?.problems(dirty) ?: emptySet()
 
         val canSave: Boolean
-            get() = base != null && !saving && conflicts.isEmpty() && dirty.isNotEmpty() && problems.isEmpty()
+            get() = base != null && !saving && unverified == null && conflicts.isEmpty() && dirty.isNotEmpty() && problems.isEmpty()
     }
 
     private val _state = MutableStateFlow(State())
@@ -153,23 +155,33 @@ class SettingsFlow(
 
     /** The outcome is unknown or the base moved: read the preferences before the user may save again. */
     private suspend fun verify(fallback: SaveResult) {
-        read()
-        settle(fallback)
+        if (read()) settle(fallback) else _state.update { it.copy(saving = false, result = null, unverified = fallback) }
+    }
+
+    /** Repeats the read a failed verification could not make; only its success unblocks Save. */
+    fun retryVerification() {
+        val s = _state.value
+        val fallback = s.unverified ?: return
+        if (s.saving) return
+        _state.update { it.copy(saving = true) }
+        scope.launch { verify(fallback) }
     }
 
     private fun settle(fallback: SaveResult) {
         _state.update { s ->
             val base = s.base
             when {
-                s.conflicts.isNotEmpty() -> s.copy(saving = false, result = null)
+                s.conflicts.isNotEmpty() -> s.copy(saving = false, result = null, unverified = null)
                 // every edited field now holds what the user asked for: written by this save, an earlier one or elsewhere
-                base != null && s.dirty.isEmpty() -> s.copy(saving = false, result = SaveResult.Saved, form = SettingsForm.from(base.values))
-                else -> s.copy(saving = false, result = fallback)
+                base != null && s.dirty.isEmpty() ->
+                    s.copy(saving = false, result = SaveResult.Saved, unverified = null, form = SettingsForm.from(base.values))
+                else -> s.copy(saving = false, result = fallback, unverified = null)
             }
         }
     }
 
-    private suspend fun read() {
+    /** True when the engine answered with valid preferences, applied or already held. */
+    private suspend fun read(): Boolean {
         val reply = call(GET, JSONObject())
         val snapshot = when (reply) {
             is BridgeResult.Ok -> try {
@@ -182,8 +194,7 @@ class SettingsFlow(
         log("$GET ${if (reply is BridgeResult.Ok && snapshot == null) "malformed" else outcome(reply)} revision=${snapshot?.revision}")
         if (snapshot != null) {
             apply(snapshot)
-            _state.update { it.copy(loadError = null) }
-            return
+            return true
         }
         val error = when (reply) {
             is BridgeResult.Ok -> failed("malformed_reply", "internal")
@@ -191,23 +202,26 @@ class SettingsFlow(
             BridgeResult.NotStarted -> failed("cancelled", "cancelled")
         }
         _state.update { it.copy(loadError = Load.Failed(error.code, error.message)) }
+        return false
     }
 
+    /** Any snapshot not older than the held one, from a read or a save, also clears an earlier read error. */
     private fun apply(next: Preferences) {
         _state.update { s ->
             val base = s.base
             val form = s.form
             when {
-                base == null || form == null -> s.copy(base = next, form = SettingsForm.from(next.values))
-                next.revision <= base.revision -> {
-                    if (next.revision < base.revision) log("preferences revision=${next.revision} older than ${base.revision}, dropped")
+                base == null || form == null -> s.copy(base = next, form = SettingsForm.from(next.values), loadError = null)
+                next.revision < base.revision -> {
+                    log("preferences revision=${next.revision} older than ${base.revision}, dropped")
                     s
                 }
-                s.dirty.isEmpty() && s.conflicts.isEmpty() -> s.copy(base = next, form = SettingsForm.from(next.values))
+                next.revision == base.revision -> s.copy(loadError = null)
+                s.dirty.isEmpty() && s.conflicts.isEmpty() -> s.copy(base = next, form = SettingsForm.from(next.values), loadError = null)
                 else -> {
                     val (merged, conflicts) = merge(base.values, form, next.values, s.conflicts)
                     if (conflicts.isNotEmpty()) log("preferences conflict fields=${conflicts.joinToString(",") { it.field.wire }}")
-                    s.copy(base = next, form = merged, conflicts = conflicts)
+                    s.copy(base = next, form = merged, conflicts = conflicts, loadError = null)
                 }
             }
         }

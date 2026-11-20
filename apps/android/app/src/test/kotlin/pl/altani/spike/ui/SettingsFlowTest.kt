@@ -345,6 +345,79 @@ class SettingsFlowTest {
     }
 
     @Test
+    fun `a conflict whose read fails blocks Save until a retried read succeeds`() = runTest {
+        val flow = loaded(flow())
+        flow.edit { it.copy(qualityMode = QualityMode.MAX, heightText = "720") }
+        flow.save()
+        runCurrent()
+        answerUpdate(conflict(1, 2))
+        fake.last(SettingsFlow.GET).answer(failure("timeout"))
+        runCurrent()
+        val blocked = flow.state.value
+        assertFalse(blocked.saving)
+        assertEquals(SaveResult.Rebased, blocked.unverified)
+        assertNull(blocked.result)
+        assertFalse(blocked.canSave)
+        assertEquals("720", blocked.form!!.heightText)
+        assertEquals(1L, blocked.base!!.revision)
+        flow.save()
+        runCurrent()
+        assertEquals(1, count(SettingsFlow.UPDATE))
+
+        flow.retryVerification()
+        runCurrent()
+        assertTrue(flow.state.value.saving)
+        answerGet(preferences(2, active = 4))
+        val s = flow.state.value
+        assertNull(s.unverified)
+        assertEquals(SaveResult.Rebased, s.result)
+        assertEquals(2L, s.base!!.revision)
+        assertEquals(4, s.form!!.maxActiveDownloads)
+        assertTrue(s.canSave)
+        assertEquals(1, count(SettingsFlow.UPDATE))
+    }
+
+    @Test
+    fun `an unknown outcome whose read is malformed waits for a retried read to confirm the save`() = runTest {
+        val flow = loaded(flow())
+        flow.edit { it.copy(downloadNetwork = DownloadNetwork.ANY) }
+        flow.save()
+        runCurrent()
+        answerUpdate(failure("internal", "internal"))
+        answerGet(preferences(2, network = "any").put("revision", 2.5))
+        val blocked = flow.state.value
+        assertTrue(blocked.unverified is SaveResult.Failed)
+        assertEquals("malformed_reply", blocked.loadError!!.code)
+        assertFalse(blocked.canSave)
+
+        flow.retryVerification()
+        runCurrent()
+        answerGet(preferences(2, network = "any"))
+        val s = flow.state.value
+        assertNull(s.unverified)
+        assertNull(s.loadError)
+        assertEquals(SaveResult.Saved, s.result)
+        assertTrue(s.dirty.isEmpty())
+        assertEquals(1, count(SettingsFlow.UPDATE))
+    }
+
+    @Test
+    fun `a successful save clears an earlier refresh error`() = runTest {
+        val flow = loaded(flow())
+        flow.refresh()
+        runCurrent()
+        fake.last(SettingsFlow.GET).answer(failure("timeout"))
+        runCurrent()
+        assertEquals("timeout", flow.state.value.loadError!!.code)
+        flow.edit { it.copy(autoAlternatives = true) }
+        flow.save()
+        runCurrent()
+        answerUpdate(ok(preferences(2, alternatives = true)))
+        assertNull(flow.state.value.loadError)
+        assertEquals(SaveResult.Saved, flow.state.value.result)
+    }
+
+    @Test
     fun `a malformed save reply is checked by a read`() = runTest {
         val flow = loaded(flow())
         flow.edit { it.copy(autoAlternatives = true) }

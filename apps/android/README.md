@@ -160,7 +160,8 @@ snapshot (`preferences.changed`, a resync, a late save result) is merged field b
 follows the engine, a field only the user changed stays, the same value on both sides is no clash, and different values
 are a conflict that blocks Save until the user picks **Keep mine and save** or **Use current**. `state.conflict` without
 a clash keeps the draft on the newer revision and waits for another Save; a failure whose outcome is unknown is checked
-with a read before Save is offered again. Nothing is retried on its own.
+with a read before Save is offered again. If that read fails, the draft stays and Save is blocked until **Retry**
+reads the preferences successfully. Nothing is retried on its own.
 
 New audio, subtitle and quality preferences apply from the next `playback_prepare`; the video that is playing keeps the
 criteria it started with. The download settings are stored for the coming download screens; `download_network` never

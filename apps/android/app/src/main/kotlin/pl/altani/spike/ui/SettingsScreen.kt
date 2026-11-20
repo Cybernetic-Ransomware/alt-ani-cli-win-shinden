@@ -63,7 +63,7 @@ fun SettingsScreen(model: SettingsViewModel) {
             Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            state.loadError?.let {
+            state.loadError?.takeIf { state.unverified == null }?.let {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Could not refresh. ${it.message}", Modifier.weight(1f), color = MaterialTheme.colorScheme.error)
                     OutlinedButton(onClick = flow::refresh) { Text("Retry") }
@@ -156,7 +156,8 @@ fun SettingsScreen(model: SettingsViewModel) {
 private fun ActionBar(state: SettingsFlow.State, flow: SettingsFlow) {
     val result = state.result
     val dirty = state.dirty.isNotEmpty()
-    if (!dirty && !state.saving && result == null) return
+    val unverified = state.unverified != null && !state.saving
+    if (!dirty && !state.saving && result == null && !unverified) return
     Surface(tonalElevation = 3.dp) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -165,6 +166,7 @@ private fun ActionBar(state: SettingsFlow.State, flow: SettingsFlow) {
         ) {
             val text = when {
                 state.saving -> "Saving…"
+                unverified -> "Could not confirm the save. ${state.loadError?.message.orEmpty()}"
                 result is SaveResult.Failed -> "Not saved. ${result.message}"
                 result == SaveResult.Rebased -> "Settings were changed elsewhere. Your changes were kept; review and save again."
                 result == SaveResult.Saved && !dirty -> "Saved."
@@ -173,10 +175,12 @@ private fun ActionBar(state: SettingsFlow.State, flow: SettingsFlow) {
             Text(
                 text,
                 Modifier.weight(1f),
-                color = if (result is SaveResult.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                color = if (result is SaveResult.Failed || unverified) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
             )
             if (state.saving) {
                 CircularProgressIndicator(Modifier.size(24.dp))
+            } else if (unverified) {
+                Button(onClick = flow::retryVerification) { Text("Retry") }
             } else if (dirty) {
                 OutlinedButton(onClick = flow::cancel) { Text("Cancel") }
                 Button(onClick = flow::save, enabled = state.canSave) { Text("Save") }
