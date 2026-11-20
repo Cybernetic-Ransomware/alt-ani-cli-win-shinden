@@ -1,7 +1,7 @@
 # alt-ani-cli-win — task runner
-# Install: scoop install just  |  winget install Casey.Just
+# Install: scoop install just  |  winget install Casey.Just  |  Linux: package manager, cargo install just, or uv tool install rust-just
 
-set shell := ["powershell", "-Command"]
+set windows-shell := ["powershell", "-Command"]
 
 # Run pre-commit on staged files, then open Commitizen
 # Stage your changes first: git add <files>
@@ -13,16 +13,23 @@ commit:
 bump:
     uv run cz bump
 
-# Apply ruff formatting to src/
+# Apply ruff formatting to all Python sources
 format:
-    uv run ruff format src/
+    uv run ruff format .
 
 # Run the full linting suite
 lint:
-    uv run ruff check src/
-    uv run ty check src/
-    uv run python -m codespell_lib src/
-    uv run bandit -c pyproject.toml -r src/ -q
+    uv run ruff check .
+    uv run ruff format --check .
+    uv run ty check apps packages/core/src
+    uv run lint-imports
+    # tracked files only, so local untracked notes and build output never fail the run
+    uv run python -m codespell_lib $(git ls-files apps packages docs)
+    uv run bandit -c pyproject.toml -r apps packages/core/src -q
+
+# Build both wheels and check them in clean virtual environments
+package:
+    uv run python tools/check_packaging.py
 
 # Run tests
 test:
@@ -31,6 +38,10 @@ test:
 # Run tests with coverage report
 test-cov:
     uv run pytest --tb=short -q
+
+# Opt-in checks against live shinden.pl (needs ALT_ANI_CLI_FLARESOLVERR_URL; not part of CI)
+test-live:
+    uv run pytest -m integration tests/live -v --no-cov
 
 # Replay resolve_result failures from a diagnostics session log against live hosts
 replay-failures LOG:

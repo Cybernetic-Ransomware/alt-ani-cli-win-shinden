@@ -1,0 +1,490 @@
+"""cf_clearance disk cache, the FlareSolverr round-trip and the Shinden session profile built from them."""
+
+import json
+import time
+import urllib.error
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from alt_ani_core.config import SHINDEN_BASE, AccessConfig
+from alt_ani_core.events import ClearanceRequested, ClearanceUnavailable
+from alt_ani_core.testing import RecordingSink
+from alt_ani_core.transport import clearance as clearance_module
+from alt_ani_core.transport.clearance import (
+    Clearance,
+    fetch_via_flaresolverr,
+    get_clearance,
+    load_cached,
+    save_cached,
+    shinden_profile,
+)
+
+_SOLVER = "http://localhost:8191"
+_CACHE_NAME = "cf_clearance.json"
+
+
+def _urlopen_mock(data: object) -> MagicMock:
+    resp = MagicMock()
+    resp.read.return_value = data if isinstance(data, bytes) else json.dumps(data).encode()
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+def _flaresolverr_ok(cf_value: str = "clearance123", ua: str = "TestUA", expires: float | None = None) -> dict:
+    return {
+        "status": "ok",
+        "solution": {
+            "userAgent": ua,
+            "cookies": [
+                {
+                    "name": "cf_clearance",
+                    "value": cf_value,
+                    "expires": expires if expires is not None else time.time() + 3600,
+                }
+            ],
+        },
+    }
+
+
+_SECRET = "SECRET-CF"
+
+
+def _solved(cookie: dict | None = None, **solution) -> dict:
+    """A status-ok response whose cf_clearance cookie is overridden field by field."""
+    base = {"name": "cf_clearance", "value": _SECRET, "expires": time.time() + 3600}
+    return {"status": "ok", "solution": {"userAgent": "UA", "cookies": [base | (cookie or {})], **solution}}
+
+
+def _raw_expiry(literal: str, key: str = "expires") -> bytes:
+    cookie = f'{{"name": "cf_clearance", "value": "{_SECRET}", "{key}": {literal}}}'
+    return f'{{"status": "ok", "solution": {{"userAgent": "UA", "cookies": [{cookie}]}}}}'.encode()
+
+
+def _write_cache(cache_dir, expires: float, cf: str = "abc", user_agent: str = "UA") -> None:
+    (cache_dir / _CACHE_NAME).write_text(json.dumps({"cf_clearance": cf, "user_agent": user_agent, "expires": expires}))
+
+
+def _cached_expiry(cache_dir) -> float:
+    return json.loads((cache_dir / _CACHE_NAME).read_text())["expires"]
+
+
+_LINE_BREAKS = pytest.mark.parametrize("brk", ["\r", "\n", "\r\n"], ids=["cr", "lf", "crlf"])
+
+
+@pytest.mark.unit
+class TestLoadCached:
+    def test_returns_none_when_file_missing(self, tmp_path):
+        assert load_cached(tmp_path) is None
+
+    def test_returns_values_when_valid(self, tmp_path):
+        _write_cache(tmp_path, time.time() + 3600)
+        assert load_cached(tmp_path) == Clearance("abc", "UA")
+
+    def test_returns_none_when_expired(self, tmp_path):
+        _write_cache(tmp_path, time.time() - 1)
+        assert load_cached(tmp_path) is None
+
+    def test_returns_none_inside_the_expiry_margin(self, tmp_path):
+        _write_cache(tmp_path, time.time() + clearance_module._EXPIRY_MARGIN - 10)
+        assert load_cached(tmp_path) is None
+
+    def test_returns_none_on_invalid_json(self, tmp_path):
+        (tmp_path / _CACHE_NAME).write_text("not json")
+        assert load_cached(tmp_path) is None
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            '{"cf_clearance": "abc", "user_agent": "UA", "expires": Infinity}',
+            '{"cf_clearance": "abc", "user_agent": "UA", "expires": true}',
+            '{"cf_clearance": "abc", "user_agent": "UA", "expires": 1e400}',
+            '{"cf_clearance": 123, "user_agent": "UA", "expires": 9e9}',
+            '{"cf_clearance": "", "user_agent": "UA", "expires": 9e9}',
+            '{"cf_clearance": "abc", "user_agent": ["a"], "expires": 9e9}',
+            '{"cf_clearance": "abc", "user_agent": null, "expires": 9e9}',
+            '["abc", "UA", 9e9]',
+        ],
+    )
+    def test_rejects_entries_an_earlier_version_could_have_written(self, tmp_path, entry):
+        (tmp_path / _CACHE_NAME).write_text(entry)
+        assert load_cached(tmp_path) is None
+
+    def test_rejects_an_integer_expiry_too_large_for_a_float(self, tmp_path):
+        (tmp_path / _CACHE_NAME).write_text(f'{{"cf_clearance": "abc", "user_agent": "UA", "expires": {10**400}}}')
+        assert load_cached(tmp_path) is None
+
+    @_LINE_BREAKS
+    @pytest.mark.parametrize("field", ["cf", "user_agent"])
+    def test_rejects_a_line_break_in_a_header_value(self, tmp_path, brk, field):
+        _write_cache(tmp_path, time.time() + 3600, **{field: f"ok{brk}Injected: x"})
+        assert load_cached(tmp_path) is None
+
+
+@pytest.mark.unit
+class TestSaveCached:
+    def test_writes_correct_json(self, tmp_path):
+        save_cached(tmp_path, Clearance("val", "UA"), 9999.0)
+        assert json.loads((tmp_path / _CACHE_NAME).read_text()) == {
+            "cf_clearance": "val",
+            "user_agent": "UA",
+            "expires": 9999.0,
+        }
+
+    def test_creates_missing_cache_dir(self, tmp_path):
+        subdir = tmp_path / "sub"
+        save_cached(subdir, Clearance("v", "u"), 1.0)
+        assert (subdir / _CACHE_NAME).exists()
+
+    def test_silently_ignores_write_error(self, tmp_path):
+        # a directory where the file is expected makes write_text fail
+        (tmp_path / _CACHE_NAME).mkdir()
+        save_cached(tmp_path, Clearance("v", "u"), 1.0)
+
+    def test_saved_value_round_trips_through_load(self, tmp_path):
+        save_cached(tmp_path, Clearance("val", "UA"), time.time() + 3600)
+        assert load_cached(tmp_path) == Clearance("val", "UA")
+
+
+@pytest.mark.unit
+class TestFetchViaFlaresolverr:
+    def test_returns_clearance_and_ua_on_success(self, tmp_path):
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(_flaresolverr_ok())) as urlopen:
+            result = fetch_via_flaresolverr(_SOLVER, tmp_path)
+        assert result == Clearance("clearance123", "TestUA")
+        request = urlopen.call_args.args[0]
+        assert request.full_url == f"{_SOLVER}/v1"
+        assert json.loads(request.data)["url"] == f"{SHINDEN_BASE}/"
+
+    def test_returns_none_on_connection_error(self, tmp_path):
+        with patch("urllib.request.urlopen", side_effect=OSError("refused")):
+            assert fetch_via_flaresolverr(_SOLVER, tmp_path) is None
+
+    def test_returns_none_when_status_not_ok(self, tmp_path):
+        mock_resp = _urlopen_mock({"status": "error", "message": "something went wrong"})
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            assert fetch_via_flaresolverr(_SOLVER, tmp_path) is None
+
+    def test_returns_none_when_no_cf_clearance_cookie(self, tmp_path):
+        data = {
+            "status": "ok",
+            "solution": {
+                "userAgent": "UA",
+                "cookies": [{"name": "other_cookie", "value": "x", "expires": 9999.0}],
+            },
+        }
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(data)):
+            assert fetch_via_flaresolverr(_SOLVER, tmp_path) is None
+        assert not (tmp_path / _CACHE_NAME).exists()
+
+    def test_session_cookie_defaults_to_one_hour(self, tmp_path):
+        with (
+            patch("urllib.request.urlopen", return_value=_urlopen_mock(_flaresolverr_ok(expires=-1))),
+            patch.object(clearance_module, "save_cached") as mock_save,
+        ):
+            fetch_via_flaresolverr(_SOLVER, tmp_path)
+        assert mock_save.call_args.args[2] == pytest.approx(time.time() + 3600, abs=5)
+
+    def test_saves_clearance_to_cache_on_success(self, tmp_path):
+        with (
+            patch("urllib.request.urlopen", return_value=_urlopen_mock(_flaresolverr_ok())),
+            patch.object(clearance_module, "save_cached") as mock_save,
+        ):
+            fetch_via_flaresolverr(_SOLVER, tmp_path)
+        mock_save.assert_called_once()
+        assert mock_save.call_args.args[:2] == (tmp_path, Clearance("clearance123", "TestUA"))
+
+    def test_fetched_clearance_is_served_from_the_cache_afterwards(self, tmp_path):
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(_flaresolverr_ok())):
+            fetch_via_flaresolverr(_SOLVER, tmp_path)
+        assert load_cached(tmp_path) == Clearance("clearance123", "TestUA")
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(None, id="root-null"),
+            pytest.param([], id="root-list"),
+            pytest.param("ok", id="root-string"),
+            pytest.param(5, id="root-number"),
+            pytest.param({"status": "ok", "solution": None}, id="solution-null"),
+            pytest.param({"status": "ok", "solution": []}, id="solution-list"),
+            pytest.param({"status": "ok", "solution": "x"}, id="solution-string"),
+            pytest.param({"status": "ok", "solution": {"cookies": None}}, id="cookies-null"),
+            pytest.param({"status": "ok", "solution": {"cookies": {"name": "cf_clearance"}}}, id="cookies-object"),
+            pytest.param({"status": "ok", "solution": {"cookies": "cf_clearance"}}, id="cookies-string"),
+            pytest.param({"status": "ok", "solution": {"cookies": [{"name": "cf_clearance"}]}}, id="value-missing"),
+            pytest.param(_solved({"value": 123}), id="value-number"),
+            pytest.param(_solved({"value": None}), id="value-null"),
+            pytest.param(_solved({"value": ""}), id="value-empty"),
+            pytest.param(_solved({"expires": None}), id="expires-null"),
+            pytest.param(_solved({"expires": [1]}), id="expires-list"),
+            pytest.param(_solved({"expires": "abc"}), id="expires-garbage-string"),
+            pytest.param(_solved({"expires": "9e9"}), id="expires-numeric-string"),
+            pytest.param(_solved({"expires": True}), id="expires-bool"),
+            pytest.param(_raw_expiry("NaN"), id="expires-nan"),
+            pytest.param(_raw_expiry("Infinity"), id="expires-infinity"),
+            pytest.param(_raw_expiry("1e400"), id="expires-float-overflow"),
+            pytest.param(_raw_expiry(str(10**400)), id="expires-int-overflow"),
+            pytest.param(_solved(userAgent=5), id="user-agent-number"),
+            pytest.param(_solved(userAgent=["UA"]), id="user-agent-list"),
+            pytest.param(_solved(userAgent=None), id="user-agent-null"),
+            pytest.param(b"<html><body>502 Bad Gateway</body></html>", id="html-body"),
+        ],
+    )
+    def test_malformed_response_returns_none_and_caches_nothing(self, tmp_path, body):
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(body)):
+            assert fetch_via_flaresolverr(_SOLVER, tmp_path) is None
+        assert not (tmp_path / _CACHE_NAME).exists()
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            urllib.error.HTTPError(f"{_SOLVER}/v1", 500, "Internal Server Error", {}, None),
+            urllib.error.URLError("refused"),
+            TimeoutError("timed out"),
+        ],
+        ids=["http-500", "url-error", "timeout"],
+    )
+    def test_request_failure_returns_none_and_caches_nothing(self, tmp_path, failure):
+        with patch("urllib.request.urlopen", side_effect=failure):
+            assert fetch_via_flaresolverr(_SOLVER, tmp_path) is None
+        assert not (tmp_path / _CACHE_NAME).exists()
+
+    def test_non_object_cookies_are_skipped(self, tmp_path):
+        body = _solved()
+        body["solution"]["cookies"][:0] = [None, "cf_clearance", 7]
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(body)):
+            assert fetch_via_flaresolverr(_SOLVER, tmp_path) == Clearance(_SECRET, "UA")
+
+    def test_picks_cf_clearance_among_other_cookies(self, tmp_path):
+        body = _solved()
+        cookies = body["solution"]["cookies"]
+        cookies[:0] = [{"name": "__cf_bm", "value": "bm", "expires": 1.0}]
+        cookies.append({"name": "_ga", "value": "ga", "expires": 2.0})
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(body)):
+            assert fetch_via_flaresolverr(_SOLVER, tmp_path) == Clearance(_SECRET, "UA")
+        assert load_cached(tmp_path) == Clearance(_SECRET, "UA")
+
+    def test_cookie_expiry_is_cached_as_given(self, tmp_path):
+        expires = time.time() + 7 * 86400
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(_solved({"expires": int(expires)}))):
+            fetch_via_flaresolverr(_SOLVER, tmp_path)
+        assert json.loads((tmp_path / _CACHE_NAME).read_text())["expires"] == int(expires)
+
+    def test_missing_expiry_defaults_to_one_hour(self, tmp_path):
+        body = _solved()
+        del body["solution"]["cookies"][0]["expires"]
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(body)):
+            assert fetch_via_flaresolverr(_SOLVER, tmp_path) == Clearance(_SECRET, "UA")
+        cached = json.loads((tmp_path / _CACHE_NAME).read_text())["expires"]
+        assert cached == pytest.approx(time.time() + 3600, abs=5)
+
+    def test_missing_user_agent_keeps_the_empty_default(self, tmp_path):
+        body = _solved()
+        del body["solution"]["userAgent"]
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(body)):
+            assert fetch_via_flaresolverr(_SOLVER, tmp_path) == Clearance(_SECRET, "")
+
+
+@pytest.mark.unit
+class TestCookieExpiryFields:
+    """Selenium's get_cookies() names the field `expiry`; older FlareSolverr examples show `expires`."""
+
+    @staticmethod
+    def _fetch(tmp_path, cookie: dict) -> Clearance | None:
+        body = _solved()
+        del body["solution"]["cookies"][0]["expires"]
+        body["solution"]["cookies"][0].update(cookie)
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(body)):
+            return fetch_via_flaresolverr(_SOLVER, tmp_path)
+
+    def test_expiry_is_cached_as_given(self, tmp_path):
+        expiry = int(time.time()) + 7 * 86400
+        assert self._fetch(tmp_path, {"expiry": expiry}) == Clearance(_SECRET, "UA")
+        assert _cached_expiry(tmp_path) == expiry
+
+    def test_expires_is_cached_as_given(self, tmp_path):
+        expires = int(time.time()) + 7 * 86400
+        assert self._fetch(tmp_path, {"expires": expires}) == Clearance(_SECRET, "UA")
+        assert _cached_expiry(tmp_path) == expires
+
+    def test_neither_field_defaults_to_one_hour(self, tmp_path):
+        assert self._fetch(tmp_path, {}) == Clearance(_SECRET, "UA")
+        assert _cached_expiry(tmp_path) == pytest.approx(time.time() + 3600, abs=5)
+
+    @pytest.mark.parametrize("key", ["expiry", "expires"])
+    def test_negative_value_is_a_session_cookie_kept_for_one_hour(self, tmp_path, key):
+        assert self._fetch(tmp_path, {key: -1}) == Clearance(_SECRET, "UA")
+        assert _cached_expiry(tmp_path) == pytest.approx(time.time() + 3600, abs=5)
+
+    def test_expiry_wins_when_both_are_valid(self, tmp_path):
+        now = int(time.time())
+        assert self._fetch(tmp_path, {"expires": now + 86400, "expiry": now + 7 * 86400}) is not None
+        assert _cached_expiry(tmp_path) == now + 7 * 86400
+
+    @pytest.mark.parametrize("bad", [None, "abc", "9e9", True, [1]], ids=["null", "string", "numeric-string", "bool", "list"])
+    @pytest.mark.parametrize("bad_key", ["expiry", "expires"])
+    def test_malformed_field_is_not_replaced_by_the_other(self, tmp_path, bad_key, bad):
+        good_key = "expires" if bad_key == "expiry" else "expiry"
+        assert self._fetch(tmp_path, {good_key: time.time() + 86400, bad_key: bad}) is None
+        assert not (tmp_path / _CACHE_NAME).exists()
+
+    @pytest.mark.parametrize(
+        "literal",
+        ["NaN", "Infinity", "-Infinity", "1e400", str(10**400)],
+        ids=["nan", "inf", "-inf", "float-overflow", "int-overflow"],
+    )
+    def test_non_finite_expiry_returns_none_and_caches_nothing(self, tmp_path, literal):
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(_raw_expiry(literal, key="expiry"))):
+            assert fetch_via_flaresolverr(_SOLVER, tmp_path) is None
+        assert not (tmp_path / _CACHE_NAME).exists()
+
+    @pytest.mark.parametrize("bad", [None, "abc", True], ids=["null", "string", "bool"])
+    def test_malformed_expiry_alone_returns_none(self, tmp_path, bad):
+        assert self._fetch(tmp_path, {"expiry": bad}) is None
+        assert not (tmp_path / _CACHE_NAME).exists()
+
+
+@pytest.mark.unit
+class TestHeaderLineBreaks:
+    @_LINE_BREAKS
+    @pytest.mark.parametrize(
+        "patch_body",
+        [
+            pytest.param(lambda body, brk: body["solution"]["cookies"][0].update(value=f"{_SECRET}{brk}X: y"), id="cookie"),
+            pytest.param(lambda body, brk: body["solution"].update(userAgent=f"UA{brk}X: y"), id="user-agent"),
+        ],
+    )
+    def test_solver_reply_with_a_line_break_gives_no_clearance_and_no_cache(self, tmp_path, brk, patch_body):
+        body = _solved()
+        patch_body(body, brk)
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(body)):
+            assert fetch_via_flaresolverr(_SOLVER, tmp_path) is None
+        assert not (tmp_path / _CACHE_NAME).exists()
+
+    def test_values_without_line_breaks_pass_unchanged(self, tmp_path):
+        ua = "Mozilla/5.0 (X11; Linux x86_64) Chrome/131.0; tab\there"
+        body = _solved({"value": "a.b-c_d=e"}, userAgent=ua)
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(body)):
+            assert fetch_via_flaresolverr(_SOLVER, tmp_path) == Clearance("a.b-c_d=e", ua)
+        assert load_cached(tmp_path) == Clearance("a.b-c_d=e", ua)
+
+    def test_line_break_reply_is_reported_as_unavailable(self, tmp_path, caplog):
+        sink = RecordingSink()
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(_solved({"value": f"{_SECRET}\r\nX: y"}))):
+            assert get_clearance(AccessConfig(flaresolverr_url=_SOLVER), tmp_path, sink) is None
+        assert sink.events == [ClearanceRequested(), ClearanceUnavailable()]
+        assert not (tmp_path / _CACHE_NAME).exists()
+        assert _SECRET not in caplog.text + repr(sink.events)
+
+    def test_tainted_cache_is_not_reused_and_the_solver_is_asked_again(self, tmp_path):
+        _write_cache(tmp_path, time.time() + 3600, user_agent="UA\nX: y")
+        sink = RecordingSink()
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(_solved())):
+            assert get_clearance(AccessConfig(flaresolverr_url=_SOLVER), tmp_path, sink) == Clearance(_SECRET, "UA")
+        assert sink.events == [ClearanceRequested()]
+        assert load_cached(tmp_path) == Clearance(_SECRET, "UA")
+
+    def test_tainted_cache_without_a_solver_gives_none(self, tmp_path):
+        _write_cache(tmp_path, time.time() + 3600, cf="abc\r\nX: y")
+        assert get_clearance(AccessConfig(flaresolverr_url=None), tmp_path) is None
+
+
+@pytest.mark.unit
+class TestGetClearance:
+    def test_returns_cache_without_calling_flaresolverr(self, tmp_path):
+        sink = RecordingSink()
+        with (
+            patch.object(clearance_module, "load_cached", return_value=Clearance("val", "UA")),
+            patch.object(clearance_module, "fetch_via_flaresolverr") as mock_fetch,
+        ):
+            result = get_clearance(AccessConfig(flaresolverr_url=_SOLVER), tmp_path, sink)
+        assert result == Clearance("val", "UA")
+        mock_fetch.assert_not_called()
+        assert sink.events == []
+
+    @pytest.mark.parametrize("url", [None, ""])
+    def test_returns_none_when_no_cache_and_no_url(self, tmp_path, url):
+        sink = RecordingSink()
+        with patch.object(clearance_module, "fetch_via_flaresolverr") as mock_fetch:
+            assert get_clearance(AccessConfig(flaresolverr_url=url), tmp_path, sink) is None
+        mock_fetch.assert_not_called()
+        assert sink.events == []
+
+    def test_calls_flaresolverr_on_cache_miss(self, tmp_path):
+        with patch.object(clearance_module, "fetch_via_flaresolverr", return_value=Clearance("v", "UA")) as mock_fetch:
+            result = get_clearance(AccessConfig(flaresolverr_url=_SOLVER), tmp_path)
+        assert result == Clearance("v", "UA")
+        mock_fetch.assert_called_once_with(_SOLVER, tmp_path)
+
+    def test_announces_the_flaresolverr_round_trip(self, tmp_path):
+        sink = RecordingSink()
+        with patch.object(clearance_module, "fetch_via_flaresolverr", return_value=Clearance("v", "UA")):
+            get_clearance(AccessConfig(flaresolverr_url=_SOLVER), tmp_path, sink)
+        assert sink.events == [ClearanceRequested()]
+
+    def test_failed_round_trip_is_reported_as_unavailable(self, tmp_path):
+        sink = RecordingSink()
+        with patch.object(clearance_module, "fetch_via_flaresolverr", return_value=None):
+            assert get_clearance(AccessConfig(flaresolverr_url=_SOLVER), tmp_path, sink) is None
+        assert sink.events == [ClearanceRequested(), ClearanceUnavailable()]
+
+    def test_malformed_response_is_reported_as_unavailable(self, tmp_path, caplog):
+        sink = RecordingSink()
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(_solved({"expires": "abc"}))):
+            assert get_clearance(AccessConfig(flaresolverr_url=_SOLVER), tmp_path, sink) is None
+        assert sink.events == [ClearanceRequested(), ClearanceUnavailable()]
+        assert not (tmp_path / _CACHE_NAME).exists()
+        assert _SECRET not in caplog.text + repr(sink.events)
+
+    def test_failed_fetch_leaves_the_previous_cache_untouched(self, tmp_path):
+        # still on disk but inside the refresh margin, so the solver is asked again
+        _write_cache(tmp_path, time.time() + clearance_module._EXPIRY_MARGIN - 10)
+        before = (tmp_path / _CACHE_NAME).read_bytes()
+        with patch("urllib.request.urlopen", return_value=_urlopen_mock(_solved({"value": 123}))):
+            assert get_clearance(AccessConfig(flaresolverr_url=_SOLVER), tmp_path) is None
+        assert (tmp_path / _CACHE_NAME).read_bytes() == before
+
+    def test_direct_only_policy_sends_no_request(self, tmp_path):
+        with patch("urllib.request.urlopen") as urlopen:
+            access = AccessConfig(flaresolverr_url=_SOLVER, use_flaresolverr=False)
+            assert get_clearance(access, tmp_path) is None
+        urlopen.assert_not_called()
+
+    def test_direct_only_policy_uses_neither_cache_nor_solver(self, tmp_path):
+        _write_cache(tmp_path, time.time() + 3600)
+        sink = RecordingSink()
+        with patch.object(clearance_module, "fetch_via_flaresolverr") as mock_fetch:
+            access = AccessConfig(flaresolverr_url=_SOLVER, use_flaresolverr=False)
+            assert get_clearance(access, tmp_path, sink) is None
+        mock_fetch.assert_not_called()
+        assert sink.events == []
+
+
+@pytest.mark.unit
+class TestShindenProfile:
+    def test_without_clearance_has_only_the_session_seed_cookie(self):
+        profile = shinden_profile(None)
+        assert profile.name == "shinden"
+        assert set(profile.cookies) == {"_rnd"}
+        assert int(profile.cookies["_rnd"]) == pytest.approx(time.time(), abs=5)
+        assert profile.headers["Referer"] == f"{SHINDEN_BASE}/"
+        assert profile.headers["Accept-Language"].startswith("pl-PL")
+        assert "User-Agent" not in profile.headers
+
+    def test_clearance_adds_the_cookie_and_its_user_agent(self):
+        profile = shinden_profile(Clearance("clearance123", "TestUA"))
+        assert profile.cookies["cf_clearance"] == "clearance123"
+        assert "_rnd" in profile.cookies
+        assert profile.headers["User-Agent"] == "TestUA"
+
+    def test_empty_user_agent_keeps_the_transport_default(self):
+        profile = shinden_profile(Clearance("clearance123", ""))
+        assert profile.cookies["cf_clearance"] == "clearance123"
+        assert "User-Agent" not in profile.headers
+
+    def test_clearance_cookie_never_reaches_a_repr(self):
+        clearance = Clearance("clearance123", "TestUA")
+        assert "clearance123" not in repr(clearance)
+        assert "clearance123" not in repr(shinden_profile(clearance))

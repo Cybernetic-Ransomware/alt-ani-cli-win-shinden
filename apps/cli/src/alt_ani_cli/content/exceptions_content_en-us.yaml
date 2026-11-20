@@ -1,0 +1,12 @@
+player:
+  mpv_not_found: |-
+    mpv / mpv.net not found.
+    Install via:  winget install mpv.net
+      or:         winget install mpv
+      or:         scoop install mpv
+    Or set path manually:
+      $env:ANI_CLI_PLAYER = 'C:\path\to\mpvnet.exe'
+  vlc_not_found: |-
+    VLC not found on PATH.
+    Install via:  winget install VideoLAN.VLC
+    Or set env:   ANI_CLI_PLAYER=C:\path\to\vlc.exe
