@@ -81,7 +81,7 @@ class CatalogLateSessionTest {
         }
         onMain { flow.search("frieren") }
         val hit = awaitOnMain("results", 20_000, { flow.state.value.search }) { it is CatalogFlow.Load.Ready }
-        onMain { flow.selectSeries((hit as CatalogFlow.Load.Ready).value.hits.first()) }
+        onMain { flow.selectSeries((hit as CatalogFlow.Load.Ready).value.hits.first().ref()) }
         val listed = awaitOnMain("episodes", 20_000, { flow.state.value.episodes }) { it is CatalogFlow.Load.Ready }
         val (first, second) = (listed as CatalogFlow.Load.Ready).value.episodes
 

@@ -13,8 +13,11 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -26,6 +29,7 @@ import pl.altani.spike.controlled.ControlledEnvironment
 import pl.altani.spike.playback.PlaybackArbiter
 import pl.altani.spike.playback.PlaybackController
 import pl.altani.spike.playback.PlaybackEvidence
+import pl.altani.spike.playback.WatchSaved
 
 /** Holds the players across Activity recreation; the runtimes belong to the Application, not to this. */
 @UnstableApi
@@ -45,6 +49,11 @@ class PlaybackViewModel(app: Application) : AndroidViewModel(app) {
     val catalogController: StateFlow<PlaybackController?> = _catalogController.asStateFlow()
 
     val evidence = PlaybackEvidence()
+
+    private val _catalogSaved = MutableSharedFlow<WatchSaved>(extraBufferCapacity = 64)
+
+    /** Watch writes the engine accepted for catalogue viewings, so the catalogue knows when to read its history again. */
+    val catalogSaved: SharedFlow<WatchSaved> = _catalogSaved.asSharedFlow()
 
     private val arbiter = PlaybackArbiter<Mode>(viewModelScope) { previous ->
         // closing bumps the controller's generation, so a begin still on its way is abandoned instead of played
@@ -94,13 +103,22 @@ class PlaybackViewModel(app: Application) : AndroidViewModel(app) {
                 player.close()
                 evidence.reset()
                 if (!ticket.current) return@launch
-                add("catalog start episode ${pick.episode.label} source=${if (pick.onlineId == null) "auto" else "chosen"}")
-                player.start(pick.series.toJson(), pick.episode.toJson(), sessionId = pick.sessionId, onlineId = pick.onlineId).join()
+                val source = if (pick.onlineId == null) "auto" else "chosen"
+                add("catalog start episode ${pick.episode.label} source=$source from_start=${pick.fromStart}")
+                player.start(
+                    pick.series.toJson(),
+                    pick.episode.toJson(),
+                    sessionId = pick.sessionId,
+                    onlineId = pick.onlineId,
+                    fromStart = pick.fromStart,
+                ).join()
             }.join()
         }
 
+    /** A start-over that already played has saved its new position, so the retry resumes from there. */
     fun retryCatalog() {
-        lastPick?.let(::playCatalog)
+        val pick = lastPick ?: return
+        playCatalog(if (_catalogController.value?.playedThisViewing == true) pick.copy(fromStart = false) else pick)
     }
 
     fun onViewAttached(recreated: Boolean) {
@@ -123,6 +141,7 @@ class PlaybackViewModel(app: Application) : AndroidViewModel(app) {
         ).also {
             it.player.addAnalyticsListener(EvidenceListener())
             sampleProgress(it)
+            viewModelScope.launch { it.saved.collect(_catalogSaved::emit) }
             _catalogController.value = it
         }
 

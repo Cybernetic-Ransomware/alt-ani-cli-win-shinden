@@ -25,8 +25,10 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.util.UnstableApi
+import kotlinx.coroutines.launch
 import pl.altani.spike.ui.CatalogScreen
 import pl.altani.spike.ui.CatalogViewModel
 import pl.altani.spike.ui.FullscreenPlayer
@@ -46,6 +48,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         orientation = OrientationLock(this)
         playback.onViewAttached(recreated = savedInstanceState != null)
+        // collected for the Activity's whole life, so a save made while the player is fullscreen still refreshes the history
+        lifecycleScope.launch { playback.catalogSaved.collect(catalog.flow::onWatchSaved) }
         setContent {
             MaterialTheme {
                 Surface { Content() }
