@@ -77,7 +77,7 @@ class CatalogFlowTest {
         listed(flow, "1")
         val chosen = flow.state.value.search.ready().hits.single()
 
-        flow.selectSeries(chosen)
+        flow.selectSeries(chosen.ref())
         runCurrent()
         val sent = fake.last("episodes").args.getJSONObject("series")
         assertEquals(setOf("id", "slug", "title", "url"), sent.keys().asSequence().toSet())
@@ -95,16 +95,16 @@ class CatalogFlowTest {
         listed(flow, "1", "2")
         val (first, second) = flow.state.value.search.ready().hits
 
-        flow.selectSeries(first)
+        flow.selectSeries(first.ref())
         runCurrent()
         val stale = fake.last("episodes")
-        flow.selectSeries(second)
+        flow.selectSeries(second.ref())
         runCurrent()
         assertTrue("the first call was cancelled", stale.cancelled)
 
         fake.last("episodes").answer(episodes("2", 1))
         runCurrent()
-        assertEquals(second, flow.state.value.series)
+        assertEquals(second.ref(), flow.state.value.series)
         assertEquals("2", flow.state.value.episodes.ready().series.id)
     }
 
@@ -115,10 +115,10 @@ class CatalogFlowTest {
         val (first, second) = flow.state.value.search.ready().hits
         fake.ignoreCancel = true
 
-        flow.selectSeries(first)
+        flow.selectSeries(first.ref())
         runCurrent()
         val stale = fake.last("episodes")
-        flow.selectSeries(second)
+        flow.selectSeries(second.ref())
         runCurrent()
         val fresh = fake.last("episodes")
 
@@ -127,7 +127,7 @@ class CatalogFlowTest {
         stale.answer(episodes("1", 1, 2, 3))
         runCurrent()
 
-        assertEquals(second, flow.state.value.series)
+        assertEquals(second.ref(), flow.state.value.series)
         assertEquals("2", flow.state.value.episodes.ready().series.id)
     }
 
@@ -135,7 +135,7 @@ class CatalogFlowTest {
     fun `a new search cancels the listing and clears the choice`() = runTest {
         val flow = flow()
         listed(flow, "1")
-        flow.selectSeries(flow.state.value.search.ready().hits.single())
+        flow.selectSeries(flow.state.value.search.ready().hits.single().ref())
         runCurrent()
         val pending = fake.last("episodes")
 
@@ -160,7 +160,7 @@ class CatalogFlowTest {
         assertFalse(flow.state.value.busy)
 
         listed(flow, "1")
-        flow.selectSeries(flow.state.value.search.ready().hits.single())
+        flow.selectSeries(flow.state.value.search.ready().hits.single().ref())
         runCurrent()
         flow.cancel()
         runCurrent()
@@ -174,7 +174,7 @@ class CatalogFlowTest {
         val flow = flow()
         listed(flow, "1")
         val chosen = flow.state.value.search.ready().hits.single()
-        flow.selectSeries(chosen)
+        flow.selectSeries(chosen.ref())
         runCurrent()
         fake.last("episodes").answer(BridgeResult.Failure("access_blocked", "access", false, JSONObject().put("block", "cloudflare")))
         runCurrent()
@@ -211,13 +211,13 @@ class CatalogFlowTest {
         val flow = flow()
         listed(flow, "1", "2")
         val (first, second) = flow.state.value.search.ready().hits
-        flow.selectSeries(first)
+        flow.selectSeries(first.ref())
         runCurrent()
         fake.last("episodes").answer(episodes("1", 1, 2, complete = false))
         runCurrent()
         assertEquals("http_error", flow.state.value.episodes.ready().incompleteReason)
 
-        flow.selectSeries(second)
+        flow.selectSeries(second.ref())
         runCurrent()
         fake.last("episodes").answer(BridgeResult.Ok(JSONObject().put("episodes", "nope")))
         runCurrent()
@@ -228,7 +228,7 @@ class CatalogFlowTest {
     fun `an episode from another listing is not played`() = runTest {
         val flow = flow()
         listed(flow, "1")
-        flow.selectSeries(flow.state.value.search.ready().hits.single())
+        flow.selectSeries(flow.state.value.search.ready().hits.single().ref())
         runCurrent()
         fake.last("episodes").answer(episodes("1", 1))
         runCurrent()
@@ -241,7 +241,7 @@ class CatalogFlowTest {
 
     private fun TestScope.episodeListed(flow: CatalogFlow, vararg numbers: Number) {
         listed(flow, "1")
-        flow.selectSeries(flow.state.value.search.ready().hits.single())
+        flow.selectSeries(flow.state.value.search.ready().hits.single().ref())
         runCurrent()
         fake.last("episodes").answer(episodes("1", *numbers))
         runCurrent()
@@ -403,7 +403,7 @@ class CatalogFlowTest {
         assertEquals(1, fake.calls.count { it.method == "metadata_many" })
         assertEquals(HitOrder.NEWEST, flow.state.value.order)
 
-        flow.selectSeries(flow.state.value.hits.first())
+        flow.selectSeries(flow.state.value.hits.first().ref())
         runCurrent()
         flow.back()
         assertEquals("the order survives a visit to a series", HitOrder.NEWEST, flow.state.value.order)
@@ -429,7 +429,7 @@ class CatalogFlowTest {
         flow.orderBy(HitOrder.NEWEST)
         runCurrent()
         val late = fake.last("metadata_many")
-        flow.selectSeries(flow.state.value.hits.first())
+        flow.selectSeries(flow.state.value.hits.first().ref())
         runCurrent()
         late.answer(airDates(null, null))
         runCurrent()

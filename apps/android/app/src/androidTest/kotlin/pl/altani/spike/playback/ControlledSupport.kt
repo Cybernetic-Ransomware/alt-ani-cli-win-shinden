@@ -64,6 +64,9 @@ class CallHold {
     val calls = CopyOnWriteArrayList<Pair<String, JSONObject>>()
     val replies = CopyOnWriteArrayList<Pair<String, JSONObject>>()
 
+    /** Calls entering and replies leaving, in one order: `call:<method>` and `reply:<method>`, each with its payload. */
+    val timeline = CopyOnWriteArrayList<Triple<String, String, JSONObject>>()
+
     fun hold(name: String) {
         entered = CountDownLatch(1)
         gate = CountDownLatch(1)
@@ -83,12 +86,16 @@ class CallHold {
         object : BridgeEndpoint by inner {
             override fun call(method: String, payloadJson: String): String {
                 calls += method to JSONObject(payloadJson)
+                timeline += Triple("call", method, JSONObject(payloadJson))
                 if (take(method)) {
                     val held = gate
                     entered.countDown()
                     check(held.await(30, TimeUnit.SECONDS)) { "$method held too long" }
                 }
-                return inner.call(method, payloadJson).also { replies += method to JSONObject(it) }
+                return inner.call(method, payloadJson).also {
+                    replies += method to JSONObject(it)
+                    timeline += Triple("reply", method, JSONObject(it))
+                }
             }
         }
 }

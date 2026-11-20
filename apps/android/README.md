@@ -47,7 +47,7 @@ The Kotlin unit tests (`app/src/test`) need neither a device nor Python:
 
 Pass `-s <serial>` to every `adb` command when more than one device is attached.
 
-Controlled suite (bridge, Media3 playback, consent gate, stale starts) against `tools/android/controlled_server.py`:
+Controlled suite (bridge, Media3 playback, consent gate, stale starts, resume order) against `tools/android/controlled_server.py`:
 
 ```powershell
 uv run python tools/android/controlled_server.py --port 8765   # separate terminal
@@ -107,9 +107,39 @@ error or the mobile-data consent keeps the regular layout so the message stays v
 turns the screen (Back leaves fullscreen); once the device is held that way, auto-rotate takes over again, and with
 auto-rotate off the button's orientation stays.
 
+### Watch history and Resume
+
+The engine's SQLite is the only record; the tab keeps just the last reads of it. **Recently watched** (`watch_recent`,
+20 series by their latest opening) is shown while no search is on screen; **Clear** or Back from the results returns to
+it. A series opens the same way from the history and from a search hit (its `SeriesRef`), listing its episodes with
+`episodes` and reading `watch_series` beside it: **Last opened** names the episode with its saved position, the list
+marks watched episodes (`✓`) and known positions and scrolls once to the last opened one. A last episode missing from
+the current Shinden listing is named but cannot be resumed, since the watch state carries no episode URL.
+
+**Resume** and **Start over** open that episode's sources; nothing plays until a source is picked. The sources screen
+shows where playback will start whenever a position is known and lets the user switch before picking. `playback_prepare`
+always reports the saved position; only a pick made with **Start over** begins at 0, and only that one pick (a Retry
+after it has played resumes). A watched episode saved at its end offers Start over instead of Resume, but is never
+started over without that choice. Positions and the watched flag follow the engine's rules unchanged.
+
+The history is read again when its screen is shown (also after rotation or Home), after a non-periodic position or an
+end the engine accepted for that series (`accepted: true`, matched by the viewing's own `series_id`, so a late reply of
+an earlier viewing never lands on another series), and once more when a write lands while a read is in flight. History
+reads run beside the catalogue's calls: they never cancel a search or a listing, and their failure has its own Retry.
+
+A new start of the player first waits for the previous viewing's last position and `playback_close` to be answered
+(at most 2 s), so its `playback_begin` does not supersede that viewing before the position is kept and
+`playback_prepare` reads it. If the bridge does not answer in time the start goes on and that last write may be
+refused, losing at most the seconds since the previous periodic write (10 s).
+
 Manual check on a `device` build: search a known title (e.g. Frieren), open its episodes, pick one and wait for
 `media3: confirmed`; pause and resume, rotate (playback goes on), Home and back (stays paused), pick another episode,
-then airplane mode and a new search for the network message and Retry. Evidence without URLs or tokens:
+then airplane mode and a new search for the network message and Retry. History on Wi-Fi (no SIM or FlareSolverr
+needed): Back to the catalogue lists the series under Recently watched with its position; open it from there (no
+search), **Resume** shows "Resume at m:ss" on the sources screen and plays from about there; switching the source
+while playing continues from the current position; **Start over** plays from 0:00; after the episode ends it is marked
+`✓` and the card offers only Start over; after closing the app from Recents the history is still there and nothing
+plays. Evidence without URLs or tokens:
 
 ```powershell
 adb logcat -s AltAniCatalog:I AltAniPlayback:I AltAniNetwork:I

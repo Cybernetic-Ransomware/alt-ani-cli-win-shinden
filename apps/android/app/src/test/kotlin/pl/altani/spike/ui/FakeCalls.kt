@@ -89,5 +89,39 @@ class FakeCalls {
             )
 
         fun failure(code: String, kind: String = "unavailable") = BridgeResult.Failure(code, kind, true, JSONObject())
+
+        /** A `watch` DTO; [opened] null means the episode has a row but was never opened. */
+        fun watch(
+            seriesId: String,
+            number: Number,
+            position: Long? = null,
+            duration: Long? = null,
+            watched: Boolean = false,
+            opened: Double? = 1_700_000_000.0,
+            revision: Int = 1,
+        ): JSONObject =
+            JSONObject()
+                .put("series_id", seriesId)
+                .put("number", number.toDouble())
+                .put("revision", revision)
+                .put("last_opened_at", opened ?: JSONObject.NULL)
+                .put("opened_via", if (opened != null) "player" else JSONObject.NULL)
+                .put("position_ms", position ?: JSONObject.NULL)
+                .put("duration_ms", duration ?: JSONObject.NULL)
+                .put("position_at", JSONObject.NULL)
+                .put("watched", watched)
+                .put("watched_source", if (watched) "playback_ended" else JSONObject.NULL)
+                .put("watched_at", JSONObject.NULL)
+
+        fun recent(vararg rows: JSONObject) =
+            BridgeResult.Ok(
+                JSONObject().put(
+                    "series",
+                    JSONArray(rows.map { JSONObject().put("series", hit(it.getString("series_id")).apply { remove("series_type") }).put("watch", it) }),
+                ),
+            )
+
+        fun seriesWatch(last: JSONObject?, vararg episodes: JSONObject) =
+            BridgeResult.Ok(JSONObject().put("last_opened", last ?: JSONObject.NULL).put("episodes", JSONArray(episodes.toList())))
     }
 }

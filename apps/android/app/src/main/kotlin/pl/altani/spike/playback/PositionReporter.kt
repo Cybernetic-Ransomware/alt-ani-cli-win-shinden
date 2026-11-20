@@ -14,7 +14,7 @@ class PositionReporter(
     private val call: suspend (method: String, args: JSONObject) -> BridgeResult,
     private val onWritten: (Write, BridgeResult) -> Unit = { _, _ -> },
 ) {
-    data class Write(val method: String, val seq: Long, val positionMs: Long, val durationMs: Long?)
+    data class Write(val method: String, val seq: Long, val positionMs: Long, val durationMs: Long?, val periodic: Boolean = false)
 
     private val queue = Channel<Write>(Channel.UNLIMITED)
     private var seq = 0L
@@ -37,7 +37,7 @@ class PositionReporter(
             if (positionMs < floor) return false
             rotationFloorMs = null
         }
-        return enqueue(POSITION, positionMs, durationMs)
+        return enqueue(POSITION, positionMs, durationMs, periodic = true)
     }
 
     /** Pause, a manual seek, leaving for the background or an error: always the real position. */
@@ -57,11 +57,15 @@ class PositionReporter(
 
     suspend fun join() = worker.join()
 
-    private fun enqueue(method: String, positionMs: Long, durationMs: Long?): Boolean =
+    /** True once `playback_close` was answered, or the worker ended without it. */
+    val finished: Boolean
+        get() = worker.isCompleted
+
+    private fun enqueue(method: String, positionMs: Long, durationMs: Long?, periodic: Boolean = false): Boolean =
         synchronized(this) {
             if (closed) return false
             seq += 1
-            queue.trySend(Write(method, seq, positionMs.coerceAtLeast(0), durationMs?.takeIf { it > 0 })).isSuccess
+            queue.trySend(Write(method, seq, positionMs.coerceAtLeast(0), durationMs?.takeIf { it > 0 }, periodic)).isSuccess
         }
 
     private fun args(write: Write): JSONObject {

@@ -9,8 +9,11 @@ import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -61,6 +64,11 @@ class PlaybackController(
     /** Every position write and its reply, in the order the bridge answered them. */
     val writes: StateFlow<List<Pair<PositionReporter.Write, BridgeResult>>> = _writes.asStateFlow()
 
+    private val _saved = MutableSharedFlow<WatchSaved>(extraBufferCapacity = 64)
+
+    /** Positions and ends the engine accepted, each with the viewing it belongs to; nothing is replayed to a late collector. */
+    val saved: SharedFlow<WatchSaved> = _saved.asSharedFlow()
+
     var lastRewind: Rewind? = null
         private set
 
@@ -76,6 +84,8 @@ class PlaybackController(
     private var session: JSONObject? = null
     private var source: PlaybackSource? = null
     private var reporter: PositionReporter? = null
+    private val drain = ReporterDrain()
+    private var fromStart = false
     private var refreshGate = RefreshGate()
     private var ticker: Job? = null
     private var internalSeek = false
@@ -100,6 +110,10 @@ class PlaybackController(
 
     internal val playbackSession: JSONObject? get() = session
 
+    /** The current viewing reached playback at least once, so its position has been reported since. */
+    var playedThisViewing = false
+        private set
+
     init {
         if (manageGate) {
             uiScope.launch { bridge.events.events.collect(::onEvent) }
@@ -117,12 +131,18 @@ class PlaybackController(
         criteria: JSONObject? = null,
         sessionId: String? = null,
         onlineId: String? = null,
+        // a start over: the saved position is reported by playback_prepare but not used
+        fromStart: Boolean = false,
     ): Job =
         uiScope.launch {
             stopSession()
             val started = generation
             playIntent = true
             _state.value = State(phase = Phase.PREPARING)
+            // a begin landing first would supersede the old session and refuse its last position
+            if (!drain.await()) log("earlier position writes still pending after ${ReporterDrain.DRAIN_MS}ms")
+            if (started != generation) return@launch
+            this@PlaybackController.fromStart = fromStart
             val begin = beginOrder.withLock {
                 bridge.call("playback_begin", JSONObject().put("series", series).put("episode", episode), mutation = true)
             }
@@ -134,7 +154,10 @@ class PlaybackController(
             if (deviceHolds()) closeGate()
             reporter = PositionReporter(bridge.scope, playbackSession, { method, args ->
                 bridge.call(method, args, mutation = true)
-            }) { write, result -> _writes.update { it + (write to result) } }
+            }) { write, result ->
+                _writes.update { it + (write to result) }
+                WatchSaved.of(playbackSession, write, result)?.let(_saved::tryEmit)
+            }
             val args = JSONObject().put("playback_session", playbackSession).put("series", series).put("episode", episode)
             criteria?.let { args.put("criteria", it) }
             sessionId?.let { args.put("session_id", it) }
@@ -161,7 +184,7 @@ class PlaybackController(
         if (prepared !is BridgeResult.Ok) return stop(prepared)
         val chosen = PlaybackSource.parse(prepared.data)
         _state.update { it.copy(mode = if (chosen is PlaybackSource.Local) chosen.kind else "online") }
-        play(chosen, prepared.data.getJSONObject("resume").optLong("position_ms"))
+        play(chosen, if (fromStart) 0L else prepared.data.getJSONObject("resume").optLong("position_ms"))
     }
 
     /** After an Activity recreation: playback went on; step back so the viewer sees the last seconds again. */
@@ -379,8 +402,10 @@ class PlaybackController(
         reporter?.let { current ->
             if (source != null) current.explicit(player.currentPosition, duration())
             current.close()
+            drain.add(current)
         }
         reporter = null
+        playedThisViewing = false
         session = null
         source = null
         consented = false
@@ -412,6 +437,7 @@ class PlaybackController(
     private inner class Listener : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) {
+                playedThisViewing = true
                 _state.update { it.copy(phase = Phase.PLAYING) }
                 startTicker()
             } else {
