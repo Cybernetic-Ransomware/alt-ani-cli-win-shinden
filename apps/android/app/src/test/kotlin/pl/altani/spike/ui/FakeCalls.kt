@@ -121,7 +121,29 @@ class FakeCalls {
                 ),
             )
 
+        /** A `preferences` DTO; the defaults are the engine's. */
+        fun preferences(
+            revision: Long = 0,
+            audio: String = "any",
+            subs: String = "any",
+            quality: String = "best",
+            network: String = "wifi_only",
+            alternatives: Boolean = false,
+            active: Int = 1,
+        ): JSONObject =
+            JSONObject()
+                .put("audio", audio)
+                .put("subs", subs)
+                .put("quality", quality)
+                .put("download_network", network)
+                .put("auto_alternatives", alternatives)
+                .put("max_active_downloads", active)
+                .put("revision", revision)
+
         fun seriesWatch(last: JSONObject?, vararg episodes: JSONObject) =
             BridgeResult.Ok(JSONObject().put("last_opened", last ?: JSONObject.NULL).put("episodes", JSONArray(episodes.toList())))
     }
 }
+
+/** `keySet()` is missing from the Android stubs the unit tests compile against. */
+fun JSONObject.keyNames(): Set<String> = keys().asSequence().toSet()

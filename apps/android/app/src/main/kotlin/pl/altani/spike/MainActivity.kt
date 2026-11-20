@@ -34,6 +34,8 @@ import pl.altani.spike.ui.CatalogViewModel
 import pl.altani.spike.ui.FullscreenPlayer
 import pl.altani.spike.ui.OrientationLock
 import pl.altani.spike.ui.PlaybackViewModel
+import pl.altani.spike.ui.SettingsScreen
+import pl.altani.spike.ui.SettingsViewModel
 import pl.altani.spike.ui.TechScreen
 import pl.altani.spike.ui.TechViewModel
 
@@ -41,6 +43,7 @@ import pl.altani.spike.ui.TechViewModel
 class MainActivity : ComponentActivity() {
     private val model: TechViewModel by viewModels()
     private val catalog: CatalogViewModel by viewModels()
+    private val settings: SettingsViewModel by viewModels()
     val playback: PlaybackViewModel by viewModels()
     private lateinit var orientation: OrientationLock
 
@@ -59,13 +62,13 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun Content() {
-        var tab by rememberSaveable { mutableIntStateOf(0) }
+        var tab by rememberSaveable { mutableIntStateOf(CATALOG_TAB) }
         val mode by playback.mode.collectAsStateWithLifecycle()
         // the controlled flow is driven from the Tech tab, so its consent button must be on screen
-        LaunchedEffect(mode) { if (mode == PlaybackViewModel.Mode.CONTROLLED) tab = 1 }
+        LaunchedEffect(mode) { if (mode == PlaybackViewModel.Mode.CONTROLLED) tab = TECH_TAB }
         val player by playback.catalogController.collectAsStateWithLifecycle()
         val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-        val candidate = player?.takeIf { landscape && tab == 0 && mode == PlaybackViewModel.Mode.CATALOG }
+        val candidate = player?.takeIf { landscape && tab == CATALOG_TAB && mode == PlaybackViewModel.Mode.CATALOG }
         val state = candidate?.state?.collectAsStateWithLifecycle()?.value
         // an error or the consent button needs the regular layout to be seen
         val fullscreen = state != null && state.error == null && !state.consentRequired
@@ -76,10 +79,15 @@ class MainActivity : ComponentActivity() {
         }
         Column(Modifier.fillMaxSize().safeDrawingPadding()) {
             PrimaryTabRow(selectedTabIndex = tab) {
-                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Catalog") })
-                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Tech") })
+                Tab(selected = tab == CATALOG_TAB, onClick = { tab = CATALOG_TAB }, text = { Text("Catalog") })
+                Tab(selected = tab == SETTINGS_TAB, onClick = { tab = SETTINGS_TAB }, text = { Text("Settings") })
+                Tab(selected = tab == TECH_TAB, onClick = { tab = TECH_TAB }, text = { Text("Tech") })
             }
-            if (tab == 0) CatalogScreen(catalog, playback, orientation::force) else TechScreen(model, playback)
+            when (tab) {
+                CATALOG_TAB -> CatalogScreen(catalog, playback, orientation::force)
+                SETTINGS_TAB -> SettingsScreen(settings)
+                else -> TechScreen(model, playback)
+            }
         }
     }
 
@@ -111,5 +119,11 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         // rotation keeps playing; Home, another app and the screen lock pause and save the position
         if (!isChangingConfigurations) playback.onBackground()
+    }
+
+    private companion object {
+        const val CATALOG_TAB = 0
+        const val SETTINGS_TAB = 1
+        const val TECH_TAB = 2
     }
 }
