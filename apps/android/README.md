@@ -147,6 +147,35 @@ plays. Evidence without URLs or tokens:
 adb logcat -s AltAniCatalog:I AltAniPlayback:I AltAniNetwork:I
 ```
 
+## Settings tab
+
+**Settings** (between Catalog and Tech) edits the engine's six preferences through `preferences_get` and
+`preferences_update`; the engine's SQLite is the only copy, nothing is kept in DataStore or SharedPreferences. Controls
+change a draft held by `SettingsViewModel`, raw text included, so it survives rotation, a tab change and Home; a process
+restart drops an unsaved draft. **Save** sends one `preferences_update` with only the changed fields and the revision the
+draft is based on; an unchanged draft cannot be saved (the engine would bump the revision anyway).
+
+A snapshot is applied only when its revision is newer than the one held, so a late read never undoes a save. A newer
+snapshot (`preferences.changed`, a resync, a late save result) is merged field by field: a field only changed elsewhere
+follows the engine, a field only the user changed stays, the same value on both sides is no clash, and different values
+are a conflict that blocks Save until the user picks **Keep mine and save** or **Use current**. `state.conflict` without
+a clash keeps the draft on the newer revision and waits for another Save; a failure whose outcome is unknown is checked
+with a read before Save is offered again. If that read fails, the draft stays and Save is blocked until **Retry**
+reads the preferences successfully. Nothing is retried on its own.
+
+New audio, subtitle and quality preferences apply from the next `playback_prepare`; the video that is playing keeps the
+criteria it started with. The download settings are stored for the coming download screens; `download_network` never
+affects the mobile-data consent for watching.
+
+```powershell
+adb shell am instrument -w -e class pl.altani.spike.SettingsBridgeTest pl.altani.spike.test/androidx.test.runner.AndroidJUnitRunner
+adb logcat -s AltAniSettings:I
+```
+
+Manual check: each control, Save and Cancel, rotation and a tab change with a half-typed language or height, Home and
+back, closing the app from Recents with a saved change (it is still there), a quality limit (e.g. at most 480p) on the
+next episode, and a change while a video plays (that video is not affected).
+
 ## MIUI
 
 Xiaomi phones without a SIM refuse `adb install` (`INSTALL_FAILED_USER_RESTRICTED`): push the APK to
