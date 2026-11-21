@@ -1,4 +1,4 @@
-"""Controlled server for Android playback tests; run it, then ``adb reverse tcp:8765 tcp:8765``."""
+"""Controlled server for Android playback and download tests; run it, then ``adb reverse tcp:8765 tcp:8765``."""
 
 import argparse
 import hashlib
@@ -6,6 +6,7 @@ import hmac
 import json
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,11 +29,12 @@ _LIVE_START_SEGMENTS = 3
 _SEGMENT_SEC = 2
 _SEGMENT_COUNT = 15
 _CHUNK = 1024
+_STALL_LIMIT_SEC = 120
 
 
 @dataclass
 class Scenario:
-    """``variants`` are quality labels, all backed by the same media; ``refresh_*`` apply from the second resolve on."""
+    """Labels share one media file; ``refresh_*`` apply from the second resolve, ``stall_files`` hold until released."""
 
     kind: str = "hls"
     variants: list[str] = field(default_factory=lambda: ["720p", "480p"])
@@ -46,6 +48,11 @@ class Scenario:
     fail_files: dict[str, int] = field(default_factory=dict)
     redirect_files: list[str] = field(default_factory=list)
     redirect_delay_ms: int = 0
+    etag: bool = False
+    media_revision: int = 0
+    stall_files: dict[str, int] = field(default_factory=dict)
+    stall_skip: int = 0
+    pad_bytes: int = 0
 
 
 class State:
@@ -59,6 +66,8 @@ class State:
         self.live_started: float | None = None
         self.issued: set[int] = set()
         self.revoked: set[int] = set()
+        self.released = threading.Event()
+        self.stall_seen: dict[str, int] = {}
 
     def reset(self, scenario: Scenario) -> None:
         with self.lock:
@@ -69,6 +78,28 @@ class State:
             self.live_started = None
             self.issued = set()
             self.revoked = set()
+            # a response still held by the previous scenario goes on, so no server thread waits for a test that ended
+            self.released.set()
+            self.released = threading.Event()
+            self.stall_seen = {}
+
+    def release(self) -> None:
+        with self.lock:
+            self.released.set()
+
+    def should_stall(self, name: str) -> bool:
+        with self.lock:
+            if name not in self.scenario.stall_files or self.released.is_set():
+                return False
+            self.stall_seen[name] = self.stall_seen.get(name, 0) + 1
+            return self.stall_seen[name] > self.scenario.stall_skip
+
+    def etag_of(self, body: bytes) -> str | None:
+        with self.lock:
+            scenario = self.scenario
+        if not scenario.etag:
+            return None
+        return f'"{hashlib.sha256(body).hexdigest()[:16]}-r{scenario.media_revision}"'
 
     def expire_issued(self) -> int:
         """Every URL handed out so far answers 403 ``expired`` from now on; later resolves get working ones."""
@@ -130,6 +161,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args: object) -> None:
         pass
 
+    def do_HEAD(self) -> None:
+        path = urlsplit(self.path).path
+        if path.startswith("/m/"):
+            self._media(path, head=True)
+        else:
+            self._send(404, b"", head=True)
+
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
         if path.startswith("/m/"):
@@ -149,6 +187,10 @@ class Handler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path == "/_control/expire":
             revoked = self.server.state.expire_issued()
             self._send(200, json.dumps({"revoked": revoked}).encode(), "application/json")
+            return
+        if urlsplit(self.path).path == "/_control/release":
+            self.server.state.release()
+            self._send(200, b"{}", "application/json")
             return
         if urlsplit(self.path).path != "/_control/scenario":
             self._send(404, b"")
@@ -197,7 +239,7 @@ class Handler(BaseHTTPRequestHandler):
         ]
         self._send(200, json.dumps({"variants": variants}).encode(), "application/json")
 
-    def _media(self, path: str) -> None:
+    def _media(self, path: str, head: bool = False) -> None:
         state = self.server.state
         _, _, exp_text, sig, *rest = path.split("/")
         redirected = rest[:1] == ["r"]
@@ -206,6 +248,7 @@ class Handler(BaseHTTPRequestHandler):
             scenario = state.scenario
         missing = [h for h in REQUIRED_HEADERS if not self._header_ok(h)] if scenario.require_headers else []
         entry: dict[str, Any] = {
+            "method": "HEAD" if head else "GET",
             "file": name,
             "missing": missing,
             "range": self.headers.get("Range"),
@@ -242,22 +285,34 @@ class Handler(BaseHTTPRequestHandler):
             state.update(entry, done_at=time.time())
             return
         if status != 200:
-            self._send(status, b"")
+            self._send(status, b"", head=head)
             return
-        if target.suffix in _SEGMENTS and scenario.segment_delay_ms:
+        if target.suffix in _SEGMENTS and scenario.segment_delay_ms and not head:
             time.sleep(scenario.segment_delay_ms / 1000)
         live = scenario.live and name == _LIVE_PLAYLIST
         body = state.live_playlist() if live else target.read_bytes()
+        if name == _KINDS["progressive"]:
+            body += bytes(scenario.pad_bytes)
         throttle = scenario.throttle_bps if target.suffix in _SEGMENTS else None
+        etag = None if live else state.etag_of(body)
+        validator = {"ETag": etag} if etag else {}
         requested = self.headers.get("Range")
+        if_range = self.headers.get("If-Range")
+        if if_range is not None and if_range != etag:
+            # RFC 9110: a validator that no longer matches turns the range request into a full one
+            requested = None
         content_type = _TYPES.get(target.suffix, "video/mp4")
+        stall = None
+        if not head and state.should_stall(name):
+            stall = (scenario.stall_files[name], state.released, lambda: state.update(entry, stalled=True))
         if requested and requested.startswith("bytes="):
             first, _, last = requested.removeprefix("bytes=").partition("-")
             start, end = int(first or 0), int(last) if last else len(body) - 1
-            extra = {"Content-Range": f"bytes {start}-{end}/{len(body)}"}
-            sent = self._send(206, body[start : end + 1], content_type, extra, throttle)
+            extra = {"Content-Range": f"bytes {start}-{end}/{len(body)}", **validator}
+            sent = self._send(206, body[start : end + 1], content_type, extra, throttle, head=head, stall=stall)
         else:
-            sent = self._send(200, body, content_type, {"Accept-Ranges": "bytes"}, throttle)
+            extra = {"Accept-Ranges": "bytes", **validator}
+            sent = self._send(200, body, content_type, extra, throttle, head=head, stall=stall)
         state.update(entry, done_at=time.time(), sent=sent, size=len(body), aborted=sent is None)
 
     def _header_ok(self, name: str) -> bool:
@@ -273,6 +328,9 @@ class Handler(BaseHTTPRequestHandler):
         content_type: str = "text/plain",
         extra: dict[str, str] | None = None,
         throttle_bps: int | None = None,
+        *,
+        head: bool = False,
+        stall: tuple[int, threading.Event, Callable[[], None]] | None = None,
     ) -> int | None:
         """The number of body bytes written, or None when the client went away first."""
         self.send_response(status)
@@ -281,7 +339,17 @@ class Handler(BaseHTTPRequestHandler):
         for key, value in (extra or {}).items():
             self.send_header(key, value)
         self.end_headers()
+        if head:
+            return 0
         try:
+            if stall is not None:
+                after, released, mark = stall
+                self.wfile.write(body[:after])
+                self.wfile.flush()
+                mark()
+                released.wait(_STALL_LIMIT_SEC)
+                self.wfile.write(body[after:])
+                return len(body)
             if not throttle_bps:
                 self.wfile.write(body)
                 return len(body)

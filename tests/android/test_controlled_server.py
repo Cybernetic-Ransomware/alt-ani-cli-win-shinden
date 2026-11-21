@@ -1,4 +1,4 @@
-"""Controlled server features the T9 transfer-gate trial relies on: probes, injected failures, redirects, live, throttling."""
+"""Controlled server features the device tests rely on: probes, failures, redirects, live, throttling, validators, held I/O."""
 
 import http.client
 import json
@@ -19,15 +19,6 @@ if str(_REPO_ROOT) not in sys.path:
 from tools.android.controlled_server import MEDIA, REQUIRED_HEADERS, Scenario, Server  # noqa: E402
 
 pytestmark = pytest.mark.loopback
-
-
-@pytest.fixture
-def server():
-    with Server(0) as srv:
-        thread = threading.Thread(target=srv.serve_forever, daemon=True)
-        thread.start()
-        yield srv
-        srv.shutdown()
 
 
 def media_url(server: Server, name: str) -> str:
@@ -150,3 +141,84 @@ def test_a_control_post_leaves_a_keep_alive_connection_usable(server):
         assert connection.getresponse().status == 200
     finally:
         connection.close()
+
+
+def head(url: str) -> tuple[int, dict[str, str]]:
+    request = urllib.request.Request(url, headers=REQUIRED_HEADERS, method="HEAD")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as reply:
+            return reply.status, dict(reply.headers)
+    except urllib.error.HTTPError as exc:
+        return exc.code, {}
+
+
+def fetch_with_headers(url: str, **extra: str) -> tuple[int, dict[str, str], bytes]:
+    request = urllib.request.Request(url, headers={**REQUIRED_HEADERS, **extra})
+    with urllib.request.urlopen(request, timeout=30) as reply:
+        return reply.status, dict(reply.headers), reply.read()
+
+
+def test_head_answers_the_size_and_a_strong_etag_without_a_body(server):
+    server.state.reset(Scenario(kind="progressive", etag=True))
+    status, headers = head(media_url(server, "video.mp4"))
+    assert status == 200
+    assert headers["Content-Length"] == str((MEDIA / "video.mp4").stat().st_size)
+    assert headers["ETag"].startswith('"') and headers["ETag"].endswith('-r0"')
+    (entry,) = finished(server)
+    assert (entry["method"], entry["sent"]) == ("HEAD", 0)
+
+
+def test_without_the_etag_switch_no_validator_is_sent(server):
+    server.state.reset(Scenario(kind="progressive"))
+    assert "ETag" not in head(media_url(server, "video.mp4"))[1]
+
+
+def test_a_new_media_revision_changes_the_etag_and_a_stale_if_range_gets_the_whole_file(server):
+    url = media_url(server, "video.mp4")
+    body = (MEDIA / "video.mp4").read_bytes()
+    server.state.reset(Scenario(kind="progressive", etag=True))
+    old = head(url)[1]["ETag"]
+    status, headers, part = fetch_with_headers(url, Range="bytes=100-", **{"If-Range": old})
+    assert (status, headers["ETag"], part) == (206, old, body[100:])
+    server.state.reset(Scenario(kind="progressive", etag=True, media_revision=1))
+    status, headers, whole = fetch_with_headers(url, Range="bytes=100-", **{"If-Range": old})
+    assert (status, whole) == (200, body)
+    assert headers["ETag"] != old
+
+
+def test_a_stalled_file_holds_its_rest_until_released_and_marks_the_log(server):
+    server.state.reset(Scenario(kind="progressive", stall_files={"video.mp4": 4096}))
+    result: dict = {}
+    reader = threading.Thread(target=lambda: result.update(reply=fetch(media_url(server, "video.mp4"))))
+    reader.start()
+    deadline = time.monotonic() + 10
+    while not any(e.get("stalled") for e in requests(server)):
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    reader.join(0.3)
+    assert reader.is_alive(), "the body must not finish while the file is held"
+    server.state.release()
+    reader.join(10)
+    assert result["reply"] == (200, (MEDIA / "video.mp4").read_bytes())
+    assert fetch(media_url(server, "video.mp4"))[0] == 200
+
+
+def test_a_new_scenario_lets_a_held_response_finish(server):
+    server.state.reset(Scenario(kind="progressive", stall_files={"video.mp4": 1024}))
+    reader = threading.Thread(target=lambda: fetch(media_url(server, "video.mp4")))
+    reader.start()
+    deadline = time.monotonic() + 10
+    while not any(e.get("stalled") for e in requests(server)):
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    server.state.reset(Scenario(kind="progressive"))
+    reader.join(10)
+    assert not reader.is_alive()
+
+
+def test_release_is_a_control_endpoint(server):
+    server.state.reset(Scenario(kind="progressive", stall_files={"video.mp4": 1}))
+    release = urllib.request.Request(f"{server.url}/_control/release", data=b"{}", method="POST")
+    with urllib.request.urlopen(release, timeout=30) as reply:
+        assert reply.status == 200
+    assert server.state.released.is_set()

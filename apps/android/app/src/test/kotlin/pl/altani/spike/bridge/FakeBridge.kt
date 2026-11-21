@@ -19,6 +19,7 @@ class FakeBridge : BridgeEndpoint {
     val payloads = CopyOnWriteArrayList<JSONObject>()
     val cancels = CopyOnWriteArrayList<String>()
     val engines = AtomicInteger()
+    val enginePayloads = CopyOnWriteArrayList<JSONObject>()
     val shutdowns = AtomicInteger()
 
     /** Runs on the calling thread after the call started and before it registers its op_id. */
@@ -35,6 +36,7 @@ class FakeBridge : BridgeEndpoint {
     val cancelSeen = CountDownLatch(1)
 
     override fun createEngine(payloadJson: String): String {
+        enginePayloads += JSONObject(payloadJson)
         val reply = createEngineReply()
         if (JSONObject(reply).getBoolean("ok")) engines.incrementAndGet()
         return reply

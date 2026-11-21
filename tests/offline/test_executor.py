@@ -5,6 +5,7 @@ import threading
 import pytest
 
 from alt_ani_core.errors import ExecutorBusyError
+from alt_ani_core.history.ownership import ExecutorOwnership
 from alt_ani_core.models import Stream, StreamProtocol, StreamVariant
 from alt_ani_core.services.offline.events import InteractionRequired
 from alt_ani_core.services.offline.interaction import InteractionGrant, InteractionNeeded
@@ -87,6 +88,36 @@ class TestHappyPath:
             assert exc.value.code == "executor.busy"
         finally:
             queue.close()
+
+
+@pytest.mark.unit
+class TestStartOrder:
+    def test_the_root_is_checked_with_ownership_held_before_recovery_and_any_claim(self, tmp_path, monkeypatch):
+        """A store may tidy its work area in ``check_root`` only because nothing else can run there at that point."""
+        import alt_ani_core.services.offline as offline
+
+        seen: list[tuple] = []
+        queue, state, _ = make_queue(tmp_path, FakeSources([], {}))
+        real_check, real_recover = queue.store.check_root, offline.recover
+
+        def check_root():
+            other = ExecutorOwnership.try_acquire(state.database.path)
+            if other is not None:
+                other.release()
+            seen.append(("check_root", other is None, queue._scheduler is None))
+            real_check()
+
+        def recover(*args, **kwargs):
+            seen.append(("recover",))
+            return real_recover(*args, **kwargs)
+
+        monkeypatch.setattr(queue.store, "check_root", check_root)
+        monkeypatch.setattr(offline, "recover", recover)
+        queue.start()
+        try:
+            assert seen == [("check_root", True, True), ("recover",)]
+        finally:
+            assert queue.close()
 
 
 @pytest.mark.unit
