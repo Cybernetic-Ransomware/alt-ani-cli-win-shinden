@@ -56,3 +56,4 @@ the gate below API 30 is checked on the desktop and with an injected level on th
 image. `renameat2` under seccomp is verified on one device (Mi 10T Lite, Android 12, MIUI); other vendors' policies
 stay unverified. Background execution is
 not part of this decision: a cached or frozen process stops the executor, and the next start recovers.
+[ADR-0008](0008-android-background-execution.md) adds background sessions on top of that recovery.

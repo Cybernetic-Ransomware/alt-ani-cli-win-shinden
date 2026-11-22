@@ -73,8 +73,12 @@ case the device cannot carry out is `NOT_EXECUTABLE`, never a pass. The server h
 of bytes (`stall_files`) until the test releases it, so stops with `ended: false`, pauses and cancels are deterministic.
 `StorageDeviceTest` also runs on the real app's runtime (`library_verify` with an empty `item_ids`, so no saved item is
 checked or changed). Offline downloads need API 30;
-below it `executor_start` answers `storage.no_atomic_publish`. Nothing here claims background work: the executor runs
-only while the process does.
+below it `executor_start` answers `storage.no_atomic_publish`.
+
+Background sessions ([ADR-0008](../../docs/adr/0008-android-background-execution.md)): a user-initiated job from API 34,
+a `dataSync` foreground service on API 30–33, started only by `OfflineRun.request()` from the visible UI (the technical
+screen's "Background download" and "Resume" for now). Checks and the manual protocol are in
+[background-execution-checks](../../docs/android/background-execution-checks.md).
 
 Live Shinden on a `device` build (opt-in, real network):
 

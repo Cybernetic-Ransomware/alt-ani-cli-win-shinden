@@ -214,3 +214,5 @@ in the app directory; background work; a transport without `curl_cffi`.
 Stage 6 (PR #51, [ADR-0007](0007-android-file-store.md)): the file store is a Python object (`android_storage`), not a
 Kotlin one, registered as a platform object by the production app. `flock` in the app directory refuses a second
 executor on the same database on a device (Mi 10T Lite, Android 12). Background work and SAF export remain open.
+Stage 6 (PR #52, [ADR-0008](0008-android-background-execution.md)): background work is a UIDT job from API 34 and a
+`dataSync` foreground service on API 30–33, both driving the existing `executor_*` methods; no contract change.
