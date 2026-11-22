@@ -8,6 +8,7 @@ import com.chaquo.python.Python
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -34,9 +35,10 @@ class StorageDeviceTest {
 
     @Test
     fun theAppBridgeHasAFileStore() {
-        // library_verify needs the store and touches no network; without one it is storage.not_configured
-        val reply = runBlocking { app.bridge.call("library_verify", JSONObject()) }
+        // still storage.not_configured without a store; no ids, so the user's items are never checked or marked missing
+        val reply = runBlocking { app.bridge.call("library_verify", JSONObject().put("item_ids", JSONArray())) }
         assertTrue("library_verify: $reply", reply is BridgeResult.Ok)
+        assertEquals(0, (reply as BridgeResult.Ok).data.getJSONArray("results").length())
     }
 
     @Test
