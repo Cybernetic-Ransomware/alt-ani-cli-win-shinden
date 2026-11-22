@@ -71,7 +71,13 @@ class BackgroundRunTest {
         activity = ActivityScenario.launch(MainActivity::class.java)
         assertEquals(RequestResult.Launched, requestControlled())
         awaitStage(RunState.Stage.ACTIVE)
-        if (held) awaitHeld(runtimes.library(name))
+        if (held) {
+            try {
+                awaitHeld(runtimes.library(name), HELD_TIMEOUT_MS)
+            } catch (e: IllegalStateException) {
+                throw IllegalStateException("${e.message}; session=${app.offlineRun.state.value} executor=${executorState(runtime)}", e)
+            }
+        }
         return Started(runtime, name, jobIds)
     }
 
@@ -286,5 +292,10 @@ class BackgroundRunTest {
         assumeTrue("offline downloads need API 30; this device has ${Build.VERSION.SDK_INT}", Build.VERSION.SDK_INT < 30)
         assertEquals(RequestResult.Unsupported, requestControlled())
         assertEquals(false, PlatformLauncher(app).isActive())
+    }
+
+    private companion object {
+        /** The first test after a cold boot also waits for the engine's first start. */
+        const val HELD_TIMEOUT_MS = 60_000L
     }
 }

@@ -364,6 +364,47 @@ class OfflineRunTest {
         }
     }
 
+    /** Real threads: a restart attaches while the system stop is held at its log line, after the host was detached. */
+    @Test
+    fun `a restart right after a system stop detached the host waits for that stop`() = runBlocking {
+        val pool = Executors.newFixedThreadPool(4)
+        val scope = CoroutineScope(SupervisorJob() + pool.asCoroutineDispatcher())
+        val inStop = CountDownLatch(1)
+        val restarted = CountDownLatch(1)
+        try {
+            val backend = RunBackend(ExecutorControl(scope, engine::call), EventsPump(engine::call, scope), engine::call)
+            val run = OfflineRun(
+                scope = scope,
+                launcher = FakeLauncher(RunPath.USER_INITIATED_JOB),
+                backends = { backend },
+                attention = attention,
+                clock = { System.nanoTime() / 1_000_000 },
+                wallClock = { 1_800_000_000_000L },
+                log = {
+                    if (it.startsWith("system stop")) {
+                        inStop.countDown()
+                        restarted.await(1, TimeUnit.SECONDS)
+                    }
+                },
+            )
+            engine.jobs = listOf(job("running", done = 1, total = 10))
+            val first = run.attach(FakeHost(RunPath.USER_INITIATED_JOB), RunTarget.APP, System.nanoTime() / 1_000_000, NetworkScope.WIFI)
+            awaitState(run) { it.stage == RunState.Stage.ACTIVE }
+            engine.onStart = { restarted.countDown() }
+            val stop = scope.async { run.onSystemStop(first, SystemStop.CONNECTIVITY) }
+            assertTrue(inStop.await(5, TimeUnit.SECONDS))
+            val second = run.attach(FakeHost(RunPath.USER_INITIATED_JOB), RunTarget.APP, System.nanoTime() / 1_000_000, NetworkScope.WIFI)
+            assertTrue(second > first)
+            assertTrue(stop.await())
+            awaitState(run) { it.generation == second && it.stage == RunState.Stage.ACTIVE }
+            assertEquals(listOf("executor_start", "executor_stop", "executor_start"), engine.executorCalls)
+        } finally {
+            restarted.countDown()
+            scope.cancel()
+            pool.shutdownNow()
+        }
+    }
+
     private suspend fun awaitState(run: OfflineRun, until: (RunState) -> Boolean) =
         withTimeout(10_000) { while (!until(run.state.value)) delay(10) }
 

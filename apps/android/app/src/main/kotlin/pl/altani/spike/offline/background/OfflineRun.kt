@@ -132,31 +132,40 @@ class OfflineRun(
                 log("attach rejected: target=$target current=${current?.generation}")
                 return REJECTED
             }
-            Session(++generation, target, backend, host, initiatedAtMs, networkScope, lastDrain).also { session = it }
+            Session(++generation, target, backend, host, initiatedAtMs, networkScope, lastDrain).also {
+                session = it
+                // created under the lock, so a stop arriving right after it still finds the observer to cancel
+                it.observer = scope.launch(start = CoroutineStart.LAZY) { run(it) }
+                publish(it, RunState.Stage.STARTING)
+            }
         }
-        publish(created, RunState.Stage.STARTING)
-        // lazy, so a drain that starts at once still finds the observer to cancel
-        created.observer = scope.launch(start = CoroutineStart.LAZY) { run(created) }.also { it.start() }
+        created.observer?.start()
         return created.generation
     }
 
     /** `onStopJob`: the host is never finished by us after this; returns whether JobScheduler may restart the job. */
     fun onSystemStop(generation: Long, reason: SystemStop): Boolean {
-        val s = detach(generation) ?: return false
-        val allowed = reason != SystemStop.USER &&
-            RunPolicy.withinWindow(s.initiatedAtMs, clock()) &&
-            s.scheduledScope.coveredBy(s.desiredScope) &&
-            (!s.draining.get() || s.drainReschedule)
+        val (allowed, drain) = synchronized(lock) {
+            val s = detach(generation) ?: return false
+            val allowed = reason != SystemStop.USER &&
+                RunPolicy.withinWindow(s.initiatedAtMs, clock()) &&
+                s.scheduledScope.coveredBy(s.desiredScope) &&
+                (!s.draining.get() || s.drainReschedule)
+            allowed to reserveDrain(s, reschedule = false, reason = null)
+        }
         log("system stop gen=$generation reason=$reason reschedule=$allowed")
-        beginDrain(s, reschedule = false, reason = null)
+        drain?.start()
         return allowed
     }
 
     /** The component ended on its own terms (FGS timeout or destroy): same as a system stop, without a restart. */
     fun onHostGone(generation: Long) {
-        val s = detach(generation) ?: return
+        val drain = synchronized(lock) {
+            val s = detach(generation) ?: return
+            reserveDrain(s, reschedule = false, reason = null)
+        }
         log("host gone gen=$generation")
-        beginDrain(s, reschedule = false, reason = null)
+        drain?.start()
     }
 
     /** The notification's Stop: jobs go back to `queued` through `executor.shutdown`, no retry spent. */
@@ -166,10 +175,9 @@ class OfflineRun(
         beginDrain(s, reschedule = false, reason = null)
     }
 
+    /** Under [lock] with the drain's reservation: a host detached without it would let [attach] miss that drain. */
     private fun detach(generation: Long): Session? =
-        synchronized(lock) {
-            session?.takeIf { it.generation == generation && it.hostAttached }?.also { it.hostAttached = false }
-        }
+        session?.takeIf { it.generation == generation && it.hostAttached }?.also { it.hostAttached = false }
 
     private suspend fun run(s: Session) {
         attention.clear()
@@ -310,13 +318,17 @@ class OfflineRun(
     }
 
     private fun beginDrain(s: Session, reschedule: Boolean, reason: AttentionReason?, stopExecutor: Boolean = true) {
-        if (!s.draining.compareAndSet(false, true)) return
+        synchronized(lock) { reserveDrain(s, reschedule, reason, stopExecutor) }?.start()
+    }
+
+    /** Under [lock]: becomes [lastDrain] before any [attach] can see the session gone; the caller starts it. */
+    private fun reserveDrain(s: Session, reschedule: Boolean, reason: AttentionReason?, stopExecutor: Boolean = true): Job? {
+        if (!s.draining.compareAndSet(false, true)) return null
         s.drainReschedule = reschedule
         publish(s, RunState.Stage.DRAINING)
-        val observer = s.observer
-        val drain = scope.launch(start = CoroutineStart.LAZY) {
+        return scope.launch(start = CoroutineStart.LAZY) {
             // never joined: the observer may be the caller, and an unfinished read changes nothing
-            observer?.cancel()
+            s.observer?.cancel()
             withHost(s) { it.setWorking(false) }
             awaitPrevious(s)
             val ended = !stopExecutor || stopExecutor(s.backend)
@@ -335,9 +347,7 @@ class OfflineRun(
             val end = "gen=${s.generation} executor_ended=$ended host_finished=${host != null} reschedule=$reschedule"
             log("session closed $end")
             setState(s) { RunState(generation = s.generation, lastEnd = end) }
-        }
-        synchronized(lock) { lastDrain = drain }
-        drain.start()
+        }.also { lastDrain = it }
     }
 
     /** Under [lock], so a host the system already stopped never gets a late notification or wake lock. */

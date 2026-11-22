@@ -47,8 +47,9 @@ from Android 16, the job quota on top.
   lock for it. Only the newest generation writes `RunState`.
 - **Order across sessions.** The system may start the next component before the last drain ended (`onStartJob` right
   after `onStopJob`). The new host attaches at once, but its `executor_start` waits for every `executor_stop` of the
-  previous drain, so an old stop attempt never lands on the new executor. No callback waits: the ordering lives in the
-  coordinator's coroutines.
+  previous drain, so an old stop attempt never lands on the new executor. Detaching a host and reserving its drain
+  happen under one lock, so no `attach` sees a session gone without its drain. No callback waits: the ordering lives in
+  the coordinator's coroutines.
 - **Stopping.** `executor_stop(10 s)` up to six times; `ended: false` keeps the component. After that the component ends
   and ownership stays with the engine until its I/O ends; a frozen or killed process releases the lock only through the
   OS, and recovery settles the rest. The notification's Stop sends the generation to a receiver that only hands it on
