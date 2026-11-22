@@ -1,0 +1,74 @@
+name: Android wheels
+
+# Wheels no index publishes (apps/android/wheels/README.md); the push trigger exists because dispatch needs the default branch.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/android-wheels.yml
+
+permissions:
+  contents: read
+
+jobs:
+  cffi:
+    name: cffi (cp314, android arm64)
+    runs-on: ubuntu-24.04
+    env:
+      CFFI_VERSION: "2.1.1"
+      CFFI_SHA256: dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be
+      # static libffi from the dependency builds CPython's own Android release uses
+      LIBFFI_VERSION: "3.4.4-3"
+      LIBFFI_SHA256: 9f2c0255ce025c177d44db16174ad5158c7560efe3c7ef0c8c0c64b2196e6a9d
+      CIBUILDWHEEL_VERSION: "4.3.5"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Fetch and verify sources
+        run: |
+          set -euo pipefail
+          curl -fsSL -o cffi.tar.gz "https://files.pythonhosted.org/packages/source/c/cffi/cffi-${CFFI_VERSION}.tar.gz"
+          echo "${CFFI_SHA256}  cffi.tar.gz" | sha256sum -c -
+          curl -fsSL -o libffi.tar.gz \
+            "https://github.com/beeware/cpython-android-source-deps/releases/download/libffi-${LIBFFI_VERSION}/libffi-${LIBFFI_VERSION}-aarch64-linux-android.tar.gz"
+          echo "${LIBFFI_SHA256}  libffi.tar.gz" | sha256sum -c -
+          mkdir cffi libffi
+          tar xzf cffi.tar.gz --strip-components=1 -C cffi
+          tar xzf libffi.tar.gz -C libffi
+          # cibuildwheel replaces CFLAGS, LDFLAGS and pkg-config paths for Android, so the paths go through
+          # setuptools' build_ext options; only libffi.a is shipped, so cffi links it statically
+          printf '\n[build_ext]\ninclude_dirs = %s\nlibrary_dirs = %s\n' "${PWD}/libffi/include" "${PWD}/libffi/lib" >> cffi/setup.cfg
+          cat cffi/setup.cfg
+
+      - name: Install cibuildwheel
+        run: python -m pip install "cibuildwheel==${CIBUILDWHEEL_VERSION}"
+
+      - name: Build
+        env:
+          CIBW_PLATFORM: android
+          CIBW_BUILD: cp314-android_arm64_v8a
+          CIBW_ARCHS_ANDROID: arm64_v8a
+          CIBW_BUILD_FRONTEND: build
+          # an arm64 wheel cannot be tested on an x86_64 runner; the app's device run is the test
+          CIBW_TEST_SKIP: "*"
+          CIBW_BUILD_VERBOSITY: 1
+        run: python -m cibuildwheel cffi --output-dir wheelhouse
+
+      - name: Check 16 KB alignment
+        run: python tools/android/check_native_libs.py wheelhouse/*.whl
+
+      - name: Checksums
+        run: |
+          cd wheelhouse
+          sha256sum *.whl | tee SHA256SUMS
+          echo "run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >> SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-wheels-cffi-${{ env.CFFI_VERSION }}
+          path: wheelhouse/
+          if-no-files-found: error

@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>testfilecode.mp4</title>
+<link rel="stylesheet" href="/css/plyr.css">
+<script type="text/javascript" src="/js/plyr.polyfilled.js"></script>
+</head>
+<body>
+<div class="plyr-container">
+<video crossorigin="anonymous" id="mainvideo" playsinline poster="https://cdn.example/thumbs/testfilecode.jpg"></video>
+</div>
+<div id="robotlink" style="display:none;">/streamtape.example/get_video?id=testfilecode&expires=1600000000&ip=DECOYIP&token=decoytoken</div>
+<script>
+document.getElementById('robotlink').innerHTML = '//streamtape.example/get_video?id=testfilecode&expires=1700000000' + '&ip=TESTIP0000&token=testtoken0000';
+</script>
+</body>
+</html>

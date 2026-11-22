@@ -1,0 +1,238 @@
+package pl.altani.spike.bridge
+
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import pl.altani.spike.bridge.FakeBridge.Companion.awaitOrFail
+
+class BridgeRuntimeTest {
+    private val bridge = FakeBridge()
+
+    private fun runtime(callThreads: Int = 2) =
+        BridgeRuntime(
+            endpointFactory = { bridge },
+            engineArgs = { JSONObject().put("cache_dir", "cache").put("history_path", "state.db") },
+            callThreads = callThreads,
+        )
+
+    private fun test(body: suspend CoroutineScope.() -> Unit) = runBlocking { withTimeout(15_000) { body() } }
+
+    @Test
+    fun `concurrent first calls create one engine and carry its id`() = test {
+        val runtime = runtime()
+        val replies = (1..20).map { async(Dispatchers.Default) { runtime.call("bridge_info") } }.awaitAll()
+
+        assertTrue(replies.all { it is BridgeResult.Ok })
+        assertEquals(1, bridge.engines.get())
+        assertEquals(1, runtime.engineCreations)
+        assertTrue(bridge.payloads.all { it.getString("engine_id") == "engine-1" })
+        assertTrue(runtime.shutdown(5_000).ended)
+    }
+
+    @Test
+    fun `a failed engine creation is reported and retried by the next call`() = test {
+        var first = true
+        bridge.createEngineReply = {
+            if (first) {
+                first = false
+                FakeBridge.failure("storage.unavailable", "storage")
+            } else {
+                FakeBridge.ok(JSONObject().put("engine_id", "engine-1"))
+            }
+        }
+        val runtime = runtime()
+
+        assertEquals("storage.unavailable", (runtime.call("bridge_info") as BridgeResult.Failure).code)
+        assertTrue(runtime.call("bridge_info") is BridgeResult.Ok)
+        assertEquals(1, runtime.engineCreations)
+    }
+
+    @Test
+    fun `the storage argument the endpoint factory registers reaches create_engine, a retry reuses it`() = test {
+        // the AltAniApplication pattern: the factory registers the store, engineArgs reads what it left
+        var storageArg: JSONObject? = null
+        var registrations = 0
+        var first = true
+        bridge.createEngineReply = {
+            if (first) {
+                first = false
+                FakeBridge.failure("history.unavailable", "storage")
+            } else {
+                FakeBridge.ok(JSONObject().put("engine_id", "engine-1"))
+            }
+        }
+        val runtime = BridgeRuntime(
+            endpointFactory = {
+                registrations += 1
+                storageArg = JSONObject().put("kind", "platform").put("handle", "handle-$registrations")
+                bridge
+            },
+            engineArgs = { JSONObject().put("history_path", "state.db").put("storage", storageArg) },
+        )
+
+        assertTrue(runtime.call("bridge_info") is BridgeResult.Failure)
+        assertTrue(runtime.call("bridge_info") is BridgeResult.Ok)
+
+        // the endpoint is kept after a failed create_engine, so its store is registered once and offered again
+        val handles = bridge.enginePayloads.map { it.getJSONObject("storage").getString("handle") }
+        assertEquals(listOf("handle-1", "handle-1"), handles)
+        assertEquals(1, registrations)
+        assertTrue(bridge.enginePayloads.all { it.getJSONObject("storage").getString("kind") == "platform" })
+    }
+
+    @Test
+    fun `shutdown ends a cooperating operation and releases the runtime`() = test {
+        val entered = CountDownLatch(1)
+        bridge.handler = { _, cancelled ->
+            entered.countDown()
+            if (cancelled.await(30, TimeUnit.SECONDS)) FakeBridge.CANCELLED else FakeBridge.ok()
+        }
+        val runtime = runtime()
+        val poll = async(Dispatchers.Default) { runtime.call("events_next") }
+        entered.awaitOrFail("poll running")
+
+        val report = runtime.shutdown(5_000)
+
+        assertTrue(report.ended)
+        assertTrue(runtime.released)
+        assertTrue(poll.await().isCancelled)
+        assertEquals(BridgeRuntime.CLOSED, runtime.call("bridge_info"))
+    }
+
+    @Test
+    fun `shutdown with stuck I O keeps every resource until the operation returns`() = test {
+        val entered = CountDownLatch(1)
+        val unstick = CountDownLatch(1)
+        bridge.handler = { _, _ ->
+            entered.countDown()
+            // ignores the cancel, like a socket read with no timeout
+            unstick.await()
+            FakeBridge.ok()
+        }
+        val runtime = runtime()
+        val stuck = async(Dispatchers.Default) { runtime.call("library_export", mutation = true) }
+        entered.awaitOrFail("stuck call")
+
+        val started = System.nanoTime()
+        val first = runtime.shutdown(300)
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+
+        assertFalse(first.ended)
+        assertTrue("answered within timeout + 1 s, took $elapsedMs ms", elapsedMs < 1_300)
+        assertFalse(runtime.released)
+        assertEquals(1, first.activeCalls)
+        assertEquals("no new calls while closing", BridgeRuntime.CLOSED, runtime.call("bridge_info"))
+
+        unstick.countDown()
+        assertTrue(stuck.await() is BridgeResult.Ok)
+        val second = runtime.shutdown(5_000)
+
+        assertTrue(second.ended)
+        assertTrue(runtime.released)
+        assertEquals(0, second.activeCalls)
+        assertTrue("repeatable once released", runtime.shutdown(5_000).ended)
+        assertEquals(2, bridge.shutdowns.get())
+    }
+
+    @Test
+    fun `shutdown during a blocked endpoint factory waits for it and no engine is made afterwards`() = test {
+        val entered = CountDownLatch(1)
+        val unblock = CountDownLatch(1)
+        val runtime = BridgeRuntime(
+            endpointFactory = {
+                entered.countDown()
+                // a Python start-up that no coroutine cancel interrupts
+                unblock.await()
+                bridge
+            },
+            engineArgs = { JSONObject() },
+        )
+        val first = async(Dispatchers.Default) { runtime.call("bridge_info") }
+        entered.awaitOrFail("factory running")
+
+        val report = runtime.shutdown(300)
+
+        assertFalse("the factory still runs", report.ended)
+        assertEquals("engine_starting", (report.bridge as BridgeResult.Failure).code)
+        assertFalse(runtime.released)
+        unblock.countDown()
+        assertEquals(BridgeRuntime.CLOSED, first.await())
+        assertEquals(0, bridge.engines.get())
+        val second = runtime.shutdown(5_000)
+        assertTrue(second.ended)
+        assertTrue(runtime.released)
+    }
+
+    @Test
+    fun `shutdown during engine creation waits for it and then closes the engine`() = test {
+        val entered = CountDownLatch(1)
+        val unblock = CountDownLatch(1)
+        bridge.createEngineReply = {
+            entered.countDown()
+            unblock.await()
+            FakeBridge.ok(JSONObject().put("engine_id", "engine-1"))
+        }
+        val runtime = runtime()
+        val first = async(Dispatchers.Default) { runtime.call("bridge_info") }
+        entered.awaitOrFail("engine creation running")
+
+        val closing = async(Dispatchers.Default) { runtime.shutdown(5_000) }
+        assertFalse(closing.isCompleted)
+        unblock.countDown()
+
+        assertTrue(closing.await().ended)
+        assertEquals("the bridge closed the engine made meanwhile", 1, bridge.shutdowns.get())
+        assertEquals(1, bridge.engines.get())
+        assertTrue(runtime.released)
+        first.await()
+    }
+
+    @Test
+    fun `the long poll runs on its own thread while every call thread is busy`() = test {
+        val slowEntered = CountDownLatch(1)
+        val releaseSlow = CountDownLatch(1)
+        val pollEntered = CountDownLatch(1)
+        var pollThread = ""
+        bridge.handler = { method, cancelled ->
+            when (method) {
+                "slow" -> {
+                    slowEntered.countDown()
+                    releaseSlow.await()
+                    FakeBridge.ok()
+                }
+                "events_head" -> FakeBridge.ok(JSONObject().put("epoch", "e").put("seq", 1))
+                else -> {
+                    pollThread = Thread.currentThread().name
+                    pollEntered.countDown()
+                    if (cancelled.await(30, TimeUnit.SECONDS)) FakeBridge.CANCELLED else FakeBridge.ok()
+                }
+            }
+        }
+        val runtime = runtime(callThreads = 1)
+        val slow = async(Dispatchers.Default) { runtime.call("slow") }
+        slowEntered.awaitOrFail("call thread taken")
+
+        runtime.events.start()
+        pollEntered.awaitOrFail("poll despite a busy pool")
+        assertTrue(pollThread, pollThread.startsWith("bridge-events"))
+
+        runtime.events.stop()
+        bridge.cancelSeen.awaitOrFail("poll cancelled")
+        runtime.tracker.active.first { it == 1 }
+        releaseSlow.countDown()
+        slow.await()
+        assertTrue(runtime.tracker.awaitIdle(5_000))
+        assertTrue(runtime.shutdown(5_000).ended)
+    }
+}

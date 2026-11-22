@@ -18,7 +18,8 @@ Python CLI for watching and downloading anime from [shinden.pl](https://shinden.
   ```powershell
   winget install mpv.net   # or: scoop install mpv
   ```
-- [ffmpeg](https://ffmpeg.org/) (optional) — enables HLS merging during downloads
+- [ffmpeg](https://ffmpeg.org/) (optional) — yt-dlp downloads HLS natively; when ffmpeg is available it remuxes
+  the result into a proper MP4. Without it, an HLS download stays an MPEG-TS stream despite the `.mp4` extension.
   ```powershell
   winget install ffmpeg    # or: scoop install ffmpeg
   ```
@@ -59,6 +60,10 @@ cd alt-ani-cli-win-shinden
 uv sync --no-group dev
 ```
 
+`uv sync` installs `alt-ani-cli` into the project's `.venv`, not onto `PATH`. Run it from the repository with
+`uv run alt-ani-cli …`, or activate the environment first (`.venv\Scripts\Activate.ps1`) to type `alt-ani-cli`
+directly as in the examples below.
+
 ## Usage
 
 ```
@@ -73,12 +78,12 @@ Run without arguments for an interactive wizard (search → select series → pi
 |------|-------------|
 | `QUERY` | Title to search on shinden.pl |
 | `--url URL` | Skip search — use a direct series URL |
-| `-c`, `--continue` | Resume from watch history |
+| `-c`, `--continue` | Resume from watch history (with `-d`: resume from download history — first episode not yet downloaded) |
 | `-d`, `--download` | Download instead of playing |
-| `-D`, `--delete-history` | Clear watch history and exit |
-| `-e RANGE` | Episode number or range: `5`, `1-5`, `-1` (last), `1 5 7` |
-| `-q QUALITY` | Quality: `best`, `worst`, `1080p`, `720p` … (default: interactive menu) |
-| `-S N` | Auto-select N-th search result (1-based, skips menus) |
+| `-D`, `--delete-history` | Clear watch and download history and exit |
+| `-e`, `--episode RANGE` | Episode number or range: `5`, `1-5`, `-1` (last), `"1 5 7"` (quote a list, or its numbers after the first are read as the query) |
+| `-q`, `--quality QUALITY` | Quality: `best`, `worst`, `1080p`, `720p` … (default: interactive menu; `best` with `-S` or when stdin is not a terminal) |
+| `-S`, `--select-nth N` | Auto-select N-th search result (1-based, skips menus) |
 | `-v`, `--vlc` | Use VLC instead of mpv |
 | `--no-detach` | Run player in foreground (blocks terminal) |
 | `--debug` | Print stream URLs, do not launch player |
@@ -89,6 +94,7 @@ Run without arguments for an interactive wizard (search → select series → pi
 | `--show-sources` | Interactive mode only — resolve and show each player's real host in the picker (slow: ~7 s per player due to antibot delay) |
 | `--cookies-file PATH` | Netscape cookies file (for age-gated content) |
 | `--cookies-browser NAME` | Extract cookies from browser (`chrome`, `firefox`, …) |
+| `-V`, `--version` | Print the version and exit |
 
 ### Examples
 
@@ -110,6 +116,9 @@ alt-ani-cli -d -e 1-3 -q 720p --url https://shinden.pl/series/65137-fate-strange
 
 # Resume from history
 alt-ani-cli -c
+
+# Download the next missing episode of the most recently downloaded series
+alt-ani-cli -c -d
 
 # Polish dub only
 alt-ani-cli --lang pl vinland saga
@@ -142,16 +151,41 @@ Failed players are marked with `✗` and can be retried interactively.
 | Variable | Description |
 |----------|-------------|
 | `ALT_ANI_CLI_FLARESOLVERR_URL` | FlareSolverr URL for Cloudflare bypass (e.g. `http://localhost:8191`) |
-| `ANI_CLI_PLAYER` | Full path to mpv/mpvnet executable |
+| `ANI_CLI_PLAYER` | Full path to the player executable: mpv/mpv.net, or VLC when `-v` is used |
 | `ALT_ANI_CLI_ANTIBOT_DELAY` | Seconds to wait between API calls (default: `5.0`) |
+| `ALT_ANI_CLI_XHR_BACKEND` | Player API backend: `new` (shinden.pl/xhr with the episode page token, default) or `api4` (legacy guest endpoint) |
 
 ## Downloads
 
 Files are saved to `%USERPROFILE%\Videos\alt-ani-cli\` by default.
 
+## History
+
+Watch and download history is kept in a local SQLite file, `history.db`, in the application's data directory.
+A `history.json` written by an earlier version is imported once on the first start: the JSON file is only read,
+a `history.json.pre-sqlite.bak` copy is placed next to it, and entries that cannot be read are skipped.
+`-D` clears the history without bringing the old file back. Details are in
+[ADR-0002](docs/adr/0002-core-cli-split.md#history-migration).
+
+The same file also holds state prepared for the Android client (watch progress, a download queue and an offline
+library; [ADR-0004](docs/adr/0004-local-state-model.md)). `-D` does not remove it. When a database from version
+0.3.x is upgraded, a verified copy `history.db.schema-1.<time>.bak` is written next to it first; an older version
+refuses the upgraded file, and restoring that copy is the way back.
+
 ## Development
 
 For branching, integration, and release rules, see [ADR-0001](docs/adr/0001-branching-and-release-flow.md).
+
+### Project layout
+
+A uv workspace; architecture and layer rules are described in [ADR-0002](docs/adr/0002-core-cli-split.md).
+
+| Path | What it is |
+|------|------------|
+| `packages/core` | `alt-ani-core` — the engine: Shinden integration, extractors, downloads, history. No terminal, no desktop paths |
+| `apps/cli` | `alt-ani-cli-win` — this CLI: arguments, menus, mpv/VLC, paths, Polish texts |
+| `apps/android` | Android app (Catalog tab: search → episode → Media3 playback on the engine; Tech tab: diagnostics) and `alt_ani_bridge`, a JSON facade over the engine ([ADR-0003](docs/adr/0003-android-feasibility.md)); not built or tested by CI |
+| `tests` | One Python suite for the workspace, including `tests/architecture` (layer rules) and `tests/bridge`; the Android Kotlin tests are run with Gradle ([apps/android/README.md](apps/android/README.md)) |
 
 One-time setup:
 
@@ -164,21 +198,18 @@ Day-to-day with [just](https://github.com/casey/just):
 
 ```powershell
 just test           # run tests
-just lint           # ruff check, ty, codespell, bandit
-just format         # apply ruff formatting to src/
+just lint           # ruff check + format check, ty, import contracts, codespell, bandit
+just format         # apply ruff formatting
+just package        # build both wheels and check them in clean virtual environments
 just replay-failures "PATH_TO_LOG"  # replay resolve_result failures from a diagnostics session log
 ```
 
 ## Supported video hosts
 
-Native extractors: mp4upload, streamtape, dood, Lycoris Cafe, Vidara/Viewdara, Uqload, Flyf,
-streamwish/filemoon/morencius family (JWPlayer), CDA, sibnet, VK.
+Native extractors: mp4upload, streamtape, dood, Lycoris Cafe, Vidara/Viewdara, Playmate, Uqload, Flyf,
+streamwish/filemoon/morencius family (JWPlayer).
 
-**Playmate is currently broken.** The extractor exists (`extract/playmate.py`), but a live
-replay (see `tools/replay_failed_resolvers.py` below) confirmed the upstream protocol has
-changed: the current request now gets HTTP 403, and the additional request elements it needs
-have not been reverse-engineered yet. Playmate links fall back to yt-dlp, which also cannot
-resolve them.
+CDA, sibnet and VK go straight to yt-dlp, which supports them natively (CDA embed URLs are rewritten first).
 
 Lycoris Cafe embeds are resolved through the host API and expose the available direct qualities (`1080p`, `720p`, `480p`) plus `source-mkv` when the API provides it.
 
@@ -194,9 +225,11 @@ custom decrypting proxy — the host fails fast with a clear message instead of 
 
 ## Security notes
 
-**`GUEST_AUTH` token** — the value hardcoded in `config.py` is a public guest token issued by shinden.pl for unauthenticated API access.
+**`GUEST_AUTH` token** — the value hardcoded in `alt_ani_core/config.py` is a public guest token issued by shinden.pl for unauthenticated API access.
 
 It encodes the literal string `_guest_:0,5,21000000,255,4174293644` in Base64. Any visitor to shinden.pl receives the same token, so it is safe to commit and share openly.
+
+**Episode page token** — the default player API uses the short-lived token each episode page carries. It is kept in memory for that episode only and is never written to history, caches or the diagnostics log.
 
 ## Developer tools
 
@@ -204,14 +237,11 @@ Scripts in `tools/` are used during development to inspect the shinden.pl API. T
 
 | Script | Purpose |
 |--------|---------|
-| `tools/spike_curl_cffi.py` | Verifies the Cloudflare bypass chain: curl_cffi TLS → FlareSolverr |
 | `tools/debug_embed.py <url>` | Scans a player JS bundle for CDN domains and HLS/token patterns — used to reverse-engineer new embed hosts |
-| `tools/dump_search_html.py [query]` | Dumps parsed search result rows from shinden.pl — used to debug the search HTML parser |
 | `tools/replay_failed_resolvers.py <log>` | Replays `resolve_result ok=False` entries from a diagnostics session log against live hosts, showing a BEFORE/NOW comparison per case — also available as `just replay-failures <log>` |
+| `tools/check_packaging.py` | Builds both wheels and checks entry points, packaged content and a terminal-free engine in clean virtual environments — also `just package` |
 
 ```powershell
-uv run python tools/spike_curl_cffi.py
-uv run python tools/dump_search_html.py "soul eater"
 uv run python tools/debug_embed.py https://example-embed-host.com/e/abc123
 just replay-failures "$env:LOCALAPPDATA\alt-ani-cli\alt-ani-cli\Cache\diagnostics\session_20260919_232825_752907.log"
 ```
