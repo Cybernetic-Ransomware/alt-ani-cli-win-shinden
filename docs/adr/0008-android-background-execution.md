@@ -37,13 +37,18 @@ from Android 16, the job quota on top.
   job finishes with `reschedule` while inside the restart window and the scope still holds. Only waits for the user →
   30 s to settle, then the session ends with one "needs your action" notification. Nothing left → it ends at once.
 - **Starts.** `OfflineRun.request()` from the visible UI is the only way to begin a session (the debug screen now, the
-  queue screen in #53). Opening the app reads state and starts nothing. A UIDT job may be restarted by `JobScheduler`
+  queue screen in #53); concurrent calls share one check, read and launch. Opening the app reads state and starts nothing. A UIDT job may be restarted by `JobScheduler`
   within 24 h of the user's decision (`initiated_at`, `elapsedRealtime`, in the job's extras), checked in `attach`
   before `executor_start`; the window never cuts short a session that runs. Stopped by the user in the Task Manager,
   force-stopped or rebooted: no restart of ours.
 - **Generations.** Every session has a generation; `onStopJob`, a service timeout or destroy, and the notification's
   Stop carry it, and a stale one is ignored. After a system stop the host is detached: the drain still stops the
-  executor but never calls `jobFinished`, posts a notification or touches a wake lock for it.
+  executor but never calls `jobFinished`, posts a notification (the session's or "needs your action") or touches a wake
+  lock for it. Only the newest generation writes `RunState`.
+- **Order across sessions.** The system may start the next component before the last drain ended (`onStartJob` right
+  after `onStopJob`). The new host attaches at once, but its `executor_start` waits for every `executor_stop` of the
+  previous drain, so an old stop attempt never lands on the new executor. No callback waits: the ordering lives in the
+  coordinator's coroutines.
 - **Stopping.** `executor_stop(10 s)` up to six times; `ended: false` keeps the component. After that the component ends
   and ownership stays with the engine until its I/O ends; a frozen or killed process releases the lock only through the
   OS, and recovery settles the rest. The notification's Stop sends the generation to a receiver that only hands it on
@@ -69,6 +74,7 @@ Harder: a UIDT restart after a lost network depends on `JobScheduler` and has no
 resumes after a session ended until the user asks; a frozen process still `closing` holds the database lock until it
 thaws or dies; vendors that kill background processes (MIUI) can end a service early, which recovery absorbs but cannot
 prevent. The service path's `onTimeout` is defensive only: it runs below API 34, where `dataSync` has no time limit.
-Verified so far by the JVM suite and on one API 37 emulator (UIDT path, `BackgroundRunTest` and `background_kill.py`).
+Verified so far by the JVM suite and on one API 37 emulator (UIDT path, `BackgroundRunTest` and `background_kill.py`,
+which fails unless its own kill -9 ended the process `arm` reported).
 The service path (API 30–33), the Mi 10T Lite and Android 15/16 images are not yet verified (see
 [background-execution-checks](../android/background-execution-checks.md)).

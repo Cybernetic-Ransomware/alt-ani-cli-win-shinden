@@ -38,6 +38,7 @@ class PlatformLauncher(private val context: Context) : RunLauncher {
                         }
                     }
                     ContextCompat.startForegroundService(context, intent)
+                    TransferService.running = true
                     true
                 }
                 null -> false

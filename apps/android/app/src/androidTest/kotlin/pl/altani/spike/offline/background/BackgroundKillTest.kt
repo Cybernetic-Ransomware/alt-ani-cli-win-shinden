@@ -4,10 +4,12 @@ import androidx.media3.common.util.UnstableApi
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import android.os.Process
 import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
@@ -22,7 +24,7 @@ import pl.altani.spike.offline.heldScenario
 import pl.altani.spike.playback.mediaRequests
 import pl.altani.spike.playback.requireControlledServer
 
-/** Driven by `tools/android/background_kill.py`; a kill inside `finalizing` is the core recovery tests' job. */
+/** Driven by `tools/android/background_kill.py`, which kills `arm`'s process; a kill inside `finalizing` is the core's job. */
 @UnstableApi
 @RunWith(AndroidJUnit4::class)
 class BackgroundKillTest {
@@ -31,6 +33,7 @@ class BackgroundKillTest {
 
     private val phase = InstrumentationRegistry.getArguments().getString("backgroundKill")
     private val marker get() = File(app.filesDir, "background-kill-job")
+    private val armed get() = File(app.filesDir, "background-kill-armed")
 
     @Before
     fun setUp() = requireControlledServer()
@@ -48,7 +51,10 @@ class BackgroundKillTest {
         assertEquals(RequestResult.Launched, requestControlled())
         awaitStage(RunState.Stage.ACTIVE)
         awaitHeld(File(ControlledEnvironment.directory(app, "app"), AppStorage.LIBRARY_DIR))
-        // the process ends with the instrumentation or the script's kill -9; nothing here stops the session
+        // the script kills exactly this pid; returning would let the instrumentation end the process instead
+        armed.writeText(Process.myPid().toString())
+        Thread.sleep(ARM_HOLD_MS)
+        fail("the process was not killed within ${ARM_HOLD_MS / 1_000} s")
     }
 
     @Test
@@ -70,5 +76,10 @@ class BackgroundKillTest {
         assertTrue("appended without a checkpoint: $gets", gets.all { it.isNull("range") })
         assertOnePublishedCopy(runtime)
         marker.delete()
+        armed.delete()
+    }
+
+    private companion object {
+        const val ARM_HOLD_MS = 120_000L
     }
 }

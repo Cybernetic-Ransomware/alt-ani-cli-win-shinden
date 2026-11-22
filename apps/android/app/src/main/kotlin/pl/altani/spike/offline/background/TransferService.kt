@@ -84,8 +84,8 @@ class TransferService : Service() {
                 }
             }
 
-        /** Read by the launcher so a second request never starts a second session. */
+        /** Read by the launcher so a second request never starts a second session; set at launch, before `onCreate`. */
         @Volatile var running = false
-            private set
+            internal set
     }
 }

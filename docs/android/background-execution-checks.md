@@ -30,6 +30,10 @@ adb shell run-as pl.altani.spike cat files/offline-outcomes.jsonl
 | Nothing below API 30 | `belowApi30NothingIsLaunched` | API < 30 |
 | Kill -9 mid-transfer, recovery, one copy | `BackgroundKillTest` via `background_kill.py` | both |
 
+`background_kill.py` runs `arm` without waiting for it: `arm` holds a transfer, writes its pid to
+`files/background-kill-armed` and stays alive. The script fails unless that pid is alive before the kill, `run-as kill -9`
+exits 0, the pid is gone afterwards and `arm` did not pass on its own; only then does it run `verify`.
+
 Every check that ends a session also waits for the component to be gone (no session, no scheduled job or running
 service, no notification `52001`). A kill inside `finalizing` is covered by the core's recovery tests: the server can
 hold a response, not the moment the engine enters `finalizing`, so the device test does not claim it.

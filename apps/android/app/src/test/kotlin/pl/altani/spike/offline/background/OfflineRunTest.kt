@@ -1,7 +1,20 @@
 package pl.altani.spike.offline.background
 
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -17,27 +30,38 @@ import pl.altani.spike.bridge.EventsPump
 import pl.altani.spike.offline.ExecutorControl
 import pl.altani.spike.ui.FakeCalls
 
-/** A queue the test edits in place; executor replies are queued, `executor_stop` can be held. */
+/** A queue the test edits in place; executor replies are queued, `executor_start`, `executor_stop` and `queue_snapshot` can be held. */
 private class FakeEngine {
-    val methods = mutableListOf<String>()
-    var jobs: List<JSONObject> = emptyList()
+    val methods: MutableList<String> = Collections.synchronizedList(mutableListOf())
+    @Volatile var jobs: List<JSONObject> = emptyList()
     var network = "wifi_only"
     var failReads = false
+    var holdReads = false
+    val reads = Channel<Unit>(Channel.UNLIMITED)
     val starts = ArrayDeque<BridgeResult>()
-    var holdStops = false
+    @Volatile var holdStarts = false
+    val heldStarts = Channel<BridgeResult>(Channel.UNLIMITED)
+    @Volatile var onStart: () -> Unit = {}
+    @Volatile var holdStops = false
     val stops = Channel<BridgeResult>(Channel.UNLIMITED)
     val events = Channel<String>(Channel.UNLIMITED)
     private var seq = 1L
 
-    val executorCalls get() = methods.filter { it.startsWith("executor_") || it == "runtime_close" }
-    val reads get() = methods.count { it == "queue_snapshot" }
+    val executorCalls get() = synchronized(methods) { methods.filter { it.startsWith("executor_") || it == "runtime_close" } }
+    val snapshots get() = synchronized(methods) { methods.count { it == "queue_snapshot" } }
 
     suspend fun call(method: String, args: JSONObject): BridgeResult {
         methods += method
         return when (method) {
-            "executor_start" -> starts.removeFirstOrNull() ?: started
+            "executor_start" -> {
+                onStart()
+                if (holdStarts) heldStarts.receive() else starts.removeFirstOrNull() ?: started
+            }
             "executor_stop" -> if (holdStops) stops.receive() else stopped(ended = true)
-            "queue_snapshot" -> if (failReads) FakeCalls.failure("internal", "internal") else BridgeResult.Ok(snapshot(*jobs.toTypedArray()))
+            "queue_snapshot" -> {
+                if (holdReads) reads.receive()
+                if (failReads) FakeCalls.failure("internal", "internal") else BridgeResult.Ok(snapshot(*jobs.toTypedArray()))
+            }
             "preferences_get" -> BridgeResult.Ok(preferences(network))
             "events_head" -> BridgeResult.Ok(JSONObject().put("epoch", "e").put("seq", seq))
             "events_next" -> {
@@ -114,20 +138,17 @@ class OfflineRunTest {
     private inner class Harness(scope: TestScope, path: RunPath?) {
         val launcher = FakeLauncher(path)
         val host = FakeHost(path ?: RunPath.FOREGROUND_SERVICE)
+
+        // one control and one pump per runtime, as in the app: their single-flight covers every session
+        private val backend = RunBackend(
+            ExecutorControl(scope.backgroundScope, engine::call),
+            EventsPump(engine::call, scope.backgroundScope),
+            engine::call,
+        )
         val run = OfflineRun(
             scope = scope.backgroundScope,
             launcher = launcher,
-            backends = { target ->
-                if (target == RunTarget.APP) {
-                    RunBackend(
-                        ExecutorControl(scope.backgroundScope, engine::call),
-                        EventsPump(engine::call, scope.backgroundScope),
-                        engine::call,
-                    )
-                } else {
-                    null
-                }
-            },
+            backends = { target -> backend.takeIf { target == RunTarget.APP } },
             attention = attention,
             clock = { scope.testScheduler.currentTime },
             wallClock = { 1_800_000_000_000L },
@@ -154,6 +175,25 @@ class OfflineRunTest {
         assertEquals(RequestResult.AlreadyActive, h.run.request())
         assertEquals(listOf("executor_start"), engine.executorCalls)
         assertTrue(generation > 0)
+    }
+
+    @Test
+    fun `concurrent requests share one read and one launch`() = test { h ->
+        engine.jobs = listOf(job("queued"))
+        engine.holdReads = true
+        val results = List(3) { async { h.run.request() } }
+        runCurrent()
+        assertEquals(1, engine.snapshots)
+        engine.reads.send(Unit)
+        val outcomes = results.awaitAll()
+        assertEquals(1, h.launcher.launches.size)
+        assertEquals(1, outcomes.count { it == RequestResult.Launched })
+        assertEquals(2, outcomes.count { it == RequestResult.AlreadyActive })
+        assertEquals(1, engine.snapshots)
+
+        h.launcher.active = true
+        assertEquals(RequestResult.AlreadyActive, h.run.request())
+        assertEquals(1, h.launcher.launches.size)
     }
 
     @Test
@@ -250,6 +290,99 @@ class OfflineRunTest {
     }
 
     @Test
+    fun `a component restarted before the last drain ended starts its executor only after that stop`() =
+        test(RunPath.USER_INITIATED_JOB) { h ->
+            engine.jobs = listOf(job("running", done = 1, total = 10))
+            val first = h.attach()
+            runCurrent()
+            val shownBefore = h.host.shown.size
+            engine.holdStops = true
+            assertTrue(h.run.onSystemStop(first, SystemStop.CONNECTIVITY))
+            runCurrent()
+
+            val next = FakeHost(RunPath.USER_INITIATED_JOB)
+            val second = h.run.attach(next, RunTarget.APP, 0, NetworkScope.WIFI)
+            runCurrent()
+            assertTrue(second > first)
+            assertEquals(listOf("executor_start", "executor_stop"), engine.executorCalls)
+            assertEquals(RunState(generation = second, target = RunTarget.APP, stage = RunState.Stage.STARTING), h.run.state.value)
+
+            engine.stops.send(FakeEngine.stopped(ended = false, "job-1"))
+            runCurrent()
+            assertEquals(listOf("executor_start", "executor_stop", "executor_stop"), engine.executorCalls)
+            engine.holdStarts = true
+            engine.stops.send(FakeEngine.stopped(ended = true))
+            runCurrent()
+            assertEquals(listOf("executor_start", "executor_stop", "executor_stop", "executor_start"), engine.executorCalls)
+            // the old session closed meanwhile; its IDLE must not cover the new one
+            assertEquals(RunState(generation = second, target = RunTarget.APP, stage = RunState.Stage.STARTING), h.run.state.value)
+            engine.heldStarts.send(FakeEngine.started)
+            advanceTimeBy(5_000)
+            assertEquals(second, h.run.state.value.generation)
+            assertEquals(RunState.Stage.ACTIVE, h.run.state.value.stage)
+            assertEquals(1L, h.run.state.value.summary?.bytesDone)
+            assertEquals(emptyList<Boolean>(), h.host.finishes)
+            assertEquals(shownBefore, h.host.shown.size)
+            assertTrue(next.shown.all { it.first == second } && next.shown.isNotEmpty())
+            assertEquals(emptyList<AttentionReason>(), attention.posted)
+        }
+
+    /** Real threads: the old drain is held between two stop attempts, the only gap where a new start could slip in. */
+    @Test
+    fun `a restart cannot start the executor between the last drain's stop attempts`() = runBlocking {
+        val pool = Executors.newFixedThreadPool(4)
+        val scope = CoroutineScope(SupervisorJob() + pool.asCoroutineDispatcher())
+        val startedBetween = CountDownLatch(1)
+        try {
+            val backend = RunBackend(ExecutorControl(scope, engine::call), EventsPump(engine::call, scope), engine::call)
+            val run = OfflineRun(
+                scope = scope,
+                launcher = FakeLauncher(RunPath.USER_INITIATED_JOB),
+                backends = { backend },
+                attention = attention,
+                clock = { System.nanoTime() / 1_000_000 },
+                wallClock = { 1_800_000_000_000L },
+                log = { if (it.startsWith("executor still stopping")) startedBetween.await(1, TimeUnit.SECONDS) },
+            )
+            engine.jobs = listOf(job("running", done = 1, total = 10))
+            val first = run.attach(FakeHost(RunPath.USER_INITIATED_JOB), RunTarget.APP, System.nanoTime() / 1_000_000, NetworkScope.WIFI)
+            awaitState(run) { it.stage == RunState.Stage.ACTIVE }
+            engine.holdStops = true
+            engine.onStart = { startedBetween.countDown() }
+            assertTrue(run.onSystemStop(first, SystemStop.CONNECTIVITY))
+            val second = run.attach(FakeHost(RunPath.USER_INITIATED_JOB), RunTarget.APP, System.nanoTime() / 1_000_000, NetworkScope.WIFI)
+            awaitState(run) { engine.executorCalls.size == 2 }
+            engine.stops.send(FakeEngine.stopped(ended = false, "job-1"))
+            awaitState(run) { engine.executorCalls.size == 3 }
+            engine.stops.send(FakeEngine.stopped(ended = true))
+            awaitState(run) { it.generation == second && it.stage == RunState.Stage.ACTIVE }
+            assertEquals(listOf("executor_start", "executor_stop", "executor_stop", "executor_start"), engine.executorCalls)
+        } finally {
+            startedBetween.countDown()
+            scope.cancel()
+            pool.shutdownNow()
+        }
+    }
+
+    private suspend fun awaitState(run: OfflineRun, until: (RunState) -> Boolean) =
+        withTimeout(10_000) { while (!until(run.state.value)) delay(10) }
+
+    @Test
+    fun `a session the system took away while it drained posts no late notice`() = test(RunPath.USER_INITIATED_JOB) { h ->
+        engine.jobs = listOf(job("waiting", "source_decision"))
+        val generation = h.attach()
+        engine.holdStops = true
+        advanceTimeBy(RunPolicy.SETTLE_MS + 5_000)
+        assertEquals(RunState.Stage.DRAINING, h.run.state.value.stage)
+        assertFalse(h.run.onSystemStop(generation, SystemStop.OTHER))
+        engine.stops.send(FakeEngine.stopped(ended = true))
+        runCurrent()
+        assertEquals(emptyList<AttentionReason>(), attention.posted)
+        assertEquals(emptyList<Boolean>(), h.host.finishes)
+        assertEquals(RunState.Stage.IDLE, h.run.state.value.stage)
+    }
+
+    @Test
     fun `the user's own stop and an expired window or a narrowed scope forbid a system restart`() = test(RunPath.USER_INITIATED_JOB) { h ->
         engine.jobs = listOf(job("running"))
         assertFalse(h.run.onSystemStop(h.attach(), SystemStop.USER))
@@ -307,16 +440,16 @@ class OfflineRunTest {
         engine.jobs = listOf(job("running", done = 0, total = 1_000_000))
         h.attach()
         advanceTimeBy(5_000)
-        val before = engine.reads
+        val before = engine.snapshots
         repeat(20) { i ->
             engine.jobs = listOf(job("running", done = (i + 1) * 10_000L, total = 1_000_000))
             engine.events.send("job.changed")
             advanceTimeBy(100)
         }
         advanceTimeBy(1_000)
-        val reads = engine.reads - before
+        val reads = engine.snapshots - before
         assertTrue("reads=$reads", reads in 1..4)
-        assertTrue(h.host.shown.size <= engine.reads)
+        assertTrue(h.host.shown.size <= engine.snapshots)
         assertEquals(200_000L, h.run.state.value.summary?.bytesDone)
     }
 

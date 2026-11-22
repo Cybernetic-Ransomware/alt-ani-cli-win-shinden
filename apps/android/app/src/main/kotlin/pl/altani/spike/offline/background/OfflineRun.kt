@@ -5,7 +5,9 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -73,6 +75,7 @@ class OfflineRun(
         val host: RunHost,
         val initiatedAtMs: Long,
         val scheduledScope: NetworkScope,
+        @Volatile var after: Job?,
     ) {
         /** Guarded by [lock]: false once the host finished or the system took it away; nothing is called on it then. */
         var hostAttached = true
@@ -86,14 +89,34 @@ class OfflineRun(
     private val lock = Any()
     private var session: Session? = null
     private var generation = 0L
+
+    /** Guarded by [lock]: the last drain begun, which the next session's executor calls are ordered after. */
+    private var lastDrain: Job? = null
+
+    /** Guarded by [lock]: the request in flight, which concurrent callers share. */
+    private var requesting: Deferred<RequestResult>? = null
     private val _state = MutableStateFlow(RunState())
 
     val state: StateFlow<RunState> = _state.asStateFlow()
 
-    /** From the visible UI only: the one path that begins a new session. */
+    /** From the visible UI only: the one path that begins a new session; concurrent callers share one check-read-launch. */
     suspend fun request(target: RunTarget = RunTarget.APP): RequestResult {
         if (launcher.path == null) return RequestResult.Unsupported
         val backend = backends(target) ?: return RequestResult.Unsupported
+        val (op, own) = synchronized(lock) {
+            requesting?.let { it to false } ?: scope.async(start = CoroutineStart.LAZY) {
+                try {
+                    requestOnce(target, backend)
+                } finally {
+                    synchronized(lock) { requesting = null }
+                }
+            }.also { requesting = it } to true
+        }
+        val result = op.await()
+        return if (!own && result == RequestResult.Launched) RequestResult.AlreadyActive else result
+    }
+
+    private suspend fun requestOnce(target: RunTarget, backend: RunBackend): RequestResult {
         if (synchronized(lock) { session?.hostAttached == true } || launcher.isActive()) return RequestResult.AlreadyActive
         val summary = read(backend) ?: return RequestResult.ReadFailed
         val spec = LaunchSpec(target, summary.scope, clock(), summary.remainingBytes)
@@ -109,7 +132,7 @@ class OfflineRun(
                 log("attach rejected: target=$target current=${current?.generation}")
                 return REJECTED
             }
-            Session(++generation, target, backend, host, initiatedAtMs, networkScope).also { session = it }
+            Session(++generation, target, backend, host, initiatedAtMs, networkScope, lastDrain).also { session = it }
         }
         publish(created, RunState.Stage.STARTING)
         // lazy, so a drain that starts at once still finds the observer to cancel
@@ -155,6 +178,7 @@ class OfflineRun(
             beginDrain(s, reschedule = false, reason = AttentionReason.WINDOW_EXPIRED, stopExecutor = false)
             return
         }
+        awaitPrevious(s)
         s.backend.events.start()
         if (!startExecutor(s.backend)) {
             beginDrain(s, reschedule = false, reason = AttentionReason.START_FAILED, stopExecutor = false)
@@ -208,7 +232,7 @@ class OfflineRun(
             claimSince = if (summary.activeIo == 0 && summary.readyNow > 0) claimSince ?: now else null
             s.desiredScope = summary.scope
             val rescheduleAllowed = RunPolicy.withinWindow(s.initiatedAtMs, now) && s.scheduledScope.coveredBy(summary.scope)
-            _state.value = _state.value.copy(summary = summary)
+            setState(s) { it.copy(summary = summary) }
             when (val decision = RunPolicy.decide(summary, phaseSince, claimSince, now, s.host.path, rescheduleAllowed)) {
                 is RunDecision.Keep -> {
                     val model = NotificationModels.session(summary)
@@ -277,26 +301,43 @@ class OfflineRun(
         return false
     }
 
+    /** The system may start the next component before the last drain ended; that drain's `executor_stop` comes first. */
+    private suspend fun awaitPrevious(s: Session) {
+        val previous = s.after ?: return
+        if (!previous.isCompleted) log("gen=${s.generation} waits for the previous session's stop")
+        previous.join()
+        s.after = null
+    }
+
     private fun beginDrain(s: Session, reschedule: Boolean, reason: AttentionReason?, stopExecutor: Boolean = true) {
         if (!s.draining.compareAndSet(false, true)) return
         s.drainReschedule = reschedule
         publish(s, RunState.Stage.DRAINING)
         val observer = s.observer
-        scope.launch {
+        val drain = scope.launch(start = CoroutineStart.LAZY) {
             // never joined: the observer may be the caller, and an unfinished read changes nothing
             observer?.cancel()
             withHost(s) { it.setWorking(false) }
+            awaitPrevious(s)
             val ended = !stopExecutor || stopExecutor(s.backend)
-            reason?.let(attention::post)
             val host = synchronized(lock) {
-                if (s.hostAttached) s.host.also { s.hostAttached = false } else null
+                if (s.hostAttached) {
+                    // a detached session's notice could cover the next session's
+                    reason?.let(attention::post)
+                    s.hostAttached = false
+                    s.host
+                } else {
+                    null
+                }
             }
             host?.finish(reschedule)
             synchronized(lock) { if (session === s) session = null }
             val end = "gen=${s.generation} executor_ended=$ended host_finished=${host != null} reschedule=$reschedule"
             log("session closed $end")
-            if (_state.value.generation == s.generation) _state.value = RunState(generation = s.generation, lastEnd = end)
+            setState(s) { RunState(generation = s.generation, lastEnd = end) }
         }
+        synchronized(lock) { lastDrain = drain }
+        drain.start()
     }
 
     /** Under [lock], so a host the system already stopped never gets a late notification or wake lock. */
@@ -304,14 +345,19 @@ class OfflineRun(
         synchronized(lock) { if (s.hostAttached) block(s.host) }
     }
 
-    private fun publish(s: Session, stage: RunState.Stage) {
-        val current = _state.value
-        _state.value = RunState(
-            generation = s.generation,
-            target = s.target,
-            stage = stage,
-            summary = if (current.generation == s.generation) current.summary else null,
-        )
+    private fun publish(s: Session, stage: RunState.Stage) =
+        setState(s) { current ->
+            RunState(
+                generation = s.generation,
+                target = s.target,
+                stage = stage,
+                summary = if (current.generation == s.generation) current.summary else null,
+            )
+        }
+
+    /** Only the newest generation writes, so a late update of an older session never covers the next one. */
+    private fun setState(s: Session, change: (RunState) -> RunState) {
+        synchronized(lock) { if (s.generation == generation) _state.value = change(_state.value) }
     }
 
     companion object {
