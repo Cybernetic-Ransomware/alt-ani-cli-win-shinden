@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- API 31+: downloaded episodes stay on the device; a database restored without them marks the items missing -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="library/" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="library/" />
+    </device-transfer>
+</data-extraction-rules>

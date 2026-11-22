@@ -14,10 +14,19 @@ NAME = PublishName(series_id="12", series_title="Fate/Zero: Ep?", episode_label=
 
 
 @pytest.fixture
-def store(tmp_path):
-    s = fs.FsFileStore(tmp_path / "library")
+def store(request, tmp_path):
+    if getattr(request, "param", "fs") == "app":
+        # the Android app's store shares these guarantees; on Linux it publishes by renameat2 instead of a hard link
+        from android_storage import MIN_ATOMIC_RENAME_API, AppStorageStore
+
+        s = AppStorageStore(tmp_path / "library", api_level=MIN_ATOMIC_RENAME_API)
+    else:
+        s = fs.FsFileStore(tmp_path / "library")
     s.check_root()
     return s
+
+
+both_stores = pytest.mark.parametrize("store", ["fs", "app"], indirect=True)
 
 
 def _local(tmp_path, data: bytes = b"video") -> Path:
@@ -78,6 +87,7 @@ class TestNaming:
 
 
 @pytest.mark.unit
+@both_stores
 class TestBoundaries:
     @pytest.mark.parametrize("key", ["../escape.mp4", "/etc/passwd", "C:/x.mp4", "a/../../b", "a\\..\\b", "a//b", "./a"])
     def test_keys_outside_the_root_are_refused(self, store, key):
@@ -109,12 +119,14 @@ class TestBoundaries:
 
 @pytest.mark.unit
 class TestPublish:
+    @both_stores
     def test_publishes_without_leaving_the_work_file(self, store, tmp_path):
         target = store.allocate(NAME)
         store.publish(_local(tmp_path), target)
         assert store.stat(target).size == 5
         assert not (tmp_path / "work.bin").exists()
 
+    @both_stores
     def test_never_replaces_an_existing_file(self, store, tmp_path):
         target = store.allocate(NAME)
         path = store.root / target.key
@@ -126,12 +138,14 @@ class TestPublish:
         assert path.read_bytes() == b"theirs"
         assert (tmp_path / "work.bin").exists()
 
+    @both_stores
     def test_allocate_skips_names_taken_on_disk(self, store):
         first = store.allocate(NAME)
         (store.root / first.key).parent.mkdir(parents=True)
         (store.root / first.key).write_bytes(b"x")
         assert store.allocate(NAME).key.endswith(" (2).mp4")
 
+    @both_stores
     def test_fractional_and_integer_episodes_get_separate_files(self, store, tmp_path):
         keys = []
         for label in ("10.5", "105"):
@@ -194,6 +208,7 @@ class TestPublish:
 
 
 @pytest.mark.unit
+@both_stores
 class TestRemoveAndScan:
     def test_remove_reports_whether_something_was_there(self, store, tmp_path):
         target = store.allocate(NAME)

@@ -210,3 +210,7 @@ Assumptions for stages 4–6, not verified here (`content_uri`, headers and the 
 the emulator in stage 4): Chaquopy callbacks from Python threads and a blocking `events_next` on a Kotlin thread; Kotlin
 objects as `FileStore`/`ExportTarget` and the cost of `write(bytes)` over JNI for SAF; network classification; `flock`
 in the app directory; background work; a transport without `curl_cffi`.
+
+Stage 6 (PR #51, [ADR-0007](0007-android-file-store.md)): the file store is a Python object (`android_storage`), not a
+Kotlin one, registered as a platform object by the production app. `flock` in the app directory refuses a second
+executor on the same database on a device (Mi 10T Lite, Android 12). Background work and SAF export remain open.

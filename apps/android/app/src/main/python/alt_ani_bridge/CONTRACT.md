@@ -141,7 +141,7 @@ the kind alone does not.
 | `queue_choose_source` | `job_id, session_id, online_id, variant?, restart?, expected_revision` | `{job}` |
 | `queue_reorder` | `job_ids` (every open job, new order), `expected_revision` (queue revision) | `{queue_revision}` |
 
-### Library (needs `storage`)
+### Library (`library_list` and `library_item` read the database; the others need `storage`)
 
 | method | request | response |
 |---|---|---|

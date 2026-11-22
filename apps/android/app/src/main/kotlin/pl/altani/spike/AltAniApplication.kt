@@ -14,21 +14,34 @@ import pl.altani.spike.bridge.ChaquopyEndpoint
 import pl.altani.spike.bridge.DeviceNetwork
 import pl.altani.spike.bridge.NetworkSync
 import pl.altani.spike.controlled.ControlledEnvironment
+import pl.altani.spike.offline.AppStorage
+import pl.altani.spike.offline.ExecutorControl
 
 /** Owns the process's [BridgeRuntime]; nothing is closed on the way out, the state is durable in SQLite. */
 class AltAniApplication : Application() {
+    // set by the endpoint factory, which BridgeRuntime runs before engineArgs; a retried create_engine reuses both
+    @Volatile private var storageArg: JSONObject? = null
+
     val bridge: BridgeRuntime by lazy {
         BridgeRuntime(
             endpointFactory = {
-                ChaquopyEndpoint(Python.getInstance().getModule("android_host").callAttr("create_bridge"))
+                val bridge = Python.getInstance().getModule("android_host").callAttr("create_bridge")
+                storageArg = AppStorage.register(bridge, AppStorage.libraryRoot(this))
+                ChaquopyEndpoint(bridge)
             },
             engineArgs = {
                 JSONObject()
                     .put("cache_dir", cacheDir.absolutePath)
                     .put("history_path", File(filesDir, "alt-ani.db").absolutePath)
                     .put("network", networkSync.kind.value)
+                    .put("storage", storageArg)
             },
         )
+    }
+
+    /** Nothing in the app starts it yet: no automatic downloads, and no background work is claimed. */
+    val executor: ExecutorControl by lazy {
+        ExecutorControl(bridge.scope) { method, args -> bridge.call(method, args, mutation = method != "executor_status") }
     }
 
     /** The real [bridge] only; the controlled runtime stays on loopback "wifi". */

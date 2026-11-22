@@ -58,6 +58,24 @@ adb shell am instrument -w pl.altani.spike.test/androidx.test.runner.AndroidJUni
 Without the server the controlled tests are skipped; `-e controlledServer required` makes them fail instead. The T9
 trial is opt-in, see [T9](../../docs/android/t9-transfer-gate-trial.md).
 
+Offline foundation (production file store, executor control, recovery and deletes,
+[ADR-0007](../../docs/adr/0007-android-file-store.md)) against the same server:
+
+```powershell
+adb shell run-as pl.altani.spike rm -f files/offline-outcomes.jsonl
+adb shell am instrument -w -e controlledServer required -e package pl.altani.spike.offline `
+    pl.altani.spike.test/androidx.test.runner.AndroidJUnitRunner
+adb shell run-as pl.altani.spike cat files/offline-outcomes.jsonl
+```
+
+Each case records `PASS`, `FAIL`, `SKIPPED` or `NOT_EXECUTABLE` (logcat tag `OfflineOutcome` and the file above); a
+case the device cannot carry out is `NOT_EXECUTABLE`, never a pass. The server holds a download after a fixed number
+of bytes (`stall_files`) until the test releases it, so stops with `ended: false`, pauses and cancels are deterministic.
+`StorageDeviceTest` also runs on the real app's runtime (`library_verify` with an empty `item_ids`, so no saved item is
+checked or changed). Offline downloads need API 30;
+below it `executor_start` answers `storage.no_atomic_publish`. Nothing here claims background work: the executor runs
+only while the process does.
+
 Live Shinden on a `device` build (opt-in, real network):
 
 ```powershell

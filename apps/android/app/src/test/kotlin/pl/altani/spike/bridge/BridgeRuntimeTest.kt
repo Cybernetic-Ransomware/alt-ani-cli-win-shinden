@@ -59,6 +59,39 @@ class BridgeRuntimeTest {
     }
 
     @Test
+    fun `the storage argument the endpoint factory registers reaches create_engine, a retry reuses it`() = test {
+        // the AltAniApplication pattern: the factory registers the store, engineArgs reads what it left
+        var storageArg: JSONObject? = null
+        var registrations = 0
+        var first = true
+        bridge.createEngineReply = {
+            if (first) {
+                first = false
+                FakeBridge.failure("history.unavailable", "storage")
+            } else {
+                FakeBridge.ok(JSONObject().put("engine_id", "engine-1"))
+            }
+        }
+        val runtime = BridgeRuntime(
+            endpointFactory = {
+                registrations += 1
+                storageArg = JSONObject().put("kind", "platform").put("handle", "handle-$registrations")
+                bridge
+            },
+            engineArgs = { JSONObject().put("history_path", "state.db").put("storage", storageArg) },
+        )
+
+        assertTrue(runtime.call("bridge_info") is BridgeResult.Failure)
+        assertTrue(runtime.call("bridge_info") is BridgeResult.Ok)
+
+        // the endpoint is kept after a failed create_engine, so its store is registered once and offered again
+        val handles = bridge.enginePayloads.map { it.getJSONObject("storage").getString("handle") }
+        assertEquals(listOf("handle-1", "handle-1"), handles)
+        assertEquals(1, registrations)
+        assertTrue(bridge.enginePayloads.all { it.getJSONObject("storage").getString("kind") == "platform" })
+    }
+
+    @Test
     fun `shutdown ends a cooperating operation and releases the runtime`() = test {
         val entered = CountDownLatch(1)
         bridge.handler = { _, cancelled ->

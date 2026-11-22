@@ -18,71 +18,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.android.controlled_server import MEDIA, REQUIRED_HEADERS, Scenario, Server  # noqa: E402
+from tools.android.controlled_server import MEDIA, REQUIRED_HEADERS, Scenario  # noqa: E402
+
+from .flow import Flow  # noqa: E402
 
 pytestmark = pytest.mark.loopback
-
-
-@pytest.fixture
-def server():
-    with Server(0) as srv:
-        thread = threading.Thread(target=srv.serve_forever, daemon=True)
-        thread.start()
-        yield srv
-        srv.shutdown()
-
-
-class Flow:
-    def __init__(self, server: Server, tmp_path: Path, storage: str | None = None) -> None:
-        self.server = server
-        self.bridge = controlled_host.create_bridge(server.url)
-        if storage == "fs":
-            extra = {"storage": json.loads(controlled_host.storage(self.bridge, str(tmp_path / "library")))}
-        elif storage == "content":
-            extra = {"storage": json.loads(controlled_host.storage(self.bridge, str(tmp_path / "lib"), "a.b", "lib"))}
-        else:
-            extra = {}
-        created = self._reply(
-            self.bridge.create_engine(
-                json.dumps(
-                    {
-                        "cache_dir": str(tmp_path / "cache"),
-                        "history_path": str(tmp_path / "history.db"),
-                        "antibot_delay_sec": 0,
-                        "access": {"use_flaresolverr": False},
-                        "network": "wifi",
-                        **extra,
-                    }
-                ),
-                None,
-            )
-        )
-        self.engine_id = created["data"]["engine_id"]
-
-    @staticmethod
-    def _reply(text: str) -> dict:
-        return json.loads(text)
-
-    def call(self, method: str, **payload) -> dict:
-        return self._reply(self.bridge.call(method, json.dumps({"engine_id": self.engine_id, **payload})))
-
-    def data(self, method: str, **payload) -> dict:
-        reply = self.call(method, **payload)
-        assert reply["ok"], reply
-        return reply["data"]
-
-    def listing(self) -> tuple[dict, dict]:
-        hit = self.data("search", query="frieren")["hits"][0]
-        listing = self.data("episodes", series={k: hit[k] for k in ("id", "slug", "title", "url")})
-        return listing["series"], listing["episodes"][0]
-
-    def prepare(self, scenario: Scenario, **criteria) -> tuple[dict, dict, dict, dict]:
-        self.server.state.reset(scenario)
-        series, episode = self.listing()
-        session = self.data("playback_begin", series=series, episode=episode)["playback_session"]
-        extra = {"criteria": criteria} if criteria else {}
-        prepared = self.data("playback_prepare", playback_session=session, series=series, episode=episode, **extra)
-        return series, episode, session, prepared
 
 
 @pytest.fixture
@@ -193,16 +133,3 @@ def test_a_downloaded_episode_plays_from_the_local_target(server, tmp_path, stor
         assert downloads and all(e["status"] in (200, 206) for e in downloads)
     finally:
         assert json.loads(flow.bridge.shutdown(10))["data"]["ended"]
-
-
-@pytest.mark.skipif(sys.platform != "linux", reason="renameat2 is a Linux system call")
-def test_publishing_by_rename_never_replaces_an_existing_file(tmp_path):
-    src, dst = tmp_path / "src", tmp_path / "dst"
-    src.write_bytes(b"new")
-    dst.write_bytes(b"old")
-    with pytest.raises(FileExistsError):
-        controlled_host.rename_noreplace(src, dst)
-    assert dst.read_bytes() == b"old"
-    dst.unlink()
-    controlled_host.rename_noreplace(src, dst)
-    assert dst.read_bytes() == b"new" and not src.exists()

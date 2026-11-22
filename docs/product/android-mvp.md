@@ -93,6 +93,11 @@ Anything about layout, navigation or visual design not written here is not yet d
 
 Desktop tests of stages 1–3 do not confirm that background work behaves correctly on Android.
 
+The application runs from Android 7 (minSdk 24). Offline downloads need Android 11 (API 30) for now: the file store
+publishes with `renameat2`, which older systems may not allow, and below API 30 the app refuses with
+`storage.no_atomic_publish` instead of trying ([ADR-0007](../adr/0007-android-file-store.md)). Online watching is not
+affected.
+
 ## Relation to earlier ADRs
 
 [ADR-0003](../adr/0003-android-feasibility.md) left mobile downloads and Compose screens out of scope. That
