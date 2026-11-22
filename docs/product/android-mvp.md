@@ -91,7 +91,9 @@ Anything about layout, navigation or visual design not written here is not yet d
 | 5 | Mobile screens, online watching, handling interactions | yes |
 | 6 | Offline integration with Android mechanisms, closing the MVP | yes |
 
-Desktop tests of stages 1–3 do not confirm that background work behaves correctly on Android.
+Desktop tests of stages 1–3 do not confirm that background work behaves correctly on Android. Stage 6 does it with
+[ADR-0008](../adr/0008-android-background-execution.md): a download the user started goes on in the background
+within Android's limits, and a new session begins only by the user's decision, never by opening the app or a reboot.
 
 The application runs from Android 7 (minSdk 24). Offline downloads need Android 11 (API 30) for now: the file store
 publishes with `renameat2`, which older systems may not allow, and below API 30 the app refuses with

@@ -121,8 +121,8 @@ fun waitUntil(what: String, timeoutMs: Long = 20_000, condition: () -> Boolean) 
 fun partials(library: File): List<File> = File(library, ".work").walkTopDown().filter { it.isFile && it.name.endsWith(".part") }.toList()
 
 /** The download request is held and yt-dlp has written its first bytes to the partial. */
-fun awaitHeld(library: File) =
-    waitUntil("a held transfer") {
+fun awaitHeld(library: File, timeoutMs: Long = 20_000) =
+    waitUntil("a held transfer", timeoutMs) {
         mediaRequests().any { it.optBoolean("stalled") } && partials(library).any { it.length() > 0 }
     }
 

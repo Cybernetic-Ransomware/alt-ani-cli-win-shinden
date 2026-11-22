@@ -17,14 +17,20 @@ import org.json.JSONObject
 import pl.altani.spike.AltAniApplication
 import pl.altani.spike.bridge.BridgeResult
 import pl.altani.spike.bridge.EventsPump
+import pl.altani.spike.controlled.ControlledEnvironment
+import pl.altani.spike.offline.background.RunState
+import pl.altani.spike.offline.background.RunTarget
 
 /** Technical screen: borrows the process's bridge and logs outcomes; it never logs `data` of stream methods. */
 class TechViewModel(app: Application) : AndroidViewModel(app) {
-    private val bridge = (app as AltAniApplication).bridge
+    private val altAni = app as AltAniApplication
+    private val bridge = altAni.bridge
+    private val run = altAni.offlineRun
     private val _log = MutableStateFlow<List<String>>(emptyList())
 
     val log: StateFlow<List<String>> = _log.asStateFlow()
     val pump: StateFlow<EventsPump.State> = bridge.events.state
+    val runState: StateFlow<RunState> = run.state
 
     init {
         viewModelScope.launch {
@@ -91,11 +97,17 @@ class TechViewModel(app: Application) : AndroidViewModel(app) {
         "position_ms=${watch.opt("position_ms")} revision=${watch.getInt("revision")}"
     }
 
-    fun toggleEvents() {
-        viewModelScope.launch {
-            if (pump.value.running) bridge.events.stop() else bridge.events.start()
-        }
+    /** Start only: the pump is shared with the screens and with background sessions, so no screen stops it. */
+    fun startEvents() = bridge.events.start()
+
+    fun backgroundDownload() = launchStep("background download") {
+        val runtime = altAni.controlledBridge ?: return@launchStep "debug builds only"
+        val jobId = ControlledEnvironment.enqueue(runtime, ControlledEnvironment.listing(runtime))
+        "job $jobId queued, request: ${run.request(RunTarget.CONTROLLED)}"
     }
+
+    /** The explicit resume of #52; the queue screen of #53 takes it over. Opening the app never does this. */
+    fun resumeBackground(target: RunTarget) = launchStep("background resume") { "request: ${run.request(target)}" }
 
     fun feasibility() = launchStep("feasibility") {
         val app = getApplication<Application>()
